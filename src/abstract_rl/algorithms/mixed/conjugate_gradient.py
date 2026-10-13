@@ -1,18 +1,11 @@
+from collections.abc import Callable
+
 import torch
 
-from abstract_rl.src.misc.cli_printer import CliPrinter
+from abstract_rl.misc.cli_printer import CliPrinter
 
 
-def to_col(x):
-
-    # make column vector
-    n = x.shape[0]
-    if len(x.shape) == 1: x = x.view([-1, 1])
-    assert x.shape[0] == n and x.shape[1] == 1
-    return x
-
-
-def conjugate_gradient(A, b, max_k=10, tol=1e-10):
+def conjugate_gradient(A: Callable, b: torch.Tensor, max_k: int = 10, tol: float = 1e-10) -> torch.Tensor:
     """
     Implementation of conjugate gradient algorithm. It uses vector matrix products for efficient calculation. See
     https://en.wikipedia.org/wiki/Conjugate_gradient_method for more details of the algorithm. See also
@@ -34,9 +27,7 @@ def conjugate_gradient(A, b, max_k=10, tol=1e-10):
     cli = CliPrinter().instance
 
     with cli.header("conjugate gradients started", False):
-
         while k < max_k:
-
             # remaining fields
             _Avp = A(p)
             alpha = rdotr / torch.dot(p, _Avp)
@@ -49,7 +40,8 @@ def conjugate_gradient(A, b, max_k=10, tol=1e-10):
             beta = new_rdotr / rdotr
             p = beta * p + r
             rdotr = new_rdotr
-            if rdotr <= tol: break
+            if rdotr <= tol:
+                break
 
             # calculate next conjugate gradient
             k += 1

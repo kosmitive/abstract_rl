@@ -1,6 +1,10 @@
+from typing import Any
+
 import torch
-from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.src.policy.policy import Policy
+
+from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.policy.policy import Policy
 
 
 class ContinuousPolicy(Policy, Syncable):
@@ -8,7 +12,9 @@ class ContinuousPolicy(Policy, Syncable):
     Represents a continuous policy, e.g a gaussian policy
     """
 
-    def log_prob(self, actions, states=None, suff_stats=None):
+    def log_prob(
+        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Can be used to obtain log probability of actions relative to states.
         :param actions: A matrix of size [D, K] containing actions for each state.
@@ -20,7 +26,7 @@ class ContinuousPolicy(Policy, Syncable):
         """
         raise NotImplementedError
 
-    def clone(self):
+    def clone(self) -> "ContinuousPolicy":
         """
         Clones the current instance.
         :return: A new identical clones instance of the current.
@@ -28,21 +34,34 @@ class ContinuousPolicy(Policy, Syncable):
 
         raise NotImplementedError
 
-    def sync(self, v):
+    def sync(self, v: Any) -> Any:
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
         """
         raise NotImplementedError
 
-    def kl_divergence(self, batch, suff_stats=None, mode='i-projection', est='sum'):
+    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        The most likely action of each state.
+        :return: A matrix [D, A].
+        """
+        raise NotImplementedError
+
+    def kl_divergence(
+        self,
+        batch: Batch,
+        suff_stats: torch.Tensor | None = None,
+        mode: str = "i-projection",
+        est: str = "sum",
+    ) -> torch.Tensor:
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
         :return:
         """
 
-        tp = self.mc.get('policy', True)
+        tp = self.mc.get("policy", True)
 
         # calc sufficient statistics
         states = torch.Tensor(batch.states)
@@ -54,47 +73,51 @@ class ContinuousPolicy(Policy, Syncable):
         new_lls = self.log_prob(actions, suff_stats=suff_stats)
 
         # use I projection
-        if mode == 'm-projection':
+        if mode == "m-projection":
             p = log_likelihoods
             q = new_lls
 
         # use M Projection
-        elif mode == 'i-projection':
+        elif mode == "i-projection":
             p = new_lls
             q = log_likelihoods
 
-        else: raise NotImplementedError
+        else:
+            raise NotImplementedError
 
         # build kl terms adn sum up
         kl = torch.exp(p) * (p - q)
 
-        if est == 'sum': kl_est = torch.sum
-        elif est == 'mean':  kl_est = torch.mean
-        else: raise NotImplementedError
+        if est == "sum":
+            kl_est = torch.sum
+        elif est == "mean":
+            kl_est = torch.mean
+        else:
+            raise NotImplementedError
 
         return kl_est(kl)
 
-    def likelihood_ratio(self, batch):
+    def likelihood_ratio(self, batch: Batch) -> torch.Tensor:
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param batch: Use this batch to estimate objective.
         :return: A un detached version of the objective
         """
 
-        policy = self.mc.get('policy', False)
+        policy = self.mc.get("policy", False)
 
         # calculate the objective
         states = torch.Tensor(batch.states)
         actions = torch.Tensor(batch.actions)
         suff_stats = policy.forward(states)
-        ll = policy.log_prob(actions, suff_stats=suff_stats)
-        old_ll = torch.Tensor(batch.log_likelihoods)
+        ll = policy.log_prob(actions, suff_stats=suff_stats).view(-1)
+        old_ll = torch.Tensor(batch.log_likelihoods).view(-1)
 
-        # calculate the ratio term
-        a_vals = torch.Tensor(batch['a'])
+        # calculate the ratio term (all terms are flat vectors of length D)
+        a_vals = torch.as_tensor(batch["a"], dtype=torch.float32).view(-1)
         mean_a = a_vals.mean()
         std_a = a_vals.std()
-        advantages = (a_vals - mean_a) / std_a
+        advantages = (a_vals - mean_a) / (std_a + 1e-8)
         r = torch.exp(ll - old_ll)
         obj = torch.mean(r * advantages)
         return -obj

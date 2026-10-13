@@ -1,4 +1,7 @@
+import torch
 from torch.nn import Module
+
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 
 
 class Policy(Module):
@@ -6,18 +9,18 @@ class Policy(Module):
     Represents a policy, e.g a gaussian policy or a eps greedy policy
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         Module.__init__(self)
         self.mc = mc
 
-    def get_suff_stats_dim(self):
+    def get_suff_stats_dim(self) -> int:
         """
         Obtain the dimension of sufficient statistics vector for the policy.
         :return: give dimension of suff stats vector.
         """
         raise NotImplementedError
 
-    def forward(self, states):
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
         """
         Simply produces sufficient statistics of the policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
@@ -25,7 +28,9 @@ class Policy(Module):
         """
         raise NotImplementedError
 
-    def sample_actions(self, states=None, suff_stats=None, num_actions=1):
+    def sample_actions(
+        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
+    ) -> torch.Tensor:
         """
         Can be used to obtain action samples for all states.
         :param states: A matrix of size [D, Ds]. If this None => suff_states not None

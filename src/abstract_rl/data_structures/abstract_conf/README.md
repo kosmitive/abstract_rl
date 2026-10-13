@@ -7,18 +7,17 @@ configuration. Let's see how to use it to access several lines of a configuratio
 c = {
 
     # environment settings
-    'env_name': 'Qube-v0',
-    'env_angle_to_sin_cos': 0,
+    'env_name': 'Pendulum-v1',
 
     'ret_add_acts': 20,
     'res_add_acts': 20,
 }
 
 sc = SharedConf(c)
-print(sc['env_name]) # Qube-v0
+print(sc['env_name']) # Pendulum-v1
 
 with sc.ns('env'):
-    print(sc['name']) # Qube-v0
+    print(sc['name']) # Pendulum-v1
 ```
 
 # Shared Memory / Model Configuration

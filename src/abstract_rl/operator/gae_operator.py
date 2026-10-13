@@ -1,9 +1,8 @@
-import numpy as np
 import torch
-from torch.distributions import transforms
 
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
 class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
@@ -11,24 +10,24 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
     Represents a generalized advantage estimation operator based upon https://arxiv.org/abs/1506.02438.
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "gae"
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new generalized advantage estimator.
         :param mc: The model configuration to use.
         """
         assert isinstance(mc, ModelConfiguration)
-        conf = mc.get('conf')
+        conf = mc.get("conf")
         self.conf = conf
-        self.v_net = mc.get('v_network', True)
+        self.v_net = mc.get("v_network", True)
 
         # get discount
-        self.env = mc['env']
-        self.gae_lambda = torch.Tensor([self.conf['lambda']])
+        self.env = mc["env"]
+        self.gae_lambda = float(self.conf["lambda"])
 
-    def transform(self, trajectory):
+    def transform(self, trajectory: Trajectory) -> None:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param trajectory: trajectory to transform.
@@ -36,15 +35,14 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
 
         # deactivate grad
         with torch.no_grad():
-
             tl = len(trajectory)
 
             # obtain rewards
             discount = self.env.discount()
 
             # use v approximation to get advantages
-            td_errors = torch.Tensor(trajectory['td'])
-            dones = torch.Tensor(trajectory.dones)
+            td_errors = torch.as_tensor(trajectory["td"], dtype=torch.float32).view(-1)
+            dones = torch.Tensor(trajectory.dones).view(-1)
             mask = 1 - dones
 
             # reserve space for advantages
@@ -56,4 +54,4 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
             for t in reversed(range(tl)):
                 a[t] = td_errors[t] + mask[t] * gae_gamma_lambda * a[t + 1]
 
-            trajectory['a'] = a[:-1]
+            trajectory["a"] = a[:-1]

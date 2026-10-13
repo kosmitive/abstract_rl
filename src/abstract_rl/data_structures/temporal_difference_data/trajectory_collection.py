@@ -20,43 +20,40 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
-from abstract_rl.src.data_structures.temporal_difference_data.batch import Batch
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory import Trajectory
+from collections.abc import Iterator
+from typing import Any
+
 import numpy as np
 
-from abstract_rl.src.misc.cli_printer import CliPrinter
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.cli_printer import CliPrinter
 
 
 class TrajectoryCollection:
     """Represents a simple trajectory collection."""
 
-    def __init__(self, env, max_l=None):
+    def __init__(self, env: Any, max_l: int | None = None) -> None:
         self.max_l = max_l
         self.__num_data_points = 0
-        self.__trajectories = []
+        self.__trajectories: list[Trajectory] = []
         self._env = env
 
         self._sd = self._env.observation_dim
         self._ad = self._env.action_dim
         self.cli = CliPrinter().instance
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.__trajectories)
 
-    def merge(self, collection):
+    def merge(self, collection: "TrajectoryCollection") -> None:
         """Merges an existing collection into this object.
 
         :param collection: The collection to merge into
         """
         self.extend(collection.trajectories())
 
-    def is_full(self):
-        """
-        :return: True if is full.
-        """
-        return len(self.__trajectories) == self.max_l
-
-    def print(self):
+    def print(self) -> None:
         """
         print information
         """
@@ -64,34 +61,52 @@ class TrajectoryCollection:
         titstr = "%16s | %10s | %28s | %29s | %10s %10s %10s"
         fmtstr = "%10i [%3i] | %10.5f | a ~ %10.5f +- %10.5f | %10.5f <= r <= %10.5f | %10.5f %10.5f %10.5f"
 
-        self.cli.empty().print(titstr % ("id [len]", "entropy", "action_stats", "reward_stats", "avg_rew", "tot_rew", "disc_rew")).line()
+        self.cli.empty().print(
+            titstr % ("id [len]", "entropy", "action_stats", "reward_stats", "avg_rew", "tot_rew", "disc_rew")
+        ).line()
         for traj in self.__trajectories:
-
-            print_str = fmtstr % (traj.traj_id, len(traj), traj.entropy, np.mean(traj.actions), np.std(traj.actions),
-                      np.min(traj.rewards), np.max(traj.rewards), traj.average_reward, traj.total_reward, traj.discounted_reward(traj.env.discount()))
+            print_str = fmtstr % (
+                traj.traj_id,
+                len(traj),
+                traj.entropy,
+                np.mean(traj.actions),
+                np.std(traj.actions),
+                np.min(traj.rewards),
+                np.max(traj.rewards),
+                traj.average_reward,
+                traj.total_reward,
+                traj.discounted_reward(traj.env.discount()),
+            )
             self.cli.print(print_str)
 
-    def extend(self, trajectories):
+    def extend(self, trajectories: list[Trajectory]) -> None:
         """
-        Add an existing list of trajectories to the internal list.
+        Add an existing list of trajectories to the internal list. If a maximum number of transitions is set, the
+        oldest trajectories are dropped until the collection fits again.
         :param trajectories: The trajectories to add.
         """
         self.__trajectories.extend(trajectories)
 
-        k = 0
-        i = len(trajectories)
-        while k < self.max_l and i > 0:
-            i -= 1
-            k += len(trajectories[i])
+        if self.max_l is not None:
+            k = 0
+            i = len(self.__trajectories)
+            while i > 0 and k + len(self.__trajectories[i - 1]) <= self.max_l:
+                i -= 1
+                k += len(self.__trajectories[i])
 
-        self.__trajectories = self.__trajectories[i:]
+            # always keep at least the newest trajectory
+            i = min(i, len(self.__trajectories) - 1)
+            self.__trajectories = self.__trajectories[i:]
+
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
 
-    def __iter__(self): return iter(self.__trajectories)
+    def __iter__(self) -> Iterator[Trajectory]:
+        return iter(self.__trajectories)
 
-    def trajectories(self): return self.__trajectories
+    def trajectories(self) -> list[Trajectory]:
+        return self.__trajectories
 
-    def to_batch(self, copy_fields=None):
+    def to_batch(self, copy_fields: list[str] | None = None) -> Batch:
         """Convert the trajectory collection to a batch.
 
         :param copy_fields: The fields to copy into the batch.
@@ -99,19 +114,19 @@ class TrajectoryCollection:
         """
 
         # define basic lists
-        states = []
-        nxt_states = []
-        actions = []
-        rewards = []
-        lls = []
-        ds = []
+        states: list[np.ndarray] = []
+        nxt_states: list[np.ndarray] = []
+        actions: list[np.ndarray] = []
+        rewards: list[np.ndarray] = []
+        lls: list[np.ndarray] = []
+        ds: list[np.ndarray] = []
 
         # make space for annotations
-        annots = {a: [] for a in copy_fields}
+        copy_fields = copy_fields if copy_fields is not None else []
+        annots: dict[str, list[np.ndarray]] = {a: [] for a in copy_fields}
 
         # if it should be continued
         for t in range(len(self.__trajectories)):
-
             # obtain possible length
             traj = self.__trajectories[t]
 
@@ -125,76 +140,72 @@ class TrajectoryCollection:
 
             # append rest
             for a in copy_fields:
-                annots[a].append(traj[a])
+                annots[a].append(np.asarray(traj[a]))
 
-        states = np.concatenate(states, 0)
-        actions = np.concatenate(actions, 0)
-        lls = np.concatenate(lls, 0)
-        nxt_states = np.concatenate(nxt_states, 0)
-        rewards = np.concatenate(rewards, 0)
-        ds = np.concatenate(ds, 0)
-        for a in copy_fields: annots[a] = np.concatenate(annots[a], 0)
-
-        batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
+        states_all = np.concatenate(states, 0)
+        actions_all = np.concatenate(actions, 0)
+        lls_all = np.concatenate(lls, 0)
+        nxt_states_all = np.concatenate(nxt_states, 0)
+        rewards_all = np.concatenate(rewards, 0)
+        ds_all = np.concatenate(ds, 0)
+        annots_all = {a: np.concatenate(annots[a], 0) for a in copy_fields}
+        batch = Batch(states_all, actions_all, lls_all, rewards_all, nxt_states_all, ds_all, annots_all)
         assert len(batch) > 0
         return batch
 
-    def sample(self, batch_size, copy_fields=None):
+    def sample(self, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
+        """Sample a batch of transitions uniformly (with replacement) from all stored trajectories.
 
+        :param batch_size: The number of transitions to sample.
+        :param copy_fields: The annotation fields to copy into the batch.
+        :return: The sampled batch.
+        """
+
+        copy_fields = copy_fields if copy_fields is not None else []
         batch_size = min(batch_size, self.__num_data_points)
-        tindices = np.random.randint(0, batch_size, size=batch_size)
-        tindices.sort()
+        tindices = np.sort(np.random.randint(0, self.__num_data_points, size=batch_size))
 
         # define basic lists
-        states = []
-        nxt_states = []
-        actions = []
-        rewards = []
-        lls = []
-        ds = []
+        states: list[np.ndarray] = []
+        nxt_states: list[np.ndarray] = []
+        actions: list[np.ndarray] = []
+        rewards: list[np.ndarray] = []
+        lls: list[np.ndarray] = []
+        ds: list[np.ndarray] = []
 
         # make space for annotations
-        annots = {a: [] for a in copy_fields}
+        annots: dict[str, list[np.ndarray]] = {a: [] for a in copy_fields}
 
-        # count independently for trajectories and indices
-        i = 0
+        # map the global indices onto the trajectories
         traj_offset = 0
+        for traj in self.__trajectories:
+            traj_len = len(traj)
+            lo, hi = np.searchsorted(tindices, [traj_offset, traj_offset + traj_len])
+            m_indices = tindices[lo:hi] - traj_offset
+            traj_offset += traj_len
+            if len(m_indices) == 0:
+                continue
 
-        # if it should be continued
-        for t in range(len(self.__trajectories)):
-
-            # obtain possible length
-            traj = self.__trajectories[t]
-            traj_len = len(traj) - 7
-
-            # get all possible indices
-            j = 0
-            while j < traj_len and i+j < len(tindices) and tindices[i+j] - traj_offset < traj_len: j += 1
-
-            # map indices to trajectory
-            m_indices = tindices[i:i+j] - traj_offset
-
-            # append infos
-            states.append(traj.states[m_indices])
-            nxt_states.append(traj.next_states[m_indices])
+            # append infos (states and next states share the same underlying array)
+            all_states = traj.all_states
+            states.append(all_states[m_indices])
+            nxt_states.append(all_states[m_indices + 1])
             actions.append(traj.actions[m_indices])
             rewards.append(traj.rewards[m_indices])
             lls.append(traj.log_likelihoods[m_indices])
             ds.append(traj.dones[m_indices])
-            i += j
 
             # append rest
             for a in copy_fields:
                 annots[a].append(traj[a][m_indices])
 
-        states = np.concatenate(states, 0)
-        actions = np.concatenate(actions, 0)
-        lls = np.concatenate(lls, 0)
-        nxt_states = np.concatenate(nxt_states, 0)
-        rewards = np.concatenate(rewards, 0)
-        ds = np.concatenate(ds, 0)
-        for a in copy_fields: annots[a] = np.concatenate(annots[a], 0)
-
-        batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
+        states_all = np.concatenate(states, 0)
+        actions_all = np.concatenate(actions, 0)
+        lls_all = np.concatenate(lls, 0)
+        nxt_states_all = np.concatenate(nxt_states, 0)
+        rewards_all = np.concatenate(rewards, 0)
+        ds_all = np.concatenate(ds, 0)
+        annots_all = {a: np.concatenate(annots[a], 0) for a in copy_fields}
+        batch = Batch(states_all, actions_all, lls_all, rewards_all, nxt_states_all, ds_all, annots_all)
         assert len(batch) > 0
         return batch
