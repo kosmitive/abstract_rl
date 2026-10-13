@@ -1,5 +1,7 @@
 """Sample extra actions from the target policy and score them with the target Q."""
 
+from typing import Any
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -69,28 +71,41 @@ class ResampleOperator(TrajectoryOperator):
     def apply(self, replay: ReplayBuffer, key: PRNGKeyArray) -> None:
         """Fill ``add_act``, ``add_q`` and ``add_pi`` for every stored state.
 
+        The compiled scan covers the whole allocation and masks rows past ``size``, so a growing
+        replay does not change the compiled shape and does not rewrite the buffer once per chunk.
+
         Args:
             replay: Replay to update in place.
-            key: Random key, split once per chunk.
+            key: Random key, split once per chunk inside the scan.
         """
-        offset = 0
-        while offset < replay.size:
-            key, sub = jax.random.split(key)
-            count = min(_CHUNK, replay.size - offset)
-            states = _pad_rows(replay.states, offset, count)
-            actions, q_hat, log_density = resample_chunk(
-                self.policy.params, self.q_net.params, states, sub, self.add_act
-            )
-            end = offset + count
-            replay.add_act = replay.add_act.at[offset:end].set(actions[:count])
-            replay.add_q = replay.add_q.at[offset:end].set(q_hat[:count])
-            replay.add_pi = replay.add_pi.at[offset:end].set(log_density[:count])
-            offset = end
+        if replay.size == 0:
+            return
+        actions, q_hat, log_density = resample_buffer(
+            (self.policy.params, self.q_net.params, replay.states, key, self.add_act, jnp.int32(replay.size)),
+            replay.add_act,
+            replay.add_q,
+            replay.add_pi,
+        )
+        replay.add_act = actions
+        replay.add_q = q_hat
+        replay.add_pi = log_density
 
 
 def _pad_rows(values: Array, offset: int, count: int) -> Array:
     padded = jnp.zeros((_CHUNK, *values.shape[1:]), dtype=values.dtype)
     return padded.at[:count].set(values[offset : offset + count])
+
+
+def _resample(
+    policy: GaussianParams,
+    q_net: MultilayerPerceptron,
+    states: Float[Array, "chunk obs"],
+    key: PRNGKeyArray,
+    n_actions: int,
+) -> tuple[Float[Array, "chunk k act"], Float[Array, "chunk k"], Float[Array, "chunk k"]]:
+    """Sample and score ``n_actions`` actions for each state."""
+    actions = sample(policy, key, n_actions, states=states)
+    return actions, q_values(q_net, states, actions), log_prob(policy, actions, states=states)
 
 
 @eqx.filter_jit
@@ -101,6 +116,42 @@ def resample_chunk(
     key: PRNGKeyArray,
     n_actions: int,
 ) -> tuple[Float[Array, "chunk k act"], Float[Array, "chunk k"], Float[Array, "chunk k"]]:
-    """Sample and score ``n_actions`` actions for each state. Q is vmapped over the action axis."""
-    actions = sample(policy, key, n_actions, states=states)
-    return actions, q_values(q_net, states, actions), log_prob(policy, actions, states=states)
+    """Jitted ``_resample`` for one host-side chunk, used when a trajectory is not on device."""
+    return _resample(policy, q_net, states, key, n_actions)
+
+
+@eqx.filter_jit(donate="all-except-first")
+def resample_buffer(
+    kept: tuple[Any, ...],
+    add_act: Float[Array, "cap k act"],
+    add_q: Float[Array, "cap k"],
+    add_pi: Float[Array, "cap k"],
+) -> tuple[Float[Array, "cap k act"], Float[Array, "cap k"], Float[Array, "cap k"]]:
+    """Score every allocated row. Rows at or past ``size`` are zero and are not a new compile.
+
+    The previous ``add_*`` buffers are donated and overwritten. The policy, Q network and states
+    stay live for the rest of the update.
+    """
+    policy, q_net, states, key, n_actions, size = kept
+    capacity = states.shape[0]
+    n_chunks = (capacity + _CHUNK - 1) // _CHUNK
+    keys = jax.random.split(key, n_chunks)
+
+    def body(carry: Array, index: Array) -> tuple[Array, tuple[Array, Array, Array]]:
+        start = index * _CHUNK
+        rows = jnp.minimum(jnp.arange(_CHUNK) + start, capacity - 1)
+        actions, q_hat, log_density = _resample(policy, q_net, states[rows], keys[index], n_actions)
+        valid = (jnp.arange(_CHUNK) + start) < size
+        actions = jnp.where(valid[:, None, None], actions, 0)
+        q_hat = jnp.where(valid[:, None], q_hat, 0)
+        log_density = jnp.where(valid[:, None], log_density, 0)
+        return carry, (actions, q_hat, log_density)
+
+    _carry, (actions, q_hat, log_density) = jax.lax.scan(body, jnp.int32(0), jnp.arange(n_chunks))
+    width = n_chunks * _CHUNK
+    act = actions.shape[-1]
+    return (
+        add_act.at[:].set(actions.reshape((width, n_actions, act))[:capacity]),
+        add_q.at[:].set(q_hat.reshape((width, n_actions))[:capacity]),
+        add_pi.at[:].set(log_density.reshape((width, n_actions))[:capacity]),
+    )

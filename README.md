@@ -106,16 +106,59 @@ diagonal Gaussian policy from the action space.
 
 ## Epoch time
 
-Wall-clock seconds per epoch on one 4-CPU Linux machine. The PyTorch column is the previous implementation, pinned to one thread. The JAX column uses the default CPU thread pool. Both use the Hydra defaults (`seed=1`). A two-epoch run includes JAX compilation, so that column is the short-budget number. The longer run spreads compilation over more epochs.
+Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1`. PyTorch is the previous implementation pinned to one thread. JAX "before" is the port before the loop pass, measured after its compile. JAX "after" skips epoch 0 (the compile). Steady epochs then report 0 compiles from `jax_log_compiles`.
 
-| Run | PyTorch, 2 epochs | JAX, 2 epochs | JAX, longer run |
-|---|---:|---:|---:|
-| TRPO Pendulum-v1 | 2.676 | 2.997 | 1.578 (40 epochs) |
-| MPO Pendulum-v1 | 2.686 | 3.994 | 2.982 (40 epochs) |
-| TRPO HalfCheetah-v5 | 3.103 | 5.509 | 4.408 (8 epochs) |
-| MPO HalfCheetah-v5 | 3.270 | 4.462 | 2.657 (8 epochs) |
+| Run | PyTorch | JAX before | JAX after | Window after compile |
+|---|---:|---:|---:|---|
+| TRPO Pendulum-v1 | 2.676 | 1.615 | 0.336 | epochs 1–4 |
+| MPO Pendulum-v1 | 2.686 | 2.02, climbing to 2.98 over 40 epochs | 1.416 | epochs 1–11 (12k of the 50k buffer) |
+| TRPO HalfCheetah-v5 | 3.103 | 4.160 | 1.070 | epochs 1–3 |
+| MPO HalfCheetah-v5 | 3.270 | 2.03, climbing to 2.66 over 8 epochs | 1.475 | epochs 1–7 |
 
-On that same Pendulum seed the stochastic training return moved from -1172 to -178 over 40 TRPO epochs (160,000 steps) and from -1477 to -150 over 40 MPO epochs (40,000 steps). The README solve threshold of -150 is a greedy evaluation, which this check did not repeat. The 5-seed Pendulum and MountainCar budgets (200 to 800 epochs per seed) were not re-run here.
+Phases over those same windows, in seconds. Each cell is the mean before this pass, then the mean after.
+
+| Phase | TRPO Pendulum | TRPO HalfCheetah | MPO Pendulum | MPO HalfCheetah |
+|---|---:|---:|---:|---:|
+| act | 0.442 → 0.048 | 1.449 → 0.136 | 0.144 → 0.016 | 0.346 → 0.034 |
+| env step | 0.107 → 0.066 | 0.759 → 0.494 | 0.036 → 0.021 | — |
+| rollout | 0.664 → 0.193 | 2.504 → 0.809 | 0.220 → 0.064 | 0.451 → 0.083 |
+| TRPO step | 0.644 → 0.016 | 1.232 → 0.050 | — | — |
+| value fit | 0.247 → 0.081 | 0.362 → 0.151 | — | — |
+| resample | — | — | 0.261 → 0.469 | 0.242 → 0.573 |
+| temperature | — | — | 0.198 → 0.057 | 0.185 → 0.050 |
+| ranking | — | — | 0.074 → <0.005 | 0.082 → <0.005 |
+| Retrace | — | — | 0.021 → 0.094 across epochs 1–11 | 0.229 → 0.063 |
+| M-step | — | — | 0.124 → 0.036 | 0.172 → 0.065 |
+| critic | — | — | 0.699 → 0.686 | 0.605 → 0.594 |
+| device sync | — | — | climbed 0.06 → 0.22; now <0.01 | now <0.01 |
+
+Resample scans the whole allocation, so its cost is the full-buffer figure from the first steady epoch. Retrace skips empty episode slots. On Pendulum it grows with the stored episodes (0.021s at epoch 1, 0.094s at epoch 11) while the epoch stays between 1.39s and 1.44s. The slope is about 0.007s of Retrace per thousand new steps. HalfCheetah stores one episode per epoch, and the first eight share one slot chunk, so Retrace stayed flat in that window.
+
+On an earlier seed-1 run, before this pass, the stochastic Pendulum return moved from -1172 to -178 over 40 TRPO epochs and from -1477 to -150 over 40 MPO epochs. That learning curve was not repeated after the loop changes. The solve bar in the results table is a greedy evaluation. The 5-seed Pendulum and MountainCar budgets were not re-run.
+
+### Loops
+
+Each training method keeps its name and its maths. The inner iteration is a JAX loop. Timings are from this machine.
+
+| Loop | File | Became | Measured |
+|---|---|---|---|
+| Retrace backup `k = 1 .. bootstrap` | `operator/retrace_operator.py` `retrace_accumulate` | `lax.scan` | max abs err 6.7e-16. A 32×1000 backup is 0.0001s unrolled and 0.0006s as a scan (0.21×). The epoch win is the fused slot kernel: Pendulum Retrace 0.207s → 0.021s at the same fill |
+| Retrace chunks, host pad, Python loop | `operator/retrace_operator.py` `apply` | one `filter_jit`; `lax.cond` skips empty chunks; device scatter-add; donated `q` and `tq` | included in the Retrace timing above |
+| Resample chunks and a `.at.set` per chunk | `operator/resample_actions_operator.py` `apply` | `lax.scan` over a fixed chunk count; donated `add_act`, `add_q`, `add_pi` | flat 0.47s Pendulum / 0.57s HalfCheetah. The previous path started near 0.24s and rose with the buffer |
+| Ranking on `add_q[:size]` | `operator/np_rew_operator.py` | `filter_jit` on the full buffer, traced `size` | 0.07–0.10s → under 0.005s. Growing `size` no longer retraces |
+| Temperature L-BFGS-B with `float()` each iteration | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | `lax.while_loop` damped Newton on the same dual; traced `size` | (20000, 20) float64: 1.031s → 0.052s (19.7×). On a (256, 20) draw the optimum has KL 0.1000 against ε 0.1 |
+| TRPO gradient, Fisher, and Python conjugate gradient, with a new jit every epoch | `trust_region_gradient.py`, `conjugate_gradient.py` | one `filter_jit`; `cg_solve` is `lax.while_loop` | Pendulum TRPO step 0.644s → 0.016s (40×); HalfCheetah 1.232s → 0.050s (25×) |
+| Line search `while` with `float(tr_obj)` per probe | `trust_region_gradient.py` `line_search` | `_backtrack` `lax.while_loop`; one log copy; one parameter write | 10 probes on a 4000-step batch: 0.0036s → 0.0033s (1.10×) |
+| Value fit built a new `value_and_grad` every epoch | `value_functions/fc_v_networks.py` | module-level `_v_value_and_grad`. The driver remains scipy L-BFGS-B | Pendulum 0.247s → 0.081s (3.0×); HalfCheetah 0.362s → 0.151s (2.4×) |
+| Critic Adam Python loop | `value_functions/fc_q_networks.py` | `lax.scan`, with donated weights and Adam state | Pendulum critic stays 0.69s |
+| M-step Python loop on the default path | `maximum_a_posteriori_policy_optimization_algorithm.py` `_mpo_scan` | `lax.scan`, with donated weights, both Adam states, and the multiplier | Pendulum 0.124s → 0.036s (3.4×); HalfCheetah 0.172s → 0.065s (2.6×) |
+| GAE and TD reverse loops | `gae_operator.py`, `td_operator.py` | `lax.scan` | a few hundredths of a second after epoch 0 |
+| `policy.act` once per environment step | `continuous_policy.py`, `numpy_act.py` | NumPy matmul; weights cached on `id(params)` | HalfCheetah act 1.449s → 0.136s (11×); Pendulum 0.442s → 0.048s (9×) |
+| Gymnasium rollout `while` | `env/mcmc_env_wrapper.py` | stays Python, because `env.step` is not a JAX function | HalfCheetah env step 0.759s → 0.494s |
+| Replay `.at[start:end].set` with Python bounds | `replay_buffer.py` | one host pack, then `_insert_transitions` / `_shift_transitions` (`jnp.where`, traced start and length, donated buffers) | device sync stays under 0.01s, and steady MPO epochs compile 0 times |
+| Q evaluation over the K sampled actions | `fc_q_networks.py` `q_values` | one matmul with the action axis folded into the batch | counted inside resample and Retrace |
+
+Host `if` statements remain on concrete values: empty buffers, filter flags, and `n_envs == 1`. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. Scipy still reads the value-fit scalar and gradient on the host once per L-BFGS iteration; optax 0.2.8 has no L-BFGS to put inside `lax.scan`. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`.
 
 ## Architecture
 

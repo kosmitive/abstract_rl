@@ -84,35 +84,48 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
         return _v_loss(params, _f32(batch.states), _f32(batch["tv"]).reshape(-1), self.l2)
 
     def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
-        """L-BFGS on this batch. The jit closes over arrays, not over ``self``.
+        """L-BFGS on this batch.
 
-        ``VanillaGradient.perform_sgd`` is the same algorithm. This override keeps the compiled
-        objective from capturing the Python wrapper, which XLA cannot treat as a pytree.
+        ``VanillaGradient.perform_sgd`` is the same algorithm. The value-and-gradient is a module-level
+        jit, so a new epoch with the same batch shape does not compile again.
         """
         states = _f32(batch.states)
         targets = _f32(batch["tv"]).reshape(-1)
         flat0, unravel = ravel_module(self.params)
-        objective = eqx.filter_jit(lambda vector: _v_loss(unravel(vector), states, targets, self.l2))
-        value_and_grad = jax.jit(jax.value_and_grad(objective))
-        old = float(objective(flat0))
+        penalty = jnp.float32(self.l2)
+        old, _grad = _v_value_and_grad(self.params, states, targets, flat0, penalty)
 
         def closure(x: np.ndarray) -> tuple[float, np.ndarray]:
-            vector = jnp.asarray(x, dtype=jnp.float32)
-            loss, grad = value_and_grad(vector)
+            loss, grad = _v_value_and_grad(self.params, states, targets, jnp.asarray(x, dtype=jnp.float32), penalty)
             return float(loss), np.asarray(grad, dtype=np.float64)
 
         updated, _, _ = scipy.optimize.fmin_l_bfgs_b(closure, np.asarray(flat0, dtype=np.float64), maxiter=maxiter)
-        self.params = unravel(jnp.asarray(updated, dtype=jnp.float32))
+        updated_vector = jnp.asarray(updated, dtype=jnp.float32)
+        self.params = unravel(updated_vector)
         self.net = self.params
-        new = float(objective(jnp.asarray(updated, dtype=jnp.float32)))
-        self.cli.print(self.fmtstr % (curst, old, new))
+        new, _grad = _v_value_and_grad(self.params, states, targets, updated_vector, penalty)
+        self.cli.print(self.fmtstr % (curst, float(old), float(new)))
+
+
+@eqx.filter_jit
+def _v_value_and_grad(
+    network: MultilayerPerceptron,
+    states: Float[Array, "batch obs"],
+    targets: Float[Array, " batch"],
+    vector: Float[Array, " params"],
+    l2: Float[Array, ""],
+) -> tuple[Float[Array, ""], Float[Array, " params"]]:
+    """Loss and flat gradient. ``l2`` is an array so a new penalty value does not recompile."""
+    _flat, unravel = ravel_module(network)
+    loss, grad = jax.value_and_grad(lambda candidate: _v_loss(unravel(candidate), states, targets, l2))(vector)
+    return loss, grad
 
 
 def _v_loss(
     network: MultilayerPerceptron,
     states: Float[Array, "batch obs"],
     targets: Float[Array, " batch"],
-    l2: float,
+    l2: float | Float[Array, ""],
 ) -> Float[Array, ""]:
     prediction = network.forward(states).reshape(-1)
     flat, _ = ravel_module(network)

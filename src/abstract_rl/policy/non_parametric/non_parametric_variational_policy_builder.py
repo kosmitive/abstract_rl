@@ -30,8 +30,10 @@ class NonParametricVariationalPolicyBuilder:
         """Minimise the dual on every stored Q sample and log the temperature."""
         collection = self.mc.get("tc")
         device = getattr(collection, "device", None)
+        stored = None
         if device is not None and device.size:
-            q_values = device.add_q[: device.size]
+            q_values = device.add_q
+            stored = int(device.size)
         else:
             q_values = np.concatenate([np.asarray(traj["add_q"]) for traj in collection.trajectories()])
         eta = find_optimal_temperature(
@@ -40,6 +42,7 @@ class NonParametricVariationalPolicyBuilder:
             float(np.reshape(self.eta, (-1,))[0]),
             self.non_parametric_variational_lr,
             int(self.max_steps),
+            stored,
         )
         self.eta = np.asarray(eta, dtype=np.float32)
         self.log.log({"eta": self.eta.reshape(-1)})

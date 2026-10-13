@@ -312,6 +312,14 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         _fill_target_stats(replay, self.mc.get("policy", target=True).params)
         diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
         diff, self.opt_outer, self.lm, self.opt_inner, main, multipliers, constraints = _mpo_scan(
+            (
+                replay.states,
+                replay.add_act,
+                replay.ranking,
+                replay.target_stats,
+                self.mc.rng.split(),
+                jnp.int32(replay.size),
+            ),
             diff,
             static,
             self.opt_outer,
@@ -319,12 +327,6 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             self.opt_inner,
             self.tx_outer,
             self.tx_inner,
-            replay.states,
-            replay.add_act,
-            replay.ranking,
-            replay.target_stats,
-            self.mc.rng.split(),
-            jnp.int32(replay.size),
             num_steps,
             batch_size,
             jnp.float32(self.v[0]),
@@ -470,22 +472,33 @@ def _full_lagrangian(
 
 
 def _fill_target_stats(replay: ReplayBuffer, target: GaussianParams) -> None:
-    """Cache the target policy's sufficient statistics for the KL constraint."""
-    offset = 0
-    width = replay.states.shape[-1]
-    while offset < replay.size:
-        count = min(_STATS_CHUNK, replay.size - offset)
-        padded = jnp.zeros((_STATS_CHUNK, width), dtype=jnp.float32)
-        padded = padded.at[:count].set(replay.states[offset : offset + count])
-        stats = _target_forward(target, padded)
-        replay.target_stats = replay.target_stats.at[offset : offset + count].set(stats[:count])
-        offset += count
+    """Cache the target policy's sufficient statistics for the KL constraint.
+
+    One scan over the allocation. ``size`` is traced, so the compile stays put as the replay fills.
+    """
+    if replay.size == 0:
+        return
+    replay.target_stats = _target_stats_all(target, replay.states, jnp.int32(replay.size))
 
 
 @eqx.filter_jit
-def _target_forward(params: GaussianParams, states: Float[Array, "batch obs"]) -> Float[Array, "batch stats"]:
-    """Sufficient statistics of a frozen policy. Jitted once for the chunk size."""
-    return jax.lax.stop_gradient(forward(params, states))
+def _target_stats_all(
+    target: GaussianParams, states: Float[Array, "cap obs"], size: Array
+) -> Float[Array, "cap stats"]:
+    """Sufficient statistics of a frozen policy for every allocated row. The tail is zero."""
+    capacity = states.shape[0]
+    n_chunks = (capacity + _STATS_CHUNK - 1) // _STATS_CHUNK
+
+    def body(carry: Array, index: Array) -> tuple[Array, Array]:
+        start = index * _STATS_CHUNK
+        rows = jnp.minimum(jnp.arange(_STATS_CHUNK) + start, capacity - 1)
+        stats = jax.lax.stop_gradient(forward(target, states[rows]))
+        valid = (jnp.arange(_STATS_CHUNK) + start) < size
+        return carry, jnp.where(valid[:, None], stats, 0)
+
+    _carry, stats = jax.lax.scan(body, jnp.int32(0), jnp.arange(n_chunks))
+    width = n_chunks * _STATS_CHUNK
+    return stats.reshape((width, stats.shape[-1]))[:capacity]
 
 
 def _lagrangian(
@@ -536,8 +549,16 @@ def _lagrangian(
     return main + jnp.exp(multiplier) * constraint, main, constraint
 
 
-@eqx.filter_jit
+@eqx.filter_jit(donate="all-except-first")
 def _mpo_scan(
+    data: tuple[
+        Float[Array, "cap obs"],
+        Float[Array, "cap k act"],
+        Float[Array, "cap k"],
+        Float[Array, "cap stats"],
+        PRNGKeyArray,
+        Array,
+    ],
     diff: Any,
     static: Any,
     opt_outer: Any,
@@ -545,12 +566,6 @@ def _mpo_scan(
     opt_inner: Any,
     tx_outer: Any,
     tx_inner: Any,
-    states: Float[Array, "cap obs"],
-    actions: Float[Array, "cap k act"],
-    log_weights: Float[Array, "cap k"],
-    target_stats: Float[Array, "cap stats"],
-    key: PRNGKeyArray,
-    size: Array,
     num_steps: int,
     batch_size: int,
     epsilon: Float[Array, ""],
@@ -558,10 +573,14 @@ def _mpo_scan(
 ) -> tuple[Any, Any, Float[Array, ""], Any, Float[Array, " steps"], Float[Array, " steps"], Float[Array, " steps"]]:
     """Scan the max step (policy) and the min step (Lagrange multiplier).
 
+    Replay tensors are the first argument and are not donated. The policy leaves, both Adam
+    states and the multiplier are donated into the returned values.
+
     Returns:
         Updated policy leaves, policy optimiser state, multiplier, dual optimiser state,
         and the per-step main objective, raw multiplier and constraint.
     """
+    states, actions, log_weights, target_stats, key, size = data
 
     def body(
         carry: tuple[Any, Any, Float[Array, ""], Any, PRNGKeyArray],

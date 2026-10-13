@@ -36,12 +36,17 @@ def q_values(
     states: Float[Array, "batch obs"],
     actions: Float[Array, "batch k act"],
 ) -> Float[Array, "batch k"]:
-    """Q values of K actions per state, vmapped over the action axis."""
+    """Q values of K actions per state.
 
-    def one(action: Float[Array, "batch act"]) -> Float[Array, " batch"]:
-        return q_forward(network, states, action).reshape(-1)
-
-    return jax.vmap(one, in_axes=1, out_axes=1)(actions)
+    The action axis is folded into the batch so the network runs as one matmul. The values
+    match a map over that axis.
+    """
+    batch, k, _act = actions.shape
+    flat_states = jnp.broadcast_to(states[:, None, :], (batch, k, states.shape[-1])).reshape(
+        (batch * k, states.shape[-1])
+    )
+    flat_actions = actions.reshape((batch * k, actions.shape[-1]))
+    return q_forward(network, flat_states, flat_actions).reshape((batch, k))
 
 
 def estimate_v(
@@ -126,15 +131,11 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
             return
         diff, static = eqx.partition(self.params, eqx.is_inexact_array)
         diff, self.opt_state, pre, post = _critic_scan(
+            (replay.states, replay.actions, replay.tq, self.mc.rng.split(), jnp.int32(replay.size)),
             diff,
             static,
             self.opt_state,
             self.tx,
-            replay.states,
-            replay.actions,
-            replay.tq,
-            self.mc.rng.split(),
-            jnp.int32(replay.size),
             num_steps,
             batch_size,
         )
@@ -182,21 +183,22 @@ def _copy_leaf(value: object) -> object:
     return value
 
 
-@eqx.filter_jit
+@eqx.filter_jit(donate="all-except-first")
 def _critic_scan(
+    data: tuple[Float[Array, "cap obs"], Float[Array, "cap act"], Float[Array, " cap"], PRNGKeyArray, Array],
     diff: Any,
     static: Any,
     opt_state: Any,
     tx: Any,
-    states: Float[Array, "cap obs"],
-    actions: Float[Array, "cap act"],
-    targets: Float[Array, " cap"],
-    key: PRNGKeyArray,
-    size: Array,
     num_steps: int,
     batch_size: int,
 ) -> tuple[Any, Any, Float[Array, " steps"], Float[Array, " steps"]]:
-    """Scan Adam updates. Returns the new weights, optimiser state, and pre/post losses."""
+    """Scan Adam updates. Returns the new weights, optimiser state, and pre/post losses.
+
+    Replay arrays are the first argument and are not donated. The weight leaves and the Adam
+    state are donated into the values this function returns.
+    """
+    states, actions, targets, key, size = data
 
     def loss_on(weights: Any, idx: Array) -> Float[Array, ""]:
         network = eqx.combine(weights, static)

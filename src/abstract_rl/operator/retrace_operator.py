@@ -8,6 +8,9 @@ with an empty product equal to 1 and ``c_s = λ min(1, π(a_s|s_s) / μ(a_s|s_s)
 ``c_t`` of the current step is not part of that product; the trace starts at the next action.
 """
 
+import math
+from typing import Any
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -77,42 +80,54 @@ class RetraceOperator(TrajectoryOperator):
     def apply(self, replay: ReplayBuffer, key: PRNGKeyArray) -> None:
         """Write ``q`` and ``tq`` for every stored transition.
 
+        Episodes are gathered on device into a slot count fixed by the buffer capacity, so the
+        kernel shape does not follow the number of stored episodes. Empty slots are skipped.
+
         Args:
             replay: Replay whose behaviour log probabilities are the denominator of the trace.
             key: Random key for the action samples inside the value estimate.
         """
         if replay.size == 0 or not replay.episodes:
             return
-        time_limit = replay.time_limit
-        q_rows: list[Array] = []
-        tq_rows: list[Array] = []
-        indices: list[Array] = []
-        for start in range(0, len(replay.episodes), _CHUNK):
-            group = replay.episodes[start : start + _CHUNK]
+        pad = replay.pad_limit
+        slots = _slot_count(replay.capacity, pad)
+        q = replay.q
+        tq = replay.tq
+        reset = True
+        for group_start in range(0, len(replay.episodes), slots):
+            group = replay.episodes[group_start : group_start + slots]
+            starts = np.zeros((slots,), dtype=np.int32)
+            lengths = np.zeros((slots,), dtype=np.int32)
+            for index, (episode_start, length) in enumerate(group):
+                starts[index] = int(episode_start)
+                lengths[index] = min(int(length), pad)
             key, sub = jax.random.split(key)
-            padded = _pad(replay, group, time_limit)
-            q_hat, tq_hat = _retrace_chunk(
-                self.q_network.params,
-                self.policy.params,
-                *padded,
-                sub,
-                jnp.float32(self.discount),
-                jnp.float32(self.ret_lambda),
-                self.bootstrap,
-                _V_SAMPLES,
+            q, tq = _retrace_slots(
+                (
+                    self.q_network.params,
+                    self.policy.params,
+                    replay.states,
+                    replay.actions,
+                    replay.rewards,
+                    replay.next_states,
+                    replay.dones,
+                    replay.log_probs,
+                    jnp.asarray(starts),
+                    jnp.asarray(lengths),
+                    sub,
+                    jnp.float32(self.discount),
+                    jnp.float32(self.ret_lambda),
+                    self.bootstrap,
+                    _V_SAMPLES,
+                    pad,
+                    jnp.bool_(reset),
+                ),
+                q,
+                tq,
             )
-            for row, (episode_start, length) in enumerate(group):
-                if length <= 0:
-                    continue
-                length = min(length, time_limit)
-                indices.append(jnp.arange(episode_start, episode_start + length))
-                q_rows.append(q_hat[row, :length])
-                tq_rows.append(tq_hat[row, :length])
-        if not indices:
-            return
-        index = jnp.concatenate(indices)
-        replay.q = replay.q.at[index].set(jnp.concatenate(q_rows))
-        replay.tq = replay.tq.at[index].set(jnp.concatenate(tq_rows))
+            reset = False
+        replay.q = q
+        replay.tq = tq
 
 
 def retrace_accumulate(
@@ -140,58 +155,37 @@ def retrace_accumulate(
     valid_now = jnp.arange(time)[None, :] < lengths[:, None]
     targets = jnp.where(valid_now, q + td, 0.0)
     coeff = jnp.ones_like(q)
-    for k in range(1, bootstrap):
-        if k >= time:
-            break
-        valid = (jnp.arange(time - k)[None, :] + k) < lengths[:, None]
-        updated = coeff[:, : time - k] * discount * coefficients[:, k:]
-        updated = jnp.where(valid, updated, 0.0)
-        targets = targets.at[:, : time - k].add(jnp.where(valid, updated * td[:, k:], 0.0))
-        coeff = coeff.at[:, : time - k].set(updated)
+    # ``bootstrap`` is a static integer. One scan step is the old ``k`` iteration: the trace
+    # coefficient at t multiplies ``c_{t+k}`` and the TD error at ``t+k``.
+    if bootstrap > 1:
+
+        def step(
+            carry: tuple[Float[Array, "episodes time"], Float[Array, "episodes time"]], k: Array
+        ) -> tuple[tuple[Float[Array, "episodes time"], Float[Array, "episodes time"]], None]:
+            targets_k, coeff_k = carry
+            offset = jnp.arange(time) + k
+            in_range = offset < time
+            source = jnp.minimum(offset, time - 1)
+            valid = in_range[None, :] & (offset[None, :] < lengths[:, None])
+            updated = jnp.where(valid, coeff_k * discount * coefficients[:, source], 0.0)
+            targets_k = targets_k + jnp.where(valid, updated * td[:, source], 0.0)
+            coeff_k = jnp.where(in_range[None, :], updated, coeff_k)
+            return (targets_k, coeff_k), None
+
+        (targets, _coeff), _ = jax.lax.scan(step, (targets, coeff), jnp.arange(1, bootstrap))
     return targets
 
 
-def _pad(
-    replay: ReplayBuffer, group: list[tuple[int, int]], time_limit: int
-) -> tuple[
-    Float[Array, "chunk time obs"],
-    Float[Array, "chunk time act"],
-    Float[Array, "chunk time"],
-    Float[Array, "chunk time obs"],
-    Float[Array, "chunk time"],
-    Float[Array, "chunk time"],
-    Array,
-]:
-    """Pad a chunk of episodes to ``[_CHUNK, time_limit]``."""
-    obs, act = replay.obs_dim, replay.act_dim
-    states = np.zeros((_CHUNK, time_limit, obs), dtype=np.float32)
-    actions = np.zeros((_CHUNK, time_limit, act), dtype=np.float32)
-    rewards = np.zeros((_CHUNK, time_limit), dtype=np.float32)
-    next_states = np.zeros((_CHUNK, time_limit, obs), dtype=np.float32)
-    dones = np.ones((_CHUNK, time_limit), dtype=np.float32)
-    log_probs = np.zeros((_CHUNK, time_limit), dtype=np.float32)
-    lengths = np.zeros((_CHUNK,), dtype=np.int32)
-    for index, (start, length) in enumerate(group):
-        length = min(int(length), time_limit)
-        lengths[index] = length
-        states[index, :length] = np.asarray(replay.states[start : start + length])
-        actions[index, :length] = np.asarray(replay.actions[start : start + length])
-        rewards[index, :length] = np.asarray(replay.rewards[start : start + length])
-        next_states[index, :length] = np.asarray(replay.next_states[start : start + length])
-        dones[index, :length] = np.asarray(replay.dones[start : start + length])
-        log_probs[index, :length] = np.asarray(replay.log_probs[start : start + length])
-    return (
-        jnp.asarray(states),
-        jnp.asarray(actions),
-        jnp.asarray(rewards),
-        jnp.asarray(next_states),
-        jnp.asarray(dones),
-        jnp.asarray(log_probs),
-        jnp.asarray(lengths),
-    )
+def _slot_count(capacity: int, pad_limit: int) -> int:
+    """Episode slots for one compiled call. The count depends on capacity, not on the fill level."""
+    guess = math.ceil(capacity / max(pad_limit, 1)) + _CHUNK
+    guess = max(guess, _CHUNK)
+    remainder = guess % _CHUNK
+    if remainder:
+        guess += _CHUNK - remainder
+    return guess
 
 
-@eqx.filter_jit
 def _retrace_chunk(
     q_net: MultilayerPerceptron,
     policy: GaussianParams,
@@ -219,3 +213,96 @@ def _retrace_chunk(
     coefficients = jnp.minimum(jnp.exp(pi_log_prob - behaviour_log_prob), 1.0) * trace_lambda
     td = rewards + discount * next_v - q
     return q, retrace_accumulate(q, td, coefficients, discount, bootstrap, lengths)
+
+
+def _scatter_add(
+    flat: Float[Array, " cap"],
+    rows: Float[Array, "slots time"],
+    starts: Array,
+    lengths: Array,
+) -> Float[Array, " cap"]:
+    """Add each episode row into the flat buffer. Padded steps contribute nothing."""
+    time = rows.shape[1]
+    offset = jnp.arange(time)
+    index = starts[:, None] + offset[None, :]
+    valid = (offset[None, :] < lengths[:, None]) & (index < flat.shape[0])
+    safe = jnp.where(valid, index, 0)
+    contrib = jnp.where(valid, rows, 0)
+    return flat.at[safe.reshape(-1)].add(contrib.reshape(-1))
+
+
+@eqx.filter_jit(donate="all-except-first")
+def _retrace_slots(
+    kept: tuple[Any, ...],
+    q_buffer: Float[Array, " cap"],
+    tq_buffer: Float[Array, " cap"],
+) -> tuple[Float[Array, " cap"], Float[Array, " cap"]]:
+    """Retrace for a fixed number of episode slots, scattered into the flat buffers.
+
+    The first argument is kept (replay contents and the networks). ``q_buffer`` and ``tq_buffer``
+    are donated and replaced. ``pad`` is the constructor time limit. Empty slots skip the Q network.
+    A true ``reset`` flag clears the buffers before the scatter, so a second group can add to them.
+    """
+    (
+        q_net,
+        policy,
+        states,
+        actions,
+        rewards,
+        next_states,
+        dones,
+        behaviour_log_prob,
+        starts,
+        lengths,
+        key,
+        discount,
+        trace_lambda,
+        bootstrap,
+        v_samples,
+        pad,
+        reset,
+    ) = kept
+    n_slots = starts.shape[0]
+    n_chunks = n_slots // _CHUNK
+    capacity = states.shape[0]
+    time = jnp.arange(pad)
+
+    def body(key_: PRNGKeyArray, index: Array) -> tuple[PRNGKeyArray, tuple[Array, Array]]:
+        key_, sub = jax.random.split(key_)
+        slot = jax.lax.dynamic_slice(starts, (index * _CHUNK,), (_CHUNK,))
+        lens = jax.lax.dynamic_slice(lengths, (index * _CHUNK,), (_CHUNK,))
+
+        def run(sub_key: PRNGKeyArray) -> tuple[Array, Array]:
+            index_t = jnp.clip(slot[:, None] + time[None, :], 0, capacity - 1)
+            mask = time[None, :] < lens[:, None]
+            q_hat, tq_hat = _retrace_chunk(
+                q_net,
+                policy,
+                states[index_t],
+                actions[index_t],
+                jnp.where(mask, rewards[index_t], 0),
+                next_states[index_t],
+                jnp.where(mask, dones[index_t], 1),
+                jnp.where(mask, behaviour_log_prob[index_t], 0),
+                lens,
+                sub_key,
+                discount,
+                trace_lambda,
+                bootstrap,
+                v_samples,
+            )
+            return jnp.where(mask, q_hat, 0), jnp.where(mask, tq_hat, 0)
+
+        def skip(_sub_key: PRNGKeyArray) -> tuple[Array, Array]:
+            zeros = jnp.zeros((_CHUNK, pad), dtype=jnp.float32)
+            return zeros, zeros
+
+        q_hat, tq_hat = jax.lax.cond(jnp.any(lens > 0), run, skip, sub)
+        return key_, (q_hat, tq_hat)
+
+    _key, (q_hat, tq_hat) = jax.lax.scan(body, key, jnp.arange(n_chunks))
+    q_rows = q_hat.reshape((n_slots, pad))
+    tq_rows = tq_hat.reshape((n_slots, pad))
+    q_base = jnp.where(reset, jnp.zeros_like(q_buffer), q_buffer)
+    tq_base = jnp.where(reset, jnp.zeros_like(tq_buffer), tq_buffer)
+    return _scatter_add(q_base, q_rows, starts, lengths), _scatter_add(tq_base, tq_rows, starts, lengths)

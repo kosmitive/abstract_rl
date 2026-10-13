@@ -64,3 +64,18 @@ def test_entropy_refuses_squashed_policy(make_pendulum_mc):
     assert policy.squash
     with pytest.raises(NotImplementedError):
         policy.entropy(None)
+
+
+def test_numpy_rollout_matches_the_jax_density(make_pendulum_mc):
+    """The environment loop evaluates the policy in NumPy. The stored log density must match JAX."""
+    policy = _policy(make_pendulum_mc, UnivariateGaussianPolicy)
+    states = np.random.default_rng(0).normal(size=(8, policy.mc.env.observation_dim)).astype(np.float32)
+    actions, log_density = policy.act(states, deterministic=True)
+    expected = np.asarray(policy.mode(states))
+    assert np.allclose(actions, expected, atol=1e-5)
+    jax_log = np.asarray(policy.log_prob(actions, states=states)).reshape(-1)
+    assert np.allclose(log_density, jax_log, atol=1e-5)
+    sampled, sampled_log = policy.act(states, deterministic=False)
+    jax_sampled = np.asarray(policy.log_prob(sampled, states=states)).reshape(-1)
+    assert np.allclose(sampled_log, jax_sampled, atol=1e-5)
+    assert sampled.shape == (8, 1)

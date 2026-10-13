@@ -134,8 +134,10 @@ class TrajectoryCollection:
         """
         if self.device is None:
             return
+        # One device-to-host copy of the packed field, then a view per episode.
+        host = np.asarray(values)
         for (start, length), trajectory in zip(self.device.episodes, self.__trajectories):
-            trajectory[name] = np.asarray(values[start : start + length])
+            trajectory[name] = host[start : start + length]
 
     def __iter__(self) -> Iterator[Trajectory]:
         return iter(self.__trajectories)

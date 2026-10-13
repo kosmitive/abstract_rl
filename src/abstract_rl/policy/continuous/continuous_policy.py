@@ -15,8 +15,6 @@ from abstract_rl.misc.flat_params import copy_module
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.gaussian_math import (
     GaussianParams,
-    act_deterministic,
-    act_stochastic,
     entropy_from_sigma,
     forward,
     head_activations,
@@ -27,10 +25,11 @@ from abstract_rl.policy.continuous.gaussian_math import (
     sample,
     sigma_is_softplus,
 )
+from abstract_rl.policy.continuous.numpy_act import NumpyPolicy, act_numpy, extract_numpy_policy, seed_generator
 from abstract_rl.policy.policy import Policy
 
-_ACT_STOCHASTIC = eqx.filter_jit(act_stochastic)
-_ACT_DETERMINISTIC = eqx.filter_jit(act_deterministic)
+_LIKELIHOOD = eqx.filter_jit(likelihood_ratio)
+_KL = eqx.filter_jit(kl_divergence)
 
 
 def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate: bool) -> GaussianParams:
@@ -112,6 +111,9 @@ class ContinuousPolicy(Policy, Syncable):
         super().__init__(mc)
         self.flat_actions = flat_actions
         self.params = build_gaussian_params(mc, mc.rng.split(), univariate=flat_actions)
+        self._act_cache_id = -1
+        self._act_cache: NumpyPolicy | None = None
+        self._act_rng: np.random.Generator | None = None
 
     @property
     def network(self) -> MultilayerPerceptron:
@@ -194,7 +196,11 @@ class ContinuousPolicy(Policy, Syncable):
         return drawn
 
     def act(self, states: np.ndarray, deterministic: bool) -> tuple[np.ndarray, np.ndarray]:
-        """Jitted action selection for environment interaction.
+        """Action selection for environment interaction.
+
+        The density matches ``log_prob``. Weights are copied to the host once per parameter
+        object, then every step is a NumPy matmul. Stochastic steps draw noise from a generator
+        seeded from the run key instead of splitting a JAX key per step.
 
         Args:
             states: Batch of observations, shape ``[batch, obs]``.
@@ -203,18 +209,39 @@ class ContinuousPolicy(Policy, Syncable):
         Returns:
             Actions ``[batch, act]`` and log probabilities ``[batch]``, both NumPy arrays.
         """
-        obs = _f32(states)
+        obs = np.asarray(states, dtype=np.float32)
+        if obs.ndim == 1:
+            obs = obs.reshape(1, -1)
+        spec = self._numpy_policy()
         if deterministic:
-            actions, log_density = _ACT_DETERMINISTIC(self.params, obs)
+            actions, log_density = act_numpy(spec, obs, None)
         else:
-            actions, log_density = _ACT_STOCHASTIC(self.params, obs, self.mc.rng.split())
-        return np.asarray(actions), np.asarray(log_density)
+            noise = self._action_generator().standard_normal((obs.shape[0], spec.center.shape[0]), dtype=np.float32)
+            actions, log_density = act_numpy(spec, obs, noise)
+        return actions, log_density
+
+    def _numpy_policy(self) -> NumpyPolicy:
+        cache_id = id(self.params)
+        if self._act_cache is not None and self._act_cache_id == cache_id:
+            return self._act_cache
+        spec = extract_numpy_policy(self.params)
+        self._act_cache_id = cache_id
+        self._act_cache = spec
+        return spec
+
+    def _action_generator(self) -> np.random.Generator:
+        if self._act_rng is None:
+            self._act_rng = seed_generator(self.mc.rng.split())
+        return self._act_rng
 
     def clone(self) -> "ContinuousPolicy":
         other = self.__class__.__new__(self.__class__)
         other.mc = self.mc
         other.flat_actions = self.flat_actions
         other.params = copy_module(self.params)
+        other._act_cache_id = -1
+        other._act_cache = None
+        other._act_rng = None
         return other
 
     def sync(self, v: Any) -> Any:
@@ -239,11 +266,11 @@ class ContinuousPolicy(Policy, Syncable):
         """Analytic KL against the target policy registered in the model configuration."""
         target = self.mc.get("policy", True).params
         stats = None if suff_stats is None else _f32(suff_stats)
-        return kl_divergence(self.params, target, _f32(batch.states), stats, mode, est)
+        return _KL(self.params, target, _f32(batch.states), stats, mode, est)
 
     def likelihood_ratio(self, batch: Batch) -> Float[Array, ""]:
         """Negative standardised likelihood-ratio surrogate of ``batch``."""
-        return likelihood_ratio(
+        return _LIKELIHOOD(
             self.params,
             _f32(batch.states),
             _f32(batch.actions),

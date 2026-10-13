@@ -20,12 +20,20 @@ class FilterOperator(TrajectoryOperator):
         self.filter_rewards = conf["rewards"]
 
     def transform_all(self, trajectories: TrajectoryCollection | list[Trajectory]) -> None:
-        """Filter every trajectory, then refresh the on-device copy when one is attached."""
+        """Filter every trajectory, then refresh the on-device copy when a filter changed it.
+
+        With both filters off the merge that just ran already uploaded the episodes. A second
+        upload would compile a new scatter each time the stored length changes.
+        """
         if isinstance(trajectories, TrajectoryCollection):
             for trajectory in trajectories.trajectories():
                 self.transform(trajectory)
-            trajectories._sync_device()
-            return
+            match (bool(self.filter_states), bool(self.filter_rewards)):
+                case (False, False):
+                    return
+                case _:
+                    trajectories._sync_device()
+                    return
         super().transform_all(trajectories)
 
     def transform(self, trajectory: Trajectory) -> None:

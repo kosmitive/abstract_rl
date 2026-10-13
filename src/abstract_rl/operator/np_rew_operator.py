@@ -1,5 +1,6 @@
 """Non-parametric E-step weights."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -45,11 +46,23 @@ class VariationalRankingOperator(TrajectoryOperator):
         super().transform_all(trajectories)
 
     def apply(self, replay: ReplayBuffer) -> None:
-        """Write ``ranking`` for the stored extra actions. ``hook`` must have run first."""
+        """Write ``ranking`` for the stored extra actions. ``hook`` must have run first.
+
+        The softmax runs on the full allocation. ``size`` is a traced scalar, so filling the
+        replay does not compile a new kernel.
+        """
         if replay.size == 0:
             return
-        weights = e_step_log_weights(replay.add_q[: replay.size], float(np.reshape(self.b.eta, ())))
-        replay.ranking = replay.ranking.at[: replay.size].set(weights)
+        eta = jnp.float32(float(np.reshape(self.b.eta, ())))
+        replay.ranking = _ranking_full(replay.add_q, jnp.int32(replay.size), eta)
+
+
+@eqx.filter_jit
+def _ranking_full(q_values: Float[Array, "cap k"], size: Array, eta: Float[Array, ""]) -> Float[Array, "cap k"]:
+    """Per-state log weights for the stored prefix. Rows past ``size`` are zero."""
+    weights = jax.nn.log_softmax(q_values / eta, axis=-1)
+    valid = jnp.arange(q_values.shape[0]) < size
+    return jnp.where(valid[:, None], weights, 0)
 
 
 def e_step_log_weights(q_values: Float[Array, "batch k"] | np.ndarray, eta: float) -> Float[Array, "batch k"]:

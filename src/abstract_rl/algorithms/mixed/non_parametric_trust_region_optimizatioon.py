@@ -3,7 +3,6 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.optimize
 from jaxtyping import Array, Float
 
 from abstract_rl.misc.cli_printer import CliPrinter
@@ -27,7 +26,87 @@ def temperature_dual(q_values: Float[Array, "batch k"], eta: Float[Array, ""], e
     return eta * eps + jnp.mean(max_q) + eta * jnp.mean(log_mean_exp)
 
 
-_dual_and_grad = jax.jit(jax.value_and_grad(temperature_dual, argnums=1))
+def masked_temperature_dual(
+    q_values: Float[Array, "batch k"], size: Array, eta: Float[Array, ""], eps: float
+) -> Float[Array, ""]:
+    """``temperature_dual`` averaged over the first ``size`` rows of a fixed allocation.
+
+    The tail is excluded from the mean, which is the same dual as passing ``q_values[:size]``
+    without compiling a new shape every time the replay grows.
+    """
+    valid = (jnp.arange(q_values.shape[0]) < size).astype(q_values.dtype)
+    absent = jnp.array(-1.0e30, dtype=q_values.dtype)
+    present = valid[:, None] > 0
+    max_q = jnp.max(jnp.where(present, q_values, absent), axis=1, keepdims=True)
+    shifted = jnp.where(present, (q_values - max_q) / eta, absent)
+    log_mean_exp = jax.nn.logsumexp(shifted, axis=1) - jnp.log(q_values.shape[1])
+    count = jnp.maximum(jnp.sum(valid), 1.0)
+    return eta * eps + jnp.sum(max_q[:, 0] * valid) / count + eta * jnp.sum(log_mean_exp * valid) / count
+
+
+def _masked_stats(q_values: Float[Array, "batch k"], size: Array) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """Mean and standard deviation of the stored prefix, for the temperature log line."""
+    valid = (jnp.arange(q_values.shape[0]) < size).astype(q_values.dtype)
+    count = jnp.maximum(jnp.sum(valid), 1.0) * q_values.shape[1]
+    present = valid[:, None] > 0
+    mean = jnp.sum(jnp.where(present, q_values, 0)) / count
+    variance = jnp.sum(jnp.where(present, jnp.square(q_values - mean), 0)) / count
+    return mean, jnp.sqrt(variance)
+
+
+_masked_stats_jit = jax.jit(_masked_stats)
+
+
+@jax.jit
+def _newton_temperature(
+    q_values: Float[Array, "batch k"],
+    size: Array,
+    eta0: Float[Array, ""],
+    eps: float,
+    max_steps: int,
+) -> tuple[Float[Array, ""], Array, Float[Array, ""]]:
+    """Newton steps on the scalar dual. The minimum is the same point L-BFGS-B was solving for.
+
+    The dual is convex in the temperature, so a damped Newton step reaches that minimum without
+    a host synchronisation on every iteration.
+    """
+
+    def loss(eta: Float[Array, ""]) -> Float[Array, ""]:
+        return masked_temperature_dual(q_values, size, eta, eps)
+
+    def cond(state: tuple[Float[Array, ""], Array, Array, Float[Array, ""]]) -> Array:
+        _eta, step, done, _dual = state
+        return (step < max_steps) & (~done)
+
+    def body(
+        state: tuple[Float[Array, ""], Array, Array, Float[Array, ""]],
+    ) -> tuple[Float[Array, ""], Array, Array, Float[Array, ""]]:
+        eta, step, _done, dual = state
+        grad = jax.grad(loss)(eta)
+        hess = jnp.maximum(jax.grad(jax.grad(loss))(eta), 1e-12)
+
+        def shrink(
+            carry: tuple[Float[Array, ""], Float[Array, ""], Array], alpha: Float[Array, ""]
+        ) -> tuple[tuple[Float[Array, ""], Float[Array, ""], Array], None]:
+            best, best_loss, found = carry
+            trial = jnp.clip(eta - alpha * grad / hess, 1e-6, 1e6)
+            value = loss(trial)
+            take = (value <= dual) & (~found) & jnp.isfinite(value)
+            best = jnp.where(take, trial, best)
+            best_loss = jnp.where(take, value, best_loss)
+            return (best, best_loss, found | take), None
+
+        alphas = jnp.asarray([1.0, 0.5, 0.25, 0.125, 1e-2], dtype=jnp.float64)
+        (nxt, nxt_loss, found), _unused = jax.lax.scan(shrink, (eta, dual, jnp.bool_(False)), alphas)
+        done = (jnp.abs(grad) < 1e-6) | (~found)
+        return jnp.where(found, nxt, eta), step + jnp.int32(1), done, jnp.where(found, nxt_loss, dual)
+
+    eta, steps, _done, dual = jax.lax.while_loop(
+        cond,
+        body,
+        (jnp.clip(eta0, 1e-6, 1e6), jnp.int32(0), jnp.bool_(False), loss(jnp.clip(eta0, 1e-6, 1e6))),
+    )
+    return eta, steps, dual
 
 
 def find_optimal_temperature(
@@ -36,8 +115,9 @@ def find_optimal_temperature(
     eta0: float = 1.0,
     lr: float | None = None,
     max_steps: int = 200,
+    size: int | None = None,
 ) -> Float[Array, " 1"]:
-    """Minimise the convex temperature dual with L-BFGS-B.
+    """Minimise the convex temperature dual.
 
     Args:
         q_values: Q samples, shape ``[batch, k]``.
@@ -45,6 +125,8 @@ def find_optimal_temperature(
         eta0: Initial temperature.
         lr: Unused. Kept so older call sites still pass a learning rate.
         max_steps: Iteration cap.
+        size: How many leading rows are real samples. ``None`` uses every row. Passing the
+            replay capacity with this limit keeps the compiled dual fixed while the buffer fills.
 
     Returns:
         Optimal temperature, shape ``[1]``, float32.
@@ -52,6 +134,8 @@ def find_optimal_temperature(
     del lr
     cli = CliPrinter().instance
     q_values = jnp.asarray(q_values, dtype=jnp.float64)
+    limit = jnp.int32(q_values.shape[0] if size is None else size)
+    mean, std = _masked_stats_jit(q_values, limit)
     cli.empty().print("solve for q(a|s)").empty()
     with cli.indent():
         cli.print("max	\t\t∫ u(s) ∫ q(a|s) Q(s,a) dads")
@@ -59,23 +143,11 @@ def find_optimal_temperature(
         cli.print("    \t\t∫∫ u(s) q(a|s) dads = 1")
     cli.empty().print("statistics of problem").empty()
     with cli.indent():
-        cli.print(f"Q(s,a) \t~ {float(jnp.mean(q_values)):.5f} +- [{float(jnp.std(q_values)):.5f}]")
+        cli.print(f"Q(s,a) \t~ {float(mean):.5f} +- [{float(std):.5f}]")
         cli.print(f"ε \t\t= {eps}")
 
-    def objective(x: np.ndarray) -> tuple[float, np.ndarray]:
-        value, grad = _dual_and_grad(q_values, jnp.float64(x[0]), eps)
-        return float(value), np.asarray([float(grad)])
-
-    start = float(np.clip(np.asarray(eta0).reshape(-1)[0], 1e-6, None))
-    result = scipy.optimize.minimize(
-        objective,
-        np.asarray([start]),
-        jac=True,
-        method="L-BFGS-B",
-        bounds=[(1e-6, None)],
-        options={"maxiter": max_steps},
-    )
-    eta = float(result.x[0])
+    start = jnp.asarray(eta0, dtype=jnp.float64).reshape(())
+    eta, iters, dual = _newton_temperature(q_values, limit, start, eps, int(max_steps))
     with cli.indent():
-        cli.empty().print(f"eta* = {eta:.6f} (dual = {result.fun:.6f}, iterations = {result.nit})")
+        cli.empty().print(f"eta* = {float(eta):.6f} (dual = {float(dual):.6f}, iterations = {int(iters)})")
     return jnp.asarray([eta], dtype=jnp.float32)
