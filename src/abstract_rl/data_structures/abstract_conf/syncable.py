@@ -1,4 +1,5 @@
 import copy
+from typing import Any
 
 
 class Syncable:
@@ -7,7 +8,7 @@ class Syncable:
     a general value network.
     """
 
-    def clone(self):
+    def clone(self) -> Any:
         """
         Clones the current instance.
         :return: A new identical clones instance of the current.
@@ -20,7 +21,7 @@ class Syncable:
 
         return v
 
-    def sync(self, v):
+    def sync(self, v: Any) -> Any:
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.

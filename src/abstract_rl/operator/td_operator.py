@@ -1,9 +1,8 @@
-import numpy as np
 import torch
-from torch.distributions import transforms
 
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
 class TemporalDifferenceOperator(TrajectoryOperator):
@@ -11,23 +10,23 @@ class TemporalDifferenceOperator(TrajectoryOperator):
     Represents a generalized advantage estimation operator based upon https://arxiv.org/abs/1506.02438.
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "td"
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new generalized advantage estimator.
         :param mc: The model configuration to use.
         """
         assert isinstance(mc, ModelConfiguration)
-        conf = mc.get('conf')
+        conf = mc.get("conf")
         self.conf = conf
-        self.v_net = mc.get('v_network', True)
+        self.v_net = mc.get("v_network", True)
 
         # get discount
-        self.env = mc['env']
+        self.env = mc["env"]
 
-    def transform(self, trajectory):
+    def transform(self, trajectory: Trajectory) -> None:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param trajectory: trajectory to transform.
@@ -35,24 +34,29 @@ class TemporalDifferenceOperator(TrajectoryOperator):
 
         # deactivate grad
         with torch.no_grad():
-
             # obtain rewards
             discount = self.env.discount()
             t_states = torch.Tensor(trajectory.states)
-            t_rewards = torch.Tensor(trajectory.rewards)
+            t_rewards = torch.Tensor(trajectory.rewards).view(-1)
             dones = torch.Tensor(trajectory.dones)
-            v = self.v_net.forward(t_states)
-            mask = 1 - dones
+            v = self.v_net.forward(t_states).view(-1)
+            mask = 1 - dones.view(-1)
+
+            # bootstrap from the last observed state if the trajectory was truncated (e.g. time limit) instead of
+            # treating the end of the trajectory as terminal
+            last_state = torch.Tensor(trajectory.all_states[-1:])
+            last_v = self.v_net.forward(last_state).view(-1)[0] * mask[-1]
 
             tl = len(trajectory)
-            tv = torch.zeros(tl+1)
-            td_errors = torch.zeros_like(dones)
-            prev_value = 0
+            tv = torch.zeros(tl + 1)
+            tv[tl] = last_v
+            td_errors = torch.zeros(tl)
+            next_value = last_v
 
             for t in reversed(range(tl)):
-                tv[t] = t_rewards[t] + discount * mask[t] * tv[t+1]
-                td_errors[t] = t_rewards[t] + discount * prev_value * mask[t] - v[t]
-                prev_value = v.data[t, 0]
+                tv[t] = t_rewards[t] + discount * mask[t] * tv[t + 1]
+                td_errors[t] = t_rewards[t] + discount * next_value * mask[t] - v[t]
+                next_value = v[t]
 
-            trajectory['tv'] = tv[:-1]
-            trajectory['td'] = td_errors
+            trajectory["tv"] = tv[:-1]
+            trajectory["td"] = td_errors

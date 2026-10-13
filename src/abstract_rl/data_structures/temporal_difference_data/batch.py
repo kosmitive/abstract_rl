@@ -1,9 +1,21 @@
+from numpy import ndarray
+
+
 class Batch:
     """
     Represents a batch of state, action, reward data tuples.
     """
 
-    def __init__(self, states, actions, log_likelihood, rewards, next_states, ds, annotations=None):
+    def __init__(
+        self,
+        states: ndarray,
+        actions: ndarray,
+        log_likelihood: ndarray,
+        rewards: ndarray,
+        next_states: ndarray,
+        ds: ndarray,
+        annotations: dict[str, ndarray] | None = None,
+    ) -> None:
         """
         Creates a new batch built upon the passed values.
         :param states: The states this batch contains.
@@ -23,14 +35,17 @@ class Batch:
 
     # --- some syntactic sugar
 
-    def __len__(self): return len(self.states)
+    def __len__(self) -> int:
+        return len(self.states)
 
-    def __getitem__(self, key): return self._annotations[key]
+    def __getitem__(self, key: str) -> ndarray:
+        return self._annotations[key]
 
-    def __setitem__(self, key, data): self._annotations[key] = data
+    def __setitem__(self, key: str, data: ndarray) -> None:
+        self._annotations[key] = data
 
     @property
-    def states(self):
+    def states(self) -> ndarray:
         """
         States of trajectory.
         :return: All states of the trajectory.
@@ -38,7 +53,7 @@ class Batch:
         return self._states
 
     @property
-    def actions(self):
+    def actions(self) -> ndarray:
         """
         Actions of trajectory.
         :return: All actions of the trajectory.
@@ -46,7 +61,7 @@ class Batch:
         return self._actions
 
     @property
-    def log_likelihoods(self):
+    def log_likelihoods(self) -> ndarray:
         """
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
@@ -54,7 +69,7 @@ class Batch:
         return self._log_likelihoods
 
     @property
-    def rewards(self):
+    def rewards(self) -> ndarray:
         """
         Rewards of trajectory.
         :return: All rewards of the trajectory.
@@ -62,7 +77,7 @@ class Batch:
         return self._rewards
 
     @property
-    def next_states(self):
+    def next_states(self) -> ndarray:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.
@@ -70,7 +85,7 @@ class Batch:
         return self._next_states
 
     @property
-    def dones(self):
+    def dones(self) -> ndarray:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.

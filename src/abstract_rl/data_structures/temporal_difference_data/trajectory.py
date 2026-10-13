@@ -1,6 +1,10 @@
-import numpy as np
+from typing import Any
 
-from abstract_rl.src.misc.cli_printer import CliPrinter
+import numpy as np
+import pandas as pd
+import torch
+
+from abstract_rl.misc.cli_printer import CliPrinter
 
 
 class Trajectory:
@@ -8,7 +12,9 @@ class Trajectory:
     Represents a simple Trajectory, which can be used by the remaining software.
     """
 
-    def __init__(self, id, env, pandas_frame, annotations=None):
+    def __init__(
+        self, id: int, env: Any, pandas_frame: pd.DataFrame, annotations: dict[str, Any] | None = None
+    ) -> None:
         """Initialize a new trajectory, therefore a initial state s0
         has to be given.
 
@@ -22,30 +28,36 @@ class Trajectory:
         self._sd = self.env.observation_dim
         self._ad = self.env.action_dim
         self.cli = CliPrinter().instance
-        self._states = self.__data_frame.loc[:, "s_0":f"s_{self._sd-1}"].values
-        self._rewards = self.__data_frame.loc[:, "r":"r"].values[:-1]
+        self._states = self.__data_frame.loc[:, "s_0" : f"s_{self._sd - 1}"].to_numpy(copy=True)
+        self._rewards = self.__data_frame.loc[:, "r":"r"].to_numpy(copy=True)[:-1]
+        # return of the environment, differs from total_reward if the training reward is scaled or shifted
+        self.raw_return = float(np.sum(self._rewards))
 
-    def __len__(self):
+        # cache the remaining columns as numpy arrays, the pandas frame is only the storage format and slicing it on
+        # every access is very slow for off policy sampling
+        self._actions = self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].to_numpy(copy=True)[:-1]
+        self._dones = self.__data_frame.loc[:, "d":"d"].to_numpy(copy=True)[:-1]
+        self._log_likelihoods = self.__data_frame.loc[:, "ll":"ll"].to_numpy(copy=True)[:-1]
+
+    def __len__(self) -> int:
         return len(self._trajectory.index) - 1
 
-    def __setitem__(self, key, item): self._annotations[key] = item
+    def __setitem__(self, key: str, item: Any) -> None:
+        # annotations are stored as numpy arrays, so sampling from many trajectories stays cheap
+        if isinstance(item, torch.Tensor):
+            item = item.detach().cpu().numpy()
+        self._annotations[key] = item
 
-    def __getitem__(self, key): return self._annotations[key]
+    def __getitem__(self, key: str) -> Any:
+        return self._annotations[key]
 
-    def __contains__(self, value): return value in self._annotations
+    def __contains__(self, value: str) -> bool:
+        return value in self._annotations
 
     # --- standard reinforcement learning fields
 
-    def list_annotations(self): return self._annotations.keys()
-
     @property
-    def state_dim(self): return self._sd
-
-    @property
-    def act_dim(self): return self._ad
-
-    @property
-    def states(self):
+    def states(self) -> np.ndarray:
         """
         States of trajectory.
         :return: All states of the trajectory.
@@ -53,30 +65,31 @@ class Trajectory:
         return self._states[:-1]
 
     @property
-    def actions(self):
+    def actions(self) -> np.ndarray:
         """
         Actions of trajectory.
         :return: All actions of the trajectory.
         """
-        return self.__data_frame.loc[:, "a_0":f"a_{self._ad-1}"].values[:-1]
+        return self._actions
 
     @property
-    def dones(self):
+    def dones(self) -> np.ndarray:
         """
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
         """
-        return self.__data_frame.loc[:, "d":"d"].values[:-1]
+        return self._dones
+
     @property
-    def log_likelihoods(self):
+    def log_likelihoods(self) -> np.ndarray:
         """
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
         """
-        return self.__data_frame.loc[:, "ll":"ll"].values[:-1]
+        return self._log_likelihoods
 
     @property
-    def rewards(self):
+    def rewards(self) -> np.ndarray:
         """
         Rewards of trajectory.
         :return: All rewards of the trajectory.
@@ -84,7 +97,7 @@ class Trajectory:
         return self._rewards
 
     @property
-    def next_states(self):
+    def next_states(self) -> np.ndarray:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.
@@ -92,7 +105,7 @@ class Trajectory:
         return self._states[1:]
 
     @property
-    def all_states(self):
+    def all_states(self) -> np.ndarray:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.
@@ -100,7 +113,7 @@ class Trajectory:
         return self._states
 
     @property
-    def __data_frame(self):
+    def __data_frame(self) -> pd.DataFrame:
         """
         Get internal data frame of trajectory.
         :return: Returns the internal saved pandas frame.
@@ -110,7 +123,7 @@ class Trajectory:
     # --- evaluate rewards
 
     @property
-    def average_reward(self):
+    def average_reward(self) -> float:
         """
         Cumulative reward of the trajectory.
         :return: Simply sum of all rewards.
@@ -119,14 +132,14 @@ class Trajectory:
         return np.sum(self.rewards / T)
 
     @property
-    def total_reward(self):
+    def total_reward(self) -> float:
         """
         Cumulative reward of the trajectory.
         :return: Simply sum of all rewards.
         """
         return np.sum(self.rewards)
 
-    def discounted_reward(self, discount):
+    def discounted_reward(self, discount: float) -> float:
         """
         Cumulative reward of the trajectory.
         :return: Simply sum of all rewards.
@@ -136,7 +149,7 @@ class Trajectory:
         return (1 - discount) * np.sum(discount ** np.arange(tl) * self.rewards)
 
     @property
-    def entropy(self):
+    def entropy(self) -> float:
         """Calculate entropy of policy.
         :return: The calculated entropy.
         """

@@ -1,7 +1,7 @@
 # Environment
 
-In order to speed up the handling of the creation of executed policy a wrapper for 
-gym environments is introduced it can be used to execute a policy for a given number of time steps.
+In order to speed up the handling of the creation of executed policy a wrapper for
+gymnasium environments is introduced it can be used to execute a policy for a given number of time steps.
 
 
 ```

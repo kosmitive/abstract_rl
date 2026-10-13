@@ -1,7 +1,7 @@
 # Operator System
 
 In general a operator system is used. The basic principle starts on the concept of trajectories. 
-They are usually collected inside a TrajectoryCollection or the CircularTailMemory. A operator is
+They are usually collected inside a TrajectoryCollection. A operator is
 a function transforming a trajectory to  a special annotated one, e.g.
 
 ```

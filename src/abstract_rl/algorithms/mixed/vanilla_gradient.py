@@ -1,29 +1,36 @@
-import scipy as sp
-
-import torch
-import torch.optim as optim
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.flat_params import set_flat_params_to, get_flat_grad_from, get_flat_params_from
-
+import numpy as np
 import scipy.optimize
-import scipy as sp
+import torch
+from torch import nn
+
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.flat_params import get_flat_grad_from, get_flat_params_from, set_flat_params_to
+
 
 class VanillaGradient:
-    """Simple vanilla gradient. Simply inherit from this class to add support"""
+    """Simple vanilla gradient. Simply inherit from this class to add support.
 
-    def __init__(self, model):
+    Two optimizers are supported: full-batch L-BFGS (scipy) and Adam on mini batches.
+    """
+
+    def __init__(self, model: nn.Module, optimizer: str = "lbfgs", lr: float = 1e-3) -> None:
         """
         Add vanilla gradient optimization.
         :param model: The pytorch model to use.
+        :param optimizer: Either 'lbfgs' or 'adam'.
+        :param lr: The learning rate used by adam.
         """
         self._model = model
         self.cli = CliPrinter().instance
+        self.optimizer = optimizer
 
-        self.fmtstr = "%10i | %14.10f | %14.10ff"
+        self.fmtstr = "%10i | %14.10f | %14.10f"
         self.titlestr = "%10s | %14s | %14s"
-        self.opt = torch.optim.Adam(self._model.parameters())
+        self.opt = torch.optim.Adam(self._model.parameters(), lr=lr)
 
-    def perform_mult_sgd(self, num_steps, tc, batch_size, fields):
+    def perform_mult_sgd(self, num_steps: int, tc: TrajectoryCollection, batch_size: int, fields: list[str]) -> None:
         """
         Performs multiple stochastic gradient descent steps.
 
@@ -37,9 +44,27 @@ class VanillaGradient:
 
         for s in range(num_steps):
             batch = tc.sample(batch_size, fields)
-            self.perform_sgd(s, batch, 1)
+            if self.optimizer == "adam":
+                self.perform_adam_step(s, batch)
+            else:
+                self.perform_sgd(s, batch, 1)
 
-    def perform_sgd(self, curst, batch, maxiter=25):
+    def perform_adam_step(self, curst: int, batch: Batch) -> None:
+        """Performs a single adam step on the passed batch.
+
+        :param curst: The current step.
+        :param batch: The batch to use.
+        """
+        self.opt.zero_grad()
+        obj = self.tr_obj(batch)
+        obj.backward()
+        self.opt.step()
+        if curst % 10 == 0:
+            with torch.no_grad():
+                new_obj = self.tr_obj(batch)
+            self.cli.print(self.fmtstr % (curst, obj.item(), new_obj.item()))
+
+    def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
         """Performs a stochastic gradient descent step by using lbfgs.
 
         :param curst: The current step.
@@ -48,20 +73,27 @@ class VanillaGradient:
         """
 
         # get v objective and the gradient
-        old_obj = self.tr_obj(batch)
+        with torch.no_grad():
+            old_obj = self.tr_obj(batch).item()
 
-        def closure(x):
-            set_flat_params_to(self._model, torch.Tensor(x))
+        def closure(x: np.ndarray) -> tuple[float, np.ndarray]:
+            set_flat_params_to(self._model, torch.as_tensor(x, dtype=torch.float32))
+            self._model.zero_grad()
             obj = self.tr_obj(batch)
             obj.backward()
-            return (obj.data.double().numpy(), get_flat_grad_from(self._model).data.double().numpy())
+            return obj.item(), get_flat_grad_from(self._model).double().numpy()
 
         # start optimizer
-        params, _, opt_info = sp.optimize.fmin_l_bfgs_b(closure, get_flat_params_from(self._model).double().numpy(), maxiter=maxiter)
-        set_flat_params_to(self._model, torch.Tensor(params))
+        params, _, _ = scipy.optimize.fmin_l_bfgs_b(
+            closure, get_flat_params_from(self._model).double().numpy(), maxiter=maxiter
+        )
+        set_flat_params_to(self._model, torch.as_tensor(params, dtype=torch.float32))
 
         # calc new obj for comparison
-        new_obj = self.tr_obj(batch)
+        with torch.no_grad():
+            new_obj = self.tr_obj(batch).item()
         self.cli.print(self.fmtstr % (curst, old_obj, new_obj))
 
-    def tr_obj(self, batch): pass
+    def tr_obj(self, batch: Batch) -> torch.Tensor:
+        """The training objective."""
+        raise NotImplementedError
