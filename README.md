@@ -87,6 +87,21 @@ smoothed training return reaches it (median over the seeds that do).
 | HalfCheetah-v5 (≥ 4800) | TRPO (SB3) | 5 | 1,200,000 | 2547.9 ± 1314.1 | 0/5 | never |
 | HalfCheetah-v5 (≥ 4800) | PPO (SB3) | 5 | 1,200,000 | 1620.3 ± 59.9 | 0/5 | never |
 
+The same greedy protocol on the JAX port (20 episodes, start seeds 10000 + episode, policy mean, raw Gymnasium return). Std is over the five seed means.
+
+| Environment | Algorithm | Per-seed greedy return | Mean ± std | Solved | Env steps |
+|---|---|---|---|---|---|
+| Pendulum-v1 (≥ -150) | TRPO | -124.9, -124.9, -126.9, -132.8, -132.8 | -128.5 ± 4.0 | 5/5 | 800,000 |
+| Pendulum-v1 (≥ -150) | MPO | -123.9, -126.5, -123.1, -124.5, -122.3 | -124.1 ± 1.6 | 5/5 | 1,280,000 |
+| MountainCarContinuous-v0 (≥ 90) | TRPO | 95.0, 95.1, 94.5, 94.0, 95.5 | 94.8 ± 0.6 | 5/5 | 425k–431k |
+| MountainCarContinuous-v0 (≥ 90) | MPO | 93.5, 93.6, 93.5, 93.7, 93.6 | 93.6 ± 0.1 | 5/5 | 400,009–400,059 |
+
+Against the PyTorch table, Pendulum TRPO is 0.8 points lower and Pendulum MPO 0.3 points lower, both 5/5. MountainCar TRPO is 0.7 points higher and MountainCar MPO matches 93.6, both 5/5. Inside a Pendulum seed the 20 starts are bimodal (some near 0, some near -250), so the within-seed std is about 85–93; the mean still clears -150.
+
+MPO on Pendulum has no `max_env_steps`. Each epoch asks for 1000 transitions and the 4-wide JAX round finishes 8 episodes of 200, so 800 epochs stored 1,280,000 steps rather than 800,000. MountainCar TRPO is 100 epochs of `policy_batch_size` 4000 and finishes the last round, which lands between 424,895 and 431,280. MountainCar MPO stops on `max_env_steps` 400,000.
+
+A short Gymnasium run, one seed, not the full budget: InvertedPendulum TRPO 20 epochs (51,169 steps) stochastic return 3.6 → 756, greedy 1000; MPO 30 epochs (31,060 steps) 6.6 → 1000, greedy 1000. InvertedDoublePendulum TRPO 15 epochs (60,408 steps) 34 → 91, greedy 162; MPO 20 epochs (20,217 steps) 74 → 356, greedy 573. HalfCheetah TRPO 8 epochs (88,000 steps) -313 → -232, greedy 337; MPO 10 epochs (10,000 steps) -524 → -164, greedy -114. The return moves up. Only the short InvertedPendulum runs clear their threshold.
+
 ![benchmark](docs/benchmark.png)
 
 - **Tuned for Pendulum-v1 and MountainCarContinuous-v0** (one setting each): TRPO Pendulum discount 0.95, MPO
@@ -194,7 +209,7 @@ Phases of the earlier loop pass, in seconds (mean before that pass, then mean af
 
 Resample scans the whole allocation, so its cost is the full-buffer figure from the first steady epoch. Retrace skips empty episode slots. On Pendulum it grows with the stored episodes (0.021s at epoch 1, 0.094s at epoch 11) while the epoch stays between 1.39s and 1.44s. The slope is about 0.007s of Retrace per thousand new steps. HalfCheetah stores one episode per epoch, and the first eight share one slot chunk, so Retrace stayed flat in that window.
 
-On an earlier seed-1 run, before this pass, the stochastic Pendulum return moved from -1172 to -178 over 40 TRPO epochs and from -1477 to -150 over 40 MPO epochs. That learning curve was not repeated after the loop changes. The solve bar in the results table is a greedy evaluation. The 5-seed Pendulum and MountainCar budgets were not re-run.
+The 5-seed greedy evaluation after this round is in [Results](#results). On an earlier seed-1 run, before the loop pass, the stochastic Pendulum return moved from -1172 to -178 over 40 TRPO epochs and from -1477 to -150 over 40 MPO epochs.
 
 ### Loops
 
