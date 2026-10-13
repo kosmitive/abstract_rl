@@ -104,6 +104,19 @@ environment table. The training loops get a flat dictionary with prefixes (`env_
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
 diagonal Gaussian policy from the action space.
 
+## Epoch time
+
+Wall-clock seconds per epoch on one 4-CPU Linux machine. The PyTorch column is the previous implementation, pinned to one thread. The JAX column uses the default CPU thread pool. Both use the Hydra defaults (`seed=1`). A two-epoch run includes JAX compilation, so that column is the short-budget number. The longer run spreads compilation over more epochs.
+
+| Run | PyTorch, 2 epochs | JAX, 2 epochs | JAX, longer run |
+|---|---:|---:|---:|
+| TRPO Pendulum-v1 | 2.676 | 2.997 | 1.578 (40 epochs) |
+| MPO Pendulum-v1 | 2.686 | 3.994 | 2.982 (40 epochs) |
+| TRPO HalfCheetah-v5 | 3.103 | 5.509 | 4.408 (8 epochs) |
+| MPO HalfCheetah-v5 | 3.270 | 4.462 | 2.657 (8 epochs) |
+
+On that same Pendulum seed the stochastic training return moved from -1172 to -178 over 40 TRPO epochs (160,000 steps) and from -1477 to -150 over 40 MPO epochs (40,000 steps). The README solve threshold of -150 is a greedy evaluation, which this check did not repeat. The 5-seed Pendulum and MountainCar budgets (200 to 800 epochs per seed) were not re-run here.
+
 ## Architecture
 
 ```
@@ -129,10 +142,10 @@ A training loop is a sequence of operator applications on trajectory collections
 
 - **TRPO** per epoch: collect `policy_batch_size` steps → `TD` operator (returns, bootstrapped at time limits) →
   `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
-- **MPO** per epoch: collect `env_sample` steps into the on-device replay → `Resample` operator (actions from the
+- **MPO** per epoch: collect `env_sample` steps into the trajectory collection → `Resample` operator (actions from the
   target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric
-  E-step) → KL constrained weighted maximum likelihood (M-step, one `lax.scan`) → `Retrace` operator → Q function
-  fit (Adam, one `lax.scan`).
+  E-step) → KL constrained weighted maximum likelihood (M-step) → `Retrace` operator → Q function fit (Adam).
+  The collection keeps an on-device copy, and the default M-step and the critic Adam loop are each one `lax.scan`.
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
 
