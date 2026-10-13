@@ -1,123 +1,264 @@
+"""Shared behaviour of the squashed Gaussian policies."""
+
+from collections.abc import Sequence
 from typing import Any
 
-import torch
+import equinox as eqx
+import jax.numpy as jnp
+import numpy as np
+from jaxtyping import Array, Float, PRNGKeyArray
 
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.flat_params import copy_module
+from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
+from abstract_rl.policy.continuous.gaussian_math import (
+    GaussianParams,
+    act_deterministic,
+    act_stochastic,
+    entropy_from_sigma,
+    forward,
+    head_activations,
+    kl_divergence,
+    likelihood_ratio,
+    log_prob,
+    mode,
+    sample,
+    sigma_is_softplus,
+)
 from abstract_rl.policy.policy import Policy
+
+_ACT_STOCHASTIC = eqx.filter_jit(act_stochastic)
+_ACT_DETERMINISTIC = eqx.filter_jit(act_deterministic)
+
+
+def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate: bool) -> GaussianParams:
+    """Build the Gaussian configured in the current namespace of ``mc``.
+
+    Args:
+        mc: Model configuration with the environment registered. The active namespace is the policy.
+        key: Initialisation key.
+
+    Returns:
+        Equinox parameters of the policy.
+    """
+    run_conf = mc.get("conf")
+    cov_type = str(run_conf["cov_type"])
+    action_dim = mc.env.action_dim
+    squash = bool(run_conf.get("squash", False))
+    low = np.asarray(mc.env.action_space.low, dtype=np.float64).reshape(-1)
+    high = np.asarray(mc.env.action_space.high, dtype=np.float64).reshape(-1)
+    if squash and not (np.all(np.isfinite(low)) and np.all(np.isfinite(high))):
+        raise ValueError("squashing needs a bounded action space")
+    center: tuple[float, ...]
+    scale: tuple[float, ...]
+    if squash and univariate:
+        # The univariate policy squashes with ``max |high| * tanh(u)`` and no centre shift.
+        center = (0.0,)
+        scale = (float(np.max(np.abs(high))),)
+    elif squash:
+        center = tuple(float(v) for v in (high + low) / 2)
+        scale = tuple(float(v) for v in (high - low) / 2)
+    else:
+        center = tuple(0.0 for _ in range(action_dim))
+        scale = tuple(1.0 for _ in range(action_dim))
+
+    match cov_type:
+        case "state":
+            n_out = 2 * action_dim
+            log_sigma = None
+            fixed_log_sigma = None
+        case "fixed":
+            n_out = action_dim
+            log_sigma = None
+            fixed_log_sigma = tuple(float(np.log(run_conf["sigma"])) for _ in range(action_dim))
+        case "single":
+            n_out = action_dim
+            init = float(np.log(run_conf.get("sigma", 1.0)))
+            log_sigma = jnp.full((action_dim,), init, dtype=jnp.float32)
+            fixed_log_sigma = None
+        case _:
+            raise NotImplementedError(f"unknown covariance type {cov_type}")
+
+    act_fn, sigma_acts = head_activations(run_conf["act_fn"], action_dim)
+    structure: Sequence[int] = [mc.env.observation_dim, *list(run_conf["structure"]), n_out]
+    network = MultilayerPerceptron(
+        key,
+        structure,
+        act_fn,
+        bool(run_conf["layer_norm"]),
+        str(run_conf["init"]),
+    )
+    return GaussianParams(
+        network=network,
+        log_sigma=log_sigma,
+        cov_type=cov_type,
+        squash=squash,
+        sigma_is_softplus=sigma_is_softplus(sigma_acts),
+        action_center=center,
+        action_scale=scale,
+        fixed_log_sigma=fixed_log_sigma,
+    )
 
 
 class ContinuousPolicy(Policy, Syncable):
-    """
-    Represents a continuous policy, e.g a gaussian policy
-    """
+    """Gaussian policy wrapper. ``params`` is the Equinox module the optimisers update."""
+
+    params: GaussianParams
+    flat_actions: bool
+
+    def __init__(self, mc: ModelConfiguration, flat_actions: bool) -> None:
+        super().__init__(mc)
+        self.flat_actions = flat_actions
+        self.params = build_gaussian_params(mc, mc.rng.split(), univariate=flat_actions)
+
+    @property
+    def network(self) -> MultilayerPerceptron:
+        return self.params.network
+
+    @network.setter
+    def network(self, value: MultilayerPerceptron) -> None:
+        self.params = eqx.tree_at(lambda params: params.network, self.params, value)
+
+    @property
+    def squash(self) -> bool:
+        return self.params.squash
+
+    @property
+    def cov_type(self) -> str:
+        return self.params.cov_type
+
+    def get_suff_stats_dim(self) -> int:
+        return 2 * self.mc.env.action_dim
+
+    def forward(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch stats"]:
+        """Sufficient statistics ``[mu, sigma]``."""
+        return forward(self.params, _f32(states))
 
     def log_prob(
-        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self,
+        actions: Float[Array, "..."] | np.ndarray,
+        states: Float[Array, "batch obs"] | np.ndarray | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
+    ) -> Float[Array, "batch k"]:
+        """Log probability of actions.
+
+        Univariate policies take actions of shape ``[batch, k]``. Diagonal policies take
+        ``[batch, k, act]`` or ``[batch, act]``.
         """
-        Can be used to obtain log probability of actions relative to states.
-        :param actions: A matrix of size [D, K] containing actions for each state.
-        :param states: A matrix of size [D, Ds]. If this None => suff_states not None
-        :param suff_stats: A matrix of size [D, get_suff_stats_dim()] containing suff stats.
-            If this None => states is not None
-        :return: A matrix [D, K] containing the log prob for each action in each row of
-            actions matched to the row and the the suff stats of the specific state.
+        return log_prob(
+            self.params,
+            _f32(actions),
+            None if states is None else _f32(states),
+            None if suff_stats is None else _f32(suff_stats),
+        )
+
+    def mode(
+        self,
+        states: Float[Array, "batch obs"] | np.ndarray | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
+    ) -> Float[Array, "batch act"]:
+        """Most likely action, shape ``[batch, act]``."""
+        acted = mode(
+            self.params,
+            None if states is None else _f32(states),
+            None if suff_stats is None else _f32(suff_stats),
+        )
+        if self.flat_actions:
+            return acted[:, :1]
+        return acted
+
+    def sample_actions(
+        self,
+        states: Float[Array, "batch obs"] | np.ndarray | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
+        num_actions: int = 1,
+        key: PRNGKeyArray | None = None,
+    ) -> Float[Array, "..."]:
+        """Sample ``num_actions`` actions per state.
+
+        Returns ``[batch, k]`` for the univariate policy and ``[batch, k, act]`` otherwise.
         """
-        raise NotImplementedError
+        if key is None:
+            key = self.mc.rng.split()
+        drawn = sample(
+            self.params,
+            key,
+            num_actions,
+            None if states is None else _f32(states),
+            None if suff_stats is None else _f32(suff_stats),
+        )
+        if self.flat_actions:
+            return drawn[..., 0]
+        return drawn
+
+    def act(self, states: np.ndarray, deterministic: bool) -> tuple[np.ndarray, np.ndarray]:
+        """Jitted action selection for environment interaction.
+
+        Args:
+            states: Batch of observations, shape ``[batch, obs]``.
+            deterministic: Use the mode instead of a sample.
+
+        Returns:
+            Actions ``[batch, act]`` and log probabilities ``[batch]``, both NumPy arrays.
+        """
+        obs = _f32(states)
+        if deterministic:
+            actions, log_density = _ACT_DETERMINISTIC(self.params, obs)
+        else:
+            actions, log_density = _ACT_STOCHASTIC(self.params, obs, self.mc.rng.split())
+        return np.asarray(actions), np.asarray(log_density)
 
     def clone(self) -> "ContinuousPolicy":
-        """
-        Clones the current instance.
-        :return: A new identical clones instance of the current.
-        """
-
-        raise NotImplementedError
+        other = self.__class__.__new__(self.__class__)
+        other.mc = self.mc
+        other.flat_actions = self.flat_actions
+        other.params = copy_module(self.params)
+        return other
 
     def sync(self, v: Any) -> Any:
-        """
-        Copies the content of the current instance to the supplied parameter instance.
-        :param v: The other instance, where the current values should be copied to.
-        """
-        raise NotImplementedError
+        v.params = self.params
+        return v
 
-    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
-        """
-        The most likely action of each state.
-        :return: A matrix [D, A].
-        """
-        raise NotImplementedError
+    def save(self, path: str) -> None:
+        """Write the parameter tree to ``path``."""
+        eqx.tree_serialise_leaves(path, self.params)
+
+    def load(self, path: str) -> None:
+        """Load a parameter tree previously written by ``save``."""
+        self.params = eqx.tree_deserialise_leaves(path, self.params)
 
     def kl_divergence(
         self,
         batch: Batch,
-        suff_stats: torch.Tensor | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
         mode: str = "i-projection",
         est: str = "sum",
-    ) -> torch.Tensor:
-        """
-        Calculates the kl divergence between the current policy and the saved likelihood values.
-        :param batch:
-        :return:
-        """
+    ) -> Float[Array, ""]:
+        """Analytic KL against the target policy registered in the model configuration."""
+        target = self.mc.get("policy", True).params
+        stats = None if suff_stats is None else _f32(suff_stats)
+        return kl_divergence(self.params, target, _f32(batch.states), stats, mode, est)
 
-        tp = self.mc.get("policy", True)
+    def likelihood_ratio(self, batch: Batch) -> Float[Array, ""]:
+        """Negative standardised likelihood-ratio surrogate of ``batch``."""
+        return likelihood_ratio(
+            self.params,
+            _f32(batch.states),
+            _f32(batch.actions),
+            _f32(batch.log_likelihoods),
+            _f32(batch["a"]),
+        )
 
-        # calc sufficient statistics
-        states = torch.Tensor(batch.states)
-        if suff_stats is None:
-            suff_stats = self.forward(states)
+    def entropy(self, batch: Batch) -> Float[Array, ""]:
+        """Closed-form Gaussian entropy. Squashed policies have none."""
+        if self.squash:
+            raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
+        stats = forward(self.params, _f32(batch.states))
+        act = stats.shape[-1] // 2
+        return entropy_from_sigma(stats[:, act:])
 
-        actions = torch.Tensor(batch.actions)
-        log_likelihoods = tp.log_prob(actions, states).detach()
-        new_lls = self.log_prob(actions, suff_stats=suff_stats)
 
-        # use I projection
-        if mode == "m-projection":
-            p = log_likelihoods
-            q = new_lls
-
-        # use M Projection
-        elif mode == "i-projection":
-            p = new_lls
-            q = log_likelihoods
-
-        else:
-            raise NotImplementedError
-
-        # build kl terms adn sum up
-        kl = torch.exp(p) * (p - q)
-
-        if est == "sum":
-            kl_est = torch.sum
-        elif est == "mean":
-            kl_est = torch.mean
-        else:
-            raise NotImplementedError
-
-        return kl_est(kl)
-
-    def likelihood_ratio(self, batch: Batch) -> torch.Tensor:
-        """
-        Calculate the objective of the underlying objective using the passed batch.
-        :param batch: Use this batch to estimate objective.
-        :return: A un detached version of the objective
-        """
-
-        policy = self.mc.get("policy", False)
-
-        # calculate the objective
-        states = torch.Tensor(batch.states)
-        actions = torch.Tensor(batch.actions)
-        suff_stats = policy.forward(states)
-        ll = policy.log_prob(actions, suff_stats=suff_stats).view(-1)
-        old_ll = torch.Tensor(batch.log_likelihoods).view(-1)
-
-        # calculate the ratio term (all terms are flat vectors of length D)
-        a_vals = torch.as_tensor(batch["a"], dtype=torch.float32).view(-1)
-        mean_a = a_vals.mean()
-        std_a = a_vals.std()
-        advantages = (a_vals - mean_a) / (std_a + 1e-8)
-        r = torch.exp(ll - old_ll)
-        obj = torch.mean(r * advantages)
-        return -obj
+def _f32(value: Float[Array, "..."] | np.ndarray) -> Float[Array, "..."]:
+    return jnp.asarray(value, dtype=jnp.float32)

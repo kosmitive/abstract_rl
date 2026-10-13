@@ -1,76 +1,119 @@
+"""Fully connected state-value network, fit with L-BFGS."""
+
+from typing import Any
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-import torch.nn as nn
+import scipy.optimize
+from jaxtyping import Array, Float
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.flat_params import copy_module, ravel_module
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
-class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
-    """Fully connected neural network."""
+def _f32(value: Any) -> Float[Array, "..."]:
+    return jnp.asarray(value, dtype=jnp.float32)
+
+
+class FullyVNeuralNet(Syncable, VanillaGradient):
+    """State-value function. ``params`` is the Equinox network. L-BFGS comes from ``VanillaGradient``."""
 
     def __init__(self, mc: ModelConfiguration) -> None:
-        """Create a new neural network, whereas the structure is passed
-        as a list of numbers, representing the size of each fully connected
-        layer including the input as well as the output layer."""
-        nn.Module.__init__(self)
-
         conf = mc.get("conf")
-        struct = conf["struct"]
-
-        # shortcut for state and action dim
-        sd = mc.env.observation_dim
-
-        # set the standard act function
-        self.env = mc.env
+        structure = [mc.env.observation_dim, *list(conf["struct"]), 1]
         self.mc = mc
-        self.loss = torch.nn.MSELoss()
-
-        # neural nets
-        layer_norm = conf.get("layer_norm", False)
-        init = conf.get("init", "orthogonal")
-        def_fn = conf["act_fn"]
-        self.l2 = conf["l2_reg"]
-
-        # create network
-        self.net = MultilayerPerceptron(mc, np.concatenate(([sd], struct, [1])), def_fn, layer_norm, init)
-        self.add_module("neural_net", self.net)
-
-        # set up trust regions
-        VanillaGradient.__init__(self, self.net)
+        self.env = mc.env
+        self.l2 = float(conf["l2_reg"])
+        self.params = MultilayerPerceptron(
+            mc.rng.split(),
+            structure,
+            conf["act_fn"],
+            bool(conf.get("layer_norm", False)),
+            str(conf.get("init", "orthogonal")),
+        )
+        self.net = self.params
+        VanillaGradient.__init__(self)
 
     def clone(self) -> "FullyVNeuralNet":
-        """Clones the Neural Network"""
-
-        # first of all clone the module using the subclass and
-        # then fill all hierarchically lower elements.
-        v = FullyVNeuralNet(self.mc)
-        self.sync(v)
-        return v
+        other = FullyVNeuralNet.__new__(FullyVNeuralNet)
+        other.mc = self.mc
+        other.env = self.env
+        other.l2 = self.l2
+        other.params = copy_module(self.params)
+        other.net = other.params
+        other.cli = self.cli
+        other.optimizer = self.optimizer
+        other.lr = self.lr
+        other.tx = self.tx
+        other.opt_state = self.opt_state
+        other.fmtstr = self.fmtstr
+        other.titlestr = self.titlestr
+        return other
 
     def sync(self, v: "FullyVNeuralNet") -> "FullyVNeuralNet":
-        """Clones the Neural Network"""
-
-        self.net.sync(v.net)
+        v.params = self.params
+        v.net = v.params
         return v
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Propagate the x in a forward fashion through the network."""
-        return self.v_val(states)
+    def save(self, path: str) -> None:
+        eqx.tree_serialise_leaves(path, self.params)
 
-    def v_val(self, states: torch.Tensor) -> torch.Tensor:
-        v_vals = self.net.forward(states)
-        return v_vals
+    def load(self, path: str) -> None:
+        self.params = eqx.tree_deserialise_leaves(path, self.params)
+        self.net = self.params
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
+    def forward(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch 1"]:
+        """Value of each state, shape ``[batch, 1]``."""
+        return self.params.forward(_f32(states))
 
-        # build up mse loss for v function
-        states = torch.Tensor(batch.states)
-        v_vals = self.v_val(states).view(-1)
-        v_targets = torch.as_tensor(batch["tv"], dtype=torch.float32).view(-1)
-        w = torch.cat([p.view(-1) for p in self.parameters()])
-        obj = self.loss(v_vals, v_targets) + self.l2 * torch.norm(w)
-        return obj
+    def v_val(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch 1"]:
+        return self.forward(states)
+
+    def tr_obj(self, batch: Batch) -> Float[Array, ""]:
+        """Mean squared error plus an L2 penalty on the weights."""
+        return self.objective_on(self.params, batch)
+
+    def objective_on(self, params: MultilayerPerceptron, batch: Batch) -> Float[Array, ""]:
+        """Value loss at an explicit parameter tree. Same expression as ``tr_obj``."""
+        return _v_loss(params, _f32(batch.states), _f32(batch["tv"]).reshape(-1), self.l2)
+
+    def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
+        """L-BFGS on this batch. The jit closes over arrays, not over ``self``.
+
+        ``VanillaGradient.perform_sgd`` is the same algorithm. This override keeps the compiled
+        objective from capturing the Python wrapper, which XLA cannot treat as a pytree.
+        """
+        states = _f32(batch.states)
+        targets = _f32(batch["tv"]).reshape(-1)
+        flat0, unravel = ravel_module(self.params)
+        objective = eqx.filter_jit(lambda vector: _v_loss(unravel(vector), states, targets, self.l2))
+        value_and_grad = jax.jit(jax.value_and_grad(objective))
+        old = float(objective(flat0))
+
+        def closure(x: np.ndarray) -> tuple[float, np.ndarray]:
+            vector = jnp.asarray(x, dtype=jnp.float32)
+            loss, grad = value_and_grad(vector)
+            return float(loss), np.asarray(grad, dtype=np.float64)
+
+        updated, _, _ = scipy.optimize.fmin_l_bfgs_b(closure, np.asarray(flat0, dtype=np.float64), maxiter=maxiter)
+        self.params = unravel(jnp.asarray(updated, dtype=jnp.float32))
+        self.net = self.params
+        new = float(objective(jnp.asarray(updated, dtype=jnp.float32)))
+        self.cli.print(self.fmtstr % (curst, old, new))
+
+
+def _v_loss(
+    network: MultilayerPerceptron,
+    states: Float[Array, "batch obs"],
+    targets: Float[Array, " batch"],
+    l2: float,
+) -> Float[Array, ""]:
+    prediction = network.forward(states).reshape(-1)
+    flat, _ = ravel_module(network)
+    return jnp.mean(jnp.square(prediction - targets)) + l2 * jnp.linalg.norm(flat)

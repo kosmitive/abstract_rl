@@ -1,9 +1,9 @@
 # Abstract RL
 
-Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
-(environment wrapper, trajectory operators, policies, value functions). Python 3.13, [uv](https://docs.astral.sh/uv/),
-ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
-Stable-Baselines3.
+Modular JAX implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
+(environment wrapper, trajectory operators, policies, value functions). Networks are Equinox modules and the
+optimisers are Optax. Python 3.13, [uv](https://docs.astral.sh/uv/), ruff, mypy; runs on Gymnasium environments
+with one- and multi-dimensional actions and is benchmarked against Stable-Baselines3.
 
 | MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 |
 |---|---|
@@ -23,10 +23,15 @@ uv sync                                   # add --extra mujoco and/or baselines 
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
-PyTorch comes from the CPU wheel index (enough for these small networks); remove the `[tool.uv.sources]` entry in
-`pyproject.toml` for the default CUDA build.
+JAX is installed from the CPU extra (`jax[cpu]`). A machine with CUDA can still run on the GPU; `jax-metal` is
+not used. The optional `baselines` extra installs Stable-Baselines3, and with it a CPU PyTorch wheel. That
+dependency stays out of the core package.
 
 ## Results
+
+The table below is the previous PyTorch run of this repository (5 seeds, same Hydra configs). The JAX port keeps
+those configs and the algorithm. A per-epoch timing comparison of the two implementations is in
+[Epoch time](#epoch-time).
 
 Configurations are Hydra YAML files in [`config/`](config) (`run env=<env> alg=<alg> seed=N`),
 **5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `config/env/<env>.yaml`).
@@ -109,12 +114,12 @@ src/abstract_rl/
 │                                     vanilla gradient (L-BFGS / Adam), non-parametric temperature dual
 ├── data_structures/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
-│   └── temporal_difference_data/     Trajectory, TrajectoryBuilder, TrajectoryCollection (replay), Batch
-├── env/                              MCMCEnvWrapper: runs whole episodes of a policy in a Gymnasium env
+│   └── temporal_difference_data/     Trajectory, TrajectoryCollection, on-device ReplayBuffer, Batch
+├── env/                              MCMCEnvWrapper: whole episodes, optional Gymnasium vector env for TRPO
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
-├── policy/                           univariate and diagonal Gaussian policy (+ select_policy), non-parametric policy
-├── value_functions/                  fully connected V and Q networks
-├── neural_modules/                   MLP building block
+├── policy/                           univariate and diagonal Gaussian policy (Equinox), non-parametric policy
+├── value_functions/                  fully connected V (L-BFGS) and Q (Adam) networks
+├── neural_modules/                   Equinox MLP building block
 ├── run/                              training loops (run_trpo, run_mpo_non_parametric), policy replay
 ├── scripts/                          Hydra entry point (run.py, hydra_conf.py), evaluate / baselines / compare
 └── misc/ and plots/                  CLI printer, data logger, running filters, plots
@@ -124,9 +129,10 @@ A training loop is a sequence of operator applications on trajectory collections
 
 - **TRPO** per epoch: collect `policy_batch_size` steps → `TD` operator (returns, bootstrapped at time limits) →
   `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
-- **MPO** per epoch: collect `env_sample` steps into the replay collection → `Resample` operator (actions from the
+- **MPO** per epoch: collect `env_sample` steps into the on-device replay → `Resample` operator (actions from the
   target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric
-  E-step) → KL constrained weighted maximum likelihood (M-step) → `Retrace` operator → Q function fit (Adam).
+  E-step) → KL constrained weighted maximum likelihood (M-step, one `lax.scan`) → `Retrace` operator → Q function
+  fit (Adam, one `lax.scan`).
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
 
@@ -144,7 +150,8 @@ The original code (2019, Python 3.6, PyTorch 1.0, gym 0.12) targeted robot contr
 module layout and operator design. In short:
 
 - uv + `pyproject.toml` (Python ≥ 3.13, src layout, `abstract_rl.*` imports), ruff, mypy, pytest; `gym` → `gymnasium`
-  (`terminated`/`truncated`); modern PyTorch APIs.
+  (`terminated`/`truncated`). Networks are Equinox modules, optimisers are Optax, and the core package does not
+  depend on PyTorch.
 - Removed (still in the history of `main`): the experimental SAC, the dueling Q network, the circular tail
   memory, the robot specific scripts, unused helpers.
 - Added: `DiagonalGaussianPolicy` for multi-dimensional actions, tanh action squashing, table driven benchmark

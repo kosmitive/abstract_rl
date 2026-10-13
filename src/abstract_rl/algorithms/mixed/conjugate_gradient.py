@@ -1,49 +1,47 @@
+"""Conjugate gradient for the Fisher-vector product inside TRPO."""
+
 from collections.abc import Callable
 
-import torch
+import jax.numpy as jnp
+from jaxtyping import Array, Float
 
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
-def conjugate_gradient(A: Callable, b: torch.Tensor, max_k: int = 10, tol: float = 1e-10) -> torch.Tensor:
-    """
-    Implementation of conjugate gradient algorithm. It uses vector matrix products for efficient calculation. See
-    https://en.wikipedia.org/wiki/Conjugate_gradient_method for more details of the algorithm. See also
-    https://github.com/ikostrikov/pytorch-trpo/blob/master/trpo.py.
-    :param A: A function f : R[n] -> R[n], lambda to evaluate matrix vector product.
-    :param b: The result of the vector multiplication.
-    :param max_k: The maximum number of iterations.
-    :param damping: Damping for vector products.
-    :return: The found solution for the equation,
-    """
+def conjugate_gradient(
+    matrix_vector: Callable[[Float[Array, " n"]], Float[Array, " n"]],
+    vector: Float[Array, " n"],
+    max_k: int = 10,
+    tol: float = 1e-10,
+) -> Float[Array, " n"]:
+    """Solve ``A x = b`` with conjugate gradients.
 
-    # start with residual
-    x = torch.zeros_like(b)
-    r = b.clone()
-    p = b.clone()
+    Args:
+        matrix_vector: Computes the matrix-vector product ``A p``.
+        vector: Right hand side ``b``.
+        max_k: Iteration cap.
+        tol: Stop when the residual squared norm falls to this value.
 
-    k = 0
-    rdotr = torch.dot(r, r)
+    Returns:
+        The approximate solution.
+    """
+    solution = jnp.zeros_like(vector)
+    residual = vector
+    direction = vector
+    residual_norm = jnp.dot(residual, residual)
     cli = CliPrinter().instance
-
+    k = 0
     with cli.header("conjugate gradients started", False):
         while k < max_k:
-            # remaining fields
-            _Avp = A(p)
-            alpha = rdotr / torch.dot(p, _Avp)
-
-            # update x and r
-            x += alpha * p
-            r -= alpha * _Avp
-
-            new_rdotr = torch.dot(r, r)
-            beta = new_rdotr / rdotr
-            p = beta * p + r
-            rdotr = new_rdotr
-            if rdotr <= tol:
+            product = matrix_vector(direction)
+            alpha = residual_norm / jnp.dot(direction, product)
+            solution = solution + alpha * direction
+            residual = residual - alpha * product
+            next_norm = jnp.dot(residual, residual)
+            beta = next_norm / residual_norm
+            direction = beta * direction + residual
+            residual_norm = next_norm
+            if float(residual_norm) <= tol:
                 break
-
-            # calculate next conjugate gradient
             k += 1
-
-    return x
+    return solution

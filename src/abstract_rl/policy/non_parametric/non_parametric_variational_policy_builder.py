@@ -1,7 +1,6 @@
-from typing import Any
+"""Temperature of the non-parametric E-step."""
 
 import numpy as np
-import torch
 
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -10,10 +9,7 @@ from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametri
 
 
 class NonParametricVariationalPolicyBuilder:
-    """
-    Represents a non parametric variational policy builder. It can be fed with data samples and reweights them
-    to a non parametric distribution by solving the optimization problem from REPS
-    """
+    """Fits the temperature η of the non-parametric variational distribution on the replay."""
 
     def __init__(self, mc: ModelConfiguration) -> None:
         self.mc = mc
@@ -26,31 +22,35 @@ class NonParametricVariationalPolicyBuilder:
         self.max_steps = conf["max_steps"]
         self.tar_network = mc.get("q_network", True)
         self.tar_policy = mc.get("policy", True)
-        self.eta: Any = [self.non_parametric_variational_init_eta]
+        self.eta = np.asarray([self.non_parametric_variational_init_eta], dtype=np.float32)
         self.log = self.mc["log"]
         self.log.create_field("eta", 1)
 
     def calc_eta(self) -> None:
-        """
-        Calculate the optimal eta using the find optimal temperature function.
-        """
-        tc = self.mc.get("tc")
-
-        # append all q values and likelihoods
-        q_tensor = np.concatenate(tuple([q["add_q"] for q in tc.trajectories()]))
+        """Minimise the dual on every stored Q sample and log the temperature."""
+        collection = self.mc.get("tc")
+        device = getattr(collection, "device", None)
+        if device is not None and device.size:
+            q_values = device.add_q[: device.size]
+        else:
+            q_values = np.concatenate([np.asarray(traj["add_q"]) for traj in collection.trajectories()])
         eta = find_optimal_temperature(
-            torch.Tensor(q_tensor), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
+            q_values,
+            float(self.non_parametric_variational_eps),
+            float(np.reshape(self.eta, (-1,))[0]),
+            self.non_parametric_variational_lr,
+            int(self.max_steps),
         )
-
-        self.eta = eta.detach().numpy()
-        self.log.log({"eta": self.eta})
+        self.eta = np.asarray(eta, dtype=np.float32)
+        self.log.log({"eta": self.eta.reshape(-1)})
 
     def build(self, trajectory: Trajectory) -> NonParametricPolicy:
-        """
-        Takes a trajectory or batch data and builds the correct samples.
-        :param trajectory: Tje trajectory to transform.
-        :return: A non parametric policy.
-        """
+        """Un-normalised log weights ``Q / η`` for one trajectory.
 
-        exp_samples = trajectory["add_q"] / self.eta
-        return NonParametricPolicy(exp_samples)
+        Args:
+            trajectory: Trajectory carrying ``add_q``.
+
+        Returns:
+            A non-parametric policy over those samples.
+        """
+        return NonParametricPolicy(np.asarray(trajectory["add_q"]) / self.eta)

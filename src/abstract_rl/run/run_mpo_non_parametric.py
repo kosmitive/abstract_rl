@@ -2,7 +2,6 @@ from os.path import join
 from typing import Any
 
 import numpy as np
-import torch
 from numpy import ndarray
 
 from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
@@ -41,7 +40,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
     cli = CliPrinter().instance
 
     seed = run_conf["seed"]
-    torch.manual_seed(seed)
     np.random.seed(seed)
     num_epochs = run_conf["num_epochs"]
     max_steps = run_conf["max_steps"]
@@ -104,6 +102,9 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         rnk = VariationalRankingOperator(mc)
         mc.add_main("rnk", rnk)
 
+    # fixed on-device arrays behind the trajectory collection, read by the jitted updates
+    tc.attach_device(int(run_conf.get_root("res_add_acts")), int(max_steps))
+
     # names for rewards
     stoch_reward = "sreward"
 
@@ -160,7 +161,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         # --------------------------------
 
         with cli.header("e-step", 1):
-            # resample extra actions and q values
             res.transform_all(tc)
             rnk.hook()
             rnk.transform_all(tc)

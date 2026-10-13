@@ -1,270 +1,601 @@
+"""MPO M-step: fit the parametric policy to the E-step under a mean KL trust region.
+
+The default path (non-parametric, no coordinate ascent) runs the policy Adam step and the
+Lagrange Adam step inside one ``lax.scan``. Parametric mode and coordinate ascent use the
+same objective through ``perform_step``.
+"""
+
 from typing import Any
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-import torch.optim as optim
+import optax
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
-from abstract_rl.misc.flat_params import get_flat_params_from
+from abstract_rl.misc.flat_params import l2_norm
+from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
+from abstract_rl.policy.continuous.gaussian_math import GaussianParams, forward, kl_divergence, kl_normal, log_prob
+
+_STATS_CHUNK = 1024
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
-    """
-    Implementation of Maximum A Posteriori Policy optimization (mpo), e.g. see the original paper for more
-    information https://arxiv.org/abs/1806.06920. It estimates the q values using a critic based on retrace, which
-    is not inherent to this algorithm, so it is not defined in this class. From these q values a variational
-    distribution is fitted. This 'reweighted' policy is then used to fit the current iterated policy to the optimal
-    one in a supervised fashion.
+    """Maximum a posteriori policy optimisation.
+
+    See https://arxiv.org/abs/1806.06920. Retrace lives outside this class. One Adam step updates
+    the policy (max step) and one Adam step updates the positive Lagrange multiplier (min step).
     """
 
     def __repr__(self) -> str:
         return "Maximum A Posteriori Policy Optimization"
 
     def __init__(self, mc: ModelConfiguration) -> None:
-        """
-        Initializes a new maximum a posteriori policy optimization algorithm.
-        :param mc: The model configuration, containing all important elements, like env or similar.
-        """
-        PolicyOptimizationAlgorithm.__init__(self, mc)
+        """Create the policy and dual Adam states.
 
-        # create lagrange multiplier
+        Args:
+            mc: Model configuration. The active namespace is the algorithm.
+        """
+        super().__init__(mc)
         policy = self.mc.get("policy", target=False)
-        num_lagrange_multipliers = policy.get_suff_stats_dim()
-
-        # inner and outer learning rated, trust regions and batch size shortcuts
-        self.outer_lr = self.conf["outer_lr"]
-        self.inner_lr = self.conf["inner_lr"]
-        self.mode = self.conf["mode"]
+        self.outer_lr = float(self.conf["outer_lr"])
+        self.inner_lr = float(self.conf["inner_lr"])
+        self.mode = str(self.conf["mode"])
         self.trust_regions = self.conf["trust_regions"]
-        self.split_objective = self.conf["coordinate_ascent_objective"]
-        self.split_constraint = self.conf["coordinate_ascent_constraint"]
+        self.split_objective = bool(self.conf["coordinate_ascent_objective"])
+        self.split_constraint = bool(self.conf["coordinate_ascent_constraint"])
+        self.l2_reg = float(self.conf.get("l2_reg", 0.0))
         self.cli = CliPrinter().instance
-        self.l2_reg = self.conf.get("l2_reg", 0.0)
+        self._check_mode()
 
-        num_params = 1 if not self.split_constraint else num_lagrange_multipliers
-        self.lagrange_mults = [torch.nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(num_params)]
+        match self.split_constraint:
+            case True:
+                self.num_params = policy.get_suff_stats_dim()
+            case False:
+                self.num_params = 1
+        match self.num_params:
+            case 1:
+                self.lm = jnp.ones((), dtype=jnp.float32)
+            case _:
+                self.lm = jnp.ones((self.num_params,), dtype=jnp.float32)
         self.v = self.sample_v()
+        self.tx_outer = optax.adam(self.outer_lr)
+        self.tx_inner = optax.adam(self.inner_lr)
+        diff, _static = eqx.partition(policy.params, eqx.is_inexact_array)
+        self.opt_outer = self.tx_outer.init(diff)
+        self.opt_inner = self.tx_inner.init(self.lm)
+        self.policy: ContinuousPolicy = policy
+        self.fmtstr = "%10i | %10.5f" + self.num_params * " | %10.5f x %10.5f"
+        self.titlestr = "%10s | %10s" + self.num_params * " | %23s"
 
-        # optimizers are persistent over all steps, so adam can accumulate its moment estimates
-        self.opt_outer = optim.Adam(policy.parameters(), lr=self.outer_lr)
-        self.opt_inner = optim.Adam(self.lagrange_mults, lr=self.inner_lr)
-
-        self.fmtstr = "%10i | %10.5f" + num_params * " | %10.5f x %10.5f"
-        self.titlestr = "%10s | %10s" + num_params * " | %23s"
+    def _check_mode(self) -> None:
+        match self.mode:
+            case "non-parametric" | "parametric":
+                return
+            case _:
+                raise NotImplementedError(f"unknown MPO mode {self.mode}")
 
     def sample_v(self) -> list[Any]:
-        """Sample new trust regions.
+        """Draw the trust-region bounds for this epoch.
 
-        :return: the new sampled trust regions.
+        A scalar bound is used as-is. A pair ``[low, high]`` is sampled uniformly.
+
+        Returns:
+            One bound per constraint. The default configuration has a single bound.
         """
-
-        samp_trust_regions = self.trust_regions
-        v: list[Any] = [None] * len(samp_trust_regions)
-        for d in range(len(samp_trust_regions)):
-            if isinstance(samp_trust_regions[d], list):
-                v[d] = np.random.uniform(samp_trust_regions[d][0], samp_trust_regions[d][1])
+        sampled: list[Any] = []
+        for bound in self.trust_regions:
+            if isinstance(bound, list):
+                sampled.append(float(np.random.uniform(bound[0], bound[1])))
             else:
-                v[d] = samp_trust_regions[d]
-
-        self.v = v
+                sampled.append(float(bound))
+        self.v = sampled
         return self.v
 
-    def shuffle_up_stats(self, batch: Batch) -> list[torch.Tensor]:
-        """Use this to create a list, where each sufficient statistic from the
-        normal policy is mixed with the target ones, so the objective and
-        constraint can be effectively splitted up.
+    def shuffle_up_stats(self, batch: Batch) -> list[Float[Array, "batch stats"]]:
+        """Mix current and target sufficient statistics, one vector per coordinate.
 
-        :param batch: The batch to use for obtaining the sufficient statistics
-        :return:
+        The first entry is the live policy. Each later entry replaces every coordinate but one
+        with the target policy, which is how coordinate ascent splits the objective.
+
+        Args:
+            batch: Minibatch whose states are evaluated.
+
+        Returns:
+            ``1 + dim`` statistic matrices.
         """
+        states = jnp.asarray(batch.states, dtype=jnp.float32)
+        current = self.policy.forward(states)
+        target = jax.lax.stop_gradient(self.mc.get("policy", True).forward(states))
+        return _mixed_stats(current, target)
 
-        # get target and correct policy
-        t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get("policy", target=True)
-        policy = self.mc.get("policy", target=False)
+    def main_obj(self, batch: Batch, l_suff_stats: list[Float[Array, "batch stats"]]) -> Float[Array, ""]:
+        """Weighted objective, summed over coordinates when coordinate ascent is on.
 
-        # target stats
-        target_suff_stats = t_policy.forward(t_states).detach()
-        suff_stats = policy.forward(t_states)
-        l_suff_stats = []
-        l_suff_stats.append(suff_stats)
+        Args:
+            batch: Minibatch of actions and E-step weights.
+            l_suff_stats: Statistics from ``shuffle_up_stats``.
 
-        # for each dimension
-        num_dims = target_suff_stats.size()[1]
-        for d in range(num_dims):
-            lst_els = []
-            if d > 0:
-                lst_els.append(target_suff_stats[:, :d])
-            lst_els.append(suff_stats[:, d : d + 1].view([-1, 1]))
-            if d < num_dims - 1:
-                lst_els.append(target_suff_stats[:, d + 1 :])
-            l_suff_stats.append(torch.cat(lst_els, dim=1))
-
-        return l_suff_stats
-
-    def main_obj(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> torch.Tensor:
-        """Obtain the objective based on the list of sufficient statistics.
-
-        :param batch: The batch to use.
-        :param l_suff_stats: A list of sufficient statistics.
-        :return A list of constraints
+        Returns:
+            Scalar objective, including the L2 penalty.
         """
+        match self.split_objective:
+            case True:
+                total = jnp.zeros(())
+                for index in range(l_suff_stats[0].shape[1]):
+                    total = total + self.__lagrange_obj(batch, l_suff_stats[index + 1])
+                return total
+            case False:
+                return self.__lagrange_obj(batch, l_suff_stats[0])
 
-        # split objective if wanted
-        t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get("policy", target=True)
+    def main_constraints(self, batch: Batch, l_suff_stats: list[Float[Array, "batch stats"]]) -> list[Float[Array, ""]]:
+        """Trust-region slack ``epsilon - KL`` for each active constraint.
 
-        target_suff_stats = t_policy.forward(t_states).detach()
-        if self.split_objective:
-            # build the objective in a coordinate ascent fashion
-            # iterate over the dimensions
-            num_dims = target_suff_stats.size()[1]
-            obj = torch.zeros(1)
-            for d in range(num_dims):
-                part_obj = self.__lagrange_obj(batch, l_suff_stats[d + 1])
-                obj = obj + part_obj
+        Non-parametric mode uses the m-projection. Parametric mode uses the i-projection.
 
-        else:
-            obj = self.__lagrange_obj(batch, l_suff_stats[0])
+        Args:
+            batch: Minibatch the divergence is averaged over.
+            l_suff_stats: Statistics from ``shuffle_up_stats``.
 
-        return obj
-
-    def main_constraints(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Obtain all constraints using the list of sufficient statistics and the batch.
-
-        :param batch: The batch to use.
-        :param l_suff_stats: A list of sufficient statistics.
-        :return A list of constraints
+        Returns:
+            One slack per Lagrange multiplier.
         """
+        match self.mode:
+            case "parametric":
+                projection = "i-projection"
+            case "non-parametric":
+                projection = "m-projection"
+            case _:
+                raise NotImplementedError(self.mode)
+        match self.split_constraint:
+            case True:
+                return [
+                    jnp.asarray(self.v[index], dtype=jnp.float32)
+                    - self.policy.kl_divergence(batch, l_suff_stats[index + 1], projection, "mean")
+                    for index in range(l_suff_stats[0].shape[1])
+                ]
+            case False:
+                return [
+                    jnp.asarray(self.v[0], dtype=jnp.float32)
+                    - self.policy.kl_divergence(batch, l_suff_stats[0], projection, "mean")
+                ]
 
-        kl = "i-projection" if self.mode == "parametric" else "m-projection"
-        policy = self.mc.get("policy", target=False)
-        t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get("policy", target=True)
-        target_suff_stats = t_policy.forward(t_states).detach()
+    def obj(self, batch: Batch) -> Float[Array, ""]:
+        """Full Lagrangian, ``objective + exp(lambda) * constraint``.
 
-        # split constraint if wanted
-        if self.split_constraint:
-            num_dims = target_suff_stats.size()[1]
-            constraints = []
-            for d in range(num_dims):
-                c = self.v[d] - policy.kl_divergence(batch, l_suff_stats[d + 1], kl, "mean")
-                constraints.append(c)
+        Args:
+            batch: Minibatch used for the objective and the constraints.
 
-        else:
-            constraints = [(self.v[0] - policy.kl_divergence(batch, l_suff_stats[0], kl, "mean"))]
-
-        return constraints
-
-    def obj(self, batch: Batch) -> torch.Tensor:  # type: ignore[override]
+        Returns:
+            Scalar Lagrangian.
         """
-        Calculate the objective based on the objective and the splitted kl divergence constraints.
-        :param batch: Batch to estimate objective and constraints
-        :return: A un-detached version of the objective
-        """
-
-        l_suff_stats = self.shuffle_up_stats(batch)
-        obj = self.main_obj(batch, l_suff_stats)
-        constraints = self.main_constraints(batch, l_suff_stats)
-        for lm, c in zip(self.lagrange_mults, constraints):
-            obj = obj + torch.exp(lm) * c
-
-        return obj
+        stats = self.shuffle_up_stats(batch)
+        value = self.main_obj(batch, stats)
+        multipliers = jnp.reshape(self.lm, (-1,))
+        for multiplier, slack in zip(multipliers, self.main_constraints(batch, stats), strict=True):
+            value = value + jnp.exp(multiplier) * slack
+        return value
 
     def perform_mult_steps(self, num_steps: int, tc: TrajectoryCollection, batch_size: int) -> None:
-        """
-        Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
-        constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
-        objective is created based on lagrangian multipliers and the theory of min max optimization.
-        """
+        """M-step over ``num_steps`` minibatches from ``tc``.
 
+        The non-parametric update without coordinate ascent is one ``lax.scan`` on the on-device
+        copy. Every other setting runs ``perform_step`` on samples from the trajectories.
+
+        Args:
+            num_steps: Outer iterations. Each one takes one max step and one min step.
+            tc: Trajectory collection. MPO attaches an on-device copy before training.
+            batch_size: Transitions per step.
+        """
+        if num_steps <= 0:
+            return
         self.sample_v()
-        self.cli.empty().print(
-            self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
-        )
-
-        # perform a min step
-        for s in range(num_steps):
-            batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
-            self.perform_step(s, batch)
+        labels = tuple(f"lm_{index} x constr_{index}" for index in range(self.num_params))
+        self.cli.empty().print(self.titlestr % ("k", "objective", *labels))
+        device = tc.device
+        match (self.mode, self.split_objective, self.split_constraint, device is not None and device.size > 0):
+            case ("non-parametric", False, False, True):
+                self._scan_default(device, num_steps, min(int(batch_size), int(device.size)))
+            case _:
+                for step in range(num_steps):
+                    batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
+                    self.perform_step(step, batch)
 
     def perform_step(self, step: int, batch: Batch) -> None:
-        """
-        Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
-        constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
-        objective is created based on lagrangian multipliers and the theory of min max optimization.
-        """
+        """One max step on the policy and one min step on the multiplier.
 
-        # perform a min step
+        Args:
+            step: Step index, printed every tenth update.
+            batch: Minibatch with the E-step fields.
+        """
         self.__max_step(batch)
         self.__min_step(batch)
-
-        l_suff_stats = self.shuffle_up_stats(batch)
-        obj = self.main_obj(batch, l_suff_stats)
-        constraints = self.main_constraints(batch, l_suff_stats)
-
         if step % 10 == 0:
-            vals = [float(v.detach()) for pair in zip(self.lagrange_mults, constraints) for v in pair]
-            self.cli.print(self.fmtstr % (step, obj.item(), *vals))
+            stats = self.shuffle_up_stats(batch)
+            objective = float(self.main_obj(batch, stats))
+            constraints = self.main_constraints(batch, stats)
+            multipliers = np.asarray(self.lm).reshape(-1)
+            values: list[float] = []
+            for multiplier, slack in zip(multipliers, constraints, strict=True):
+                values.extend((float(multiplier), float(slack)))
+            self.cli.print(self.fmtstr % (step, objective, *values))
 
-    def __lagrange_obj(self, batch: Batch, suff_stats: torch.Tensor) -> torch.Tensor:
+    def __lagrange_obj(self, batch: Batch, suff_stats: Float[Array, "batch stats"]) -> Float[Array, ""]:
+        """Reweighted objective at an explicit sufficient statistic, before the constraints.
+
+        Args:
+            batch: Minibatch. Parametric mode reads ``a``; non-parametric mode reads the E-step.
+            suff_stats: Sufficient statistics the log density is evaluated at.
+
+        Returns:
+            Scalar objective minus the L2 penalty.
         """
-        Calculated the reweighted objective needed for the min max problem. This is only partly
-        the objective as the lagrange constraints are missing.
-        :param batch: The batch to use for estimating the objective.
-        :param suff_stats: A matrix containing for each element of the batch a vector of the
-               sufficient statistics.
-        :return: The calculated objective.
-        """
-
-        policy = self.mc.get("policy", target=False)
-
-        # build regularization for mean
-        if self.mode == "parametric":
-            act = torch.Tensor(batch.actions)
-            adv = torch.Tensor(batch["a"])
-
-            # sample sufficient statistics
-            ll = policy.log_prob(act, suff_stats=suff_stats)
-            rew_vals = torch.exp(ll) * adv
-            obj = torch.mean(rew_vals)
-
-        else:
-            t_add_act = torch.Tensor(batch["add_act"])
-            t_add_q = torch.Tensor(batch["grad_ranking"])
-
-            # sample sufficient statistics
-            # weighted maximum likelihood: E_s [ sum_a q(a|s) log pi(a|s) ], where q(a|s) is normalized per state
-            ll = policy.log_prob(t_add_act, suff_stats=suff_stats)
-            rew_vals = torch.exp(t_add_q) * ll
-            obj = torch.mean(torch.sum(rew_vals, dim=1))
-
-        w = get_flat_params_from(policy)
-        return obj - self.l2_reg * torch.norm(w)
+        return _weighted(self.policy.params, suff_stats, *_objective_inputs(self.mode, self.l2_reg, batch))
 
     def __max_step(self, batch: Batch) -> None:
-        """
-        Solves the minimization problem targeting the policy parameters only.
-        """
+        """Adam step that ascends the Lagrangian with respect to the policy."""
+        states, actions, advantages, add_act, ranking = _batch_arrays(batch, self.mode)
+        target = self.mc.get("policy", True).params
+        epsilon = jnp.asarray(self.v, dtype=jnp.float32)
+        multiplier = jax.lax.stop_gradient(self.lm)
+        mode = self.mode
+        split_objective = self.split_objective
+        split_constraint = self.split_constraint
+        l2_reg = self.l2_reg
+        diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
 
-        # optimize
-        self.opt_outer.zero_grad()
-        obj = -self.obj(batch)
-        obj.backward()
-        self.opt_outer.step()
+        def loss(weights: Any) -> Float[Array, ""]:
+            params = eqx.combine(weights, static)
+            total, _main, _slack = _full_lagrangian(
+                params,
+                multiplier,
+                target,
+                states,
+                mode,
+                split_objective,
+                split_constraint,
+                epsilon,
+                l2_reg,
+                actions,
+                advantages,
+                add_act,
+                ranking,
+            )
+            return -total
+
+        _value, grads = eqx.filter_value_and_grad(loss)(diff)
+        updates, self.opt_outer = self.tx_outer.update(grads, self.opt_outer, diff)
+        self.policy.params = eqx.combine(eqx.apply_updates(diff, updates), static)
 
     def __min_step(self, batch: Batch) -> None:
-        """
-        Solves the minimization problem targeting the lagrange multiplies. Note that they have to be
-        positive.
-        """
+        """Adam step that descends the Lagrangian with respect to the multiplier."""
+        states, actions, advantages, add_act, ranking = _batch_arrays(batch, self.mode)
+        params = self.policy.params
+        target = self.mc.get("policy", True).params
+        epsilon = jnp.asarray(self.v, dtype=jnp.float32)
+        mode = self.mode
+        split_objective = self.split_objective
+        split_constraint = self.split_constraint
+        l2_reg = self.l2_reg
 
-        # training step
-        self.opt_inner.zero_grad()
-        obj = self.obj(batch)
-        obj.backward()
-        self.opt_inner.step()
+        def loss(multiplier: Float[Array, "..."]) -> Float[Array, ""]:
+            total, _main, _slack = _full_lagrangian(
+                params,
+                multiplier,
+                target,
+                states,
+                mode,
+                split_objective,
+                split_constraint,
+                epsilon,
+                l2_reg,
+                actions,
+                advantages,
+                add_act,
+                ranking,
+            )
+            return total
+
+        _value, grads = jax.value_and_grad(loss)(self.lm)
+        updates, self.opt_inner = self.tx_inner.update(grads, self.opt_inner, self.lm)
+        self.lm = eqx.apply_updates(self.lm, updates)
+
+    def _scan_default(self, replay: ReplayBuffer, num_steps: int, batch_size: int) -> None:
+        """Jitted non-parametric M-step. Logs the main objective, the raw multiplier and the slack."""
+        _fill_target_stats(replay, self.mc.get("policy", target=True).params)
+        diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
+        diff, self.opt_outer, self.lm, self.opt_inner, main, multipliers, constraints = _mpo_scan(
+            diff,
+            static,
+            self.opt_outer,
+            self.lm,
+            self.opt_inner,
+            self.tx_outer,
+            self.tx_inner,
+            replay.states,
+            replay.add_act,
+            replay.ranking,
+            replay.target_stats,
+            self.mc.rng.split(),
+            jnp.int32(replay.size),
+            num_steps,
+            batch_size,
+            jnp.float32(self.v[0]),
+            self.l2_reg,
+        )
+        self.policy.params = eqx.combine(diff, static)
+        main_np = np.asarray(main)
+        lm_np = np.asarray(multipliers)
+        constraint_np = np.asarray(constraints)
+        for step in range(num_steps):
+            if step % 10 == 0:
+                self.cli.print(self.fmtstr % (step, main_np[step], lm_np[step], constraint_np[step]))
+
+
+def _mixed_stats(
+    current: Float[Array, "batch stats"], target: Float[Array, "batch stats"]
+) -> list[Float[Array, "batch stats"]]:
+    """Live statistics, then one mixed vector per coordinate."""
+    frozen = jax.lax.stop_gradient(target)
+    mixed = [current]
+    width = current.shape[1]
+    for index in range(width):
+        parts: list[Float[Array, "batch ?"]] = []
+        if index > 0:
+            parts.append(frozen[:, :index])
+        parts.append(current[:, index : index + 1])
+        if index < width - 1:
+            parts.append(frozen[:, index + 1 :])
+        mixed.append(jnp.concatenate(parts, axis=1))
+    return mixed
+
+
+def _objective_inputs(
+    mode: str, l2_reg: float, batch: Batch
+) -> tuple[str, float, Float[Array, "..."], Float[Array, "..."], Float[Array, "..."], Float[Array, "..."]]:
+    """Arguments of ``_weighted`` after the sufficient statistics."""
+    states_n = len(batch)
+    match mode:
+        case "parametric":
+            actions = jnp.asarray(batch.actions, dtype=jnp.float32)
+            advantages = jnp.asarray(batch["a"], dtype=jnp.float32)
+            add_act = jnp.zeros((states_n, 1, actions.shape[-1]), dtype=jnp.float32)
+            ranking = jnp.zeros((states_n, 1), dtype=jnp.float32)
+        case "non-parametric":
+            actions = jnp.asarray(batch.actions, dtype=jnp.float32)
+            advantages = jnp.zeros((states_n,), dtype=jnp.float32)
+            add_act = jnp.asarray(batch["add_act"], dtype=jnp.float32)
+            ranking = jnp.asarray(batch["grad_ranking"], dtype=jnp.float32)
+        case _:
+            raise NotImplementedError(mode)
+    return mode, l2_reg, actions, advantages, add_act, ranking
+
+
+def _batch_arrays(
+    batch: Batch, mode: str
+) -> tuple[
+    Float[Array, "batch obs"],
+    Float[Array, "..."],
+    Float[Array, "..."],
+    Float[Array, "..."],
+    Float[Array, "..."],
+]:
+    """States plus the action tensors ``_full_lagrangian`` reads."""
+    _mode, _l2, actions, advantages, add_act, ranking = _objective_inputs(mode, 0.0, batch)
+    states = jnp.asarray(batch.states, dtype=jnp.float32)
+    return states, actions, advantages, add_act, ranking
+
+
+def _weighted(
+    params: GaussianParams,
+    suff_stats: Float[Array, "batch stats"],
+    mode: str,
+    l2_reg: float,
+    actions: Float[Array, "..."],
+    advantages: Float[Array, "..."],
+    add_act: Float[Array, "..."],
+    ranking: Float[Array, "..."],
+) -> Float[Array, ""]:
+    """Parametric likelihood ratio, or the non-parametric weighted log density, minus L2."""
+    match mode:
+        case "parametric":
+            density = log_prob(params, actions, suff_stats=suff_stats).reshape(-1)
+            objective = jnp.mean(jnp.exp(density) * advantages.reshape(-1))
+        case "non-parametric":
+            density = log_prob(params, add_act, suff_stats=suff_stats)
+            objective = jnp.mean(jnp.sum(jnp.exp(ranking) * density, axis=1))
+        case _:
+            raise NotImplementedError(mode)
+    return objective - l2_reg * l2_norm(params)
+
+
+def _full_lagrangian(
+    params: GaussianParams,
+    multiplier: Float[Array, "..."],
+    target: GaussianParams,
+    states: Float[Array, "batch obs"],
+    mode: str,
+    split_objective: bool,
+    split_constraint: bool,
+    epsilon: Float[Array, " constraints"],
+    l2_reg: float,
+    actions: Float[Array, "..."],
+    advantages: Float[Array, "..."],
+    add_act: Float[Array, "..."],
+    ranking: Float[Array, "..."],
+) -> tuple[Float[Array, ""], Float[Array, ""], list[Float[Array, ""]]]:
+    """Lagrangian used by the Python M-step, including coordinate ascent.
+
+    Returns:
+        The full Lagrangian, the main objective printed in the log, and each constraint slack.
+    """
+    current = forward(params, states)
+    mixed = _mixed_stats(current, forward(target, states))
+    width = current.shape[1]
+    match split_objective:
+        case True:
+            main = jnp.zeros(())
+            for index in range(width):
+                main = main + _weighted(params, mixed[index + 1], mode, l2_reg, actions, advantages, add_act, ranking)
+        case False:
+            main = _weighted(params, mixed[0], mode, l2_reg, actions, advantages, add_act, ranking)
+    match mode:
+        case "parametric":
+            projection = "i-projection"
+        case "non-parametric":
+            projection = "m-projection"
+        case _:
+            raise NotImplementedError(mode)
+    multipliers = jnp.reshape(multiplier, (-1,))
+    match split_constraint:
+        case True:
+            total = main
+            slacks: list[Float[Array, ""]] = []
+            for index in range(width):
+                slack = epsilon[index] - kl_divergence(params, target, states, mixed[index + 1], projection, "mean")
+                slacks.append(slack)
+                total = total + jnp.exp(multipliers[index]) * slack
+        case False:
+            slack = epsilon[0] - kl_divergence(params, target, states, mixed[0], projection, "mean")
+            slacks = [slack]
+            total = main + jnp.exp(multipliers[0]) * slack
+    return total, main, slacks
+
+
+def _fill_target_stats(replay: ReplayBuffer, target: GaussianParams) -> None:
+    """Cache the target policy's sufficient statistics for the KL constraint."""
+    offset = 0
+    width = replay.states.shape[-1]
+    while offset < replay.size:
+        count = min(_STATS_CHUNK, replay.size - offset)
+        padded = jnp.zeros((_STATS_CHUNK, width), dtype=jnp.float32)
+        padded = padded.at[:count].set(replay.states[offset : offset + count])
+        stats = _target_forward(target, padded)
+        replay.target_stats = replay.target_stats.at[offset : offset + count].set(stats[:count])
+        offset += count
+
+
+@eqx.filter_jit
+def _target_forward(params: GaussianParams, states: Float[Array, "batch obs"]) -> Float[Array, "batch stats"]:
+    """Sufficient statistics of a frozen policy. Jitted once for the chunk size."""
+    return jax.lax.stop_gradient(forward(params, states))
+
+
+def _lagrangian(
+    params: GaussianParams,
+    multiplier: Float[Array, ""],
+    states: Float[Array, "batch obs"],
+    actions: Float[Array, "batch k act"],
+    log_weights: Float[Array, "batch k"],
+    target_stats: Float[Array, "batch stats"],
+    epsilon: Float[Array, ""],
+    l2_reg: float,
+) -> tuple[Float[Array, ""], Float[Array, ""], Float[Array, ""]]:
+    """Non-parametric Lagrangian with cached target statistics.
+
+    This is the default, non-split case of ``_full_lagrangian``. The target network is not
+    evaluated again: ``target_stats`` was filled before the scan.
+
+    Args:
+        params: Current policy.
+        multiplier: Raw Lagrange multiplier. The constraint weight is its exponential.
+        states: Minibatch of states.
+        actions: Extra actions from the E-step, shape ``[batch, k, act]``.
+        log_weights: Per-state log categorical weights, shape ``[batch, k]``.
+        target_stats: Sufficient statistics of the target policy.
+        epsilon: Mean KL bound.
+        l2_reg: Coefficient of the L2 penalty on the policy weights.
+
+    Returns:
+        The full Lagrangian, the main objective (what the log prints), and the constraint.
+    """
+    current = forward(params, states)
+    main = _weighted(
+        params,
+        current,
+        "non-parametric",
+        l2_reg,
+        actions,
+        log_weights,
+        actions,
+        log_weights,
+    )
+    act = current.shape[-1] // 2
+    mu, sigma = current[:, :act], current[:, act:]
+    old_mu, old_sigma = target_stats[:, :act], target_stats[:, act:]
+    # non-parametric M-step uses the forward KL, i.e. the m-projection onto the variational q
+    distance = kl_normal(old_mu, old_sigma, mu, sigma).mean()
+    constraint = epsilon - distance
+    return main + jnp.exp(multiplier) * constraint, main, constraint
+
+
+@eqx.filter_jit
+def _mpo_scan(
+    diff: Any,
+    static: Any,
+    opt_outer: Any,
+    multiplier: Float[Array, ""],
+    opt_inner: Any,
+    tx_outer: Any,
+    tx_inner: Any,
+    states: Float[Array, "cap obs"],
+    actions: Float[Array, "cap k act"],
+    log_weights: Float[Array, "cap k"],
+    target_stats: Float[Array, "cap stats"],
+    key: PRNGKeyArray,
+    size: Array,
+    num_steps: int,
+    batch_size: int,
+    epsilon: Float[Array, ""],
+    l2_reg: float,
+) -> tuple[Any, Any, Float[Array, ""], Any, Float[Array, " steps"], Float[Array, " steps"], Float[Array, " steps"]]:
+    """Scan the max step (policy) and the min step (Lagrange multiplier).
+
+    Returns:
+        Updated policy leaves, policy optimiser state, multiplier, dual optimiser state,
+        and the per-step main objective, raw multiplier and constraint.
+    """
+
+    def body(
+        carry: tuple[Any, Any, Float[Array, ""], Any, PRNGKeyArray],
+        _step: Array,
+    ) -> tuple[tuple[Any, Any, Float[Array, ""], Any, PRNGKeyArray], tuple[Array, Array, Array]]:
+        weights, policy_state, lm, dual_state, key_ = carry
+        key_, sample_key = jax.random.split(key_)
+        index = jax.random.randint(sample_key, (batch_size,), 0, size)
+        batch_states = states[index]
+        batch_actions = actions[index]
+        batch_weights = log_weights[index]
+        batch_target = jax.lax.stop_gradient(target_stats[index])
+
+        def full(weights_: Any, lm_: Float[Array, ""]) -> Float[Array, ""]:
+            params = eqx.combine(weights_, static)
+            value, _main, _constraint = _lagrangian(
+                params, lm_, batch_states, batch_actions, batch_weights, batch_target, epsilon, l2_reg
+            )
+            return value
+
+        _loss, grads = eqx.filter_value_and_grad(lambda weights_: -full(weights_, jax.lax.stop_gradient(lm)))(weights)
+        updates, policy_state = tx_outer.update(grads, policy_state, weights)
+        weights = eqx.apply_updates(weights, updates)
+
+        _dual, dual_grads = jax.value_and_grad(lambda lm_: full(weights, lm_))(lm)
+        dual_updates, dual_state = tx_inner.update(dual_grads, dual_state, lm)
+        lm = eqx.apply_updates(lm, dual_updates)
+
+        _value, main, constraint = _lagrangian(
+            eqx.combine(weights, static), lm, batch_states, batch_actions, batch_weights, batch_target, epsilon, l2_reg
+        )
+        return (weights, policy_state, lm, dual_state, key_), (main, lm, constraint)
+
+    (diff, opt_outer, multiplier, opt_inner, _key), (main, multipliers, constraints) = jax.lax.scan(
+        body, (diff, opt_outer, multiplier, opt_inner, key), jnp.arange(num_steps)
+    )
+    return diff, opt_outer, multiplier, opt_inner, main, multipliers, constraints

@@ -2,7 +2,6 @@ from os.path import join
 from typing import Any
 
 import numpy as np
-import torch
 from numpy import ndarray
 
 from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
@@ -36,7 +35,6 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     cli = CliPrinter().instance
 
     seed = run_conf["seed"]
-    torch.manual_seed(seed)
     np.random.seed(seed)
     num_epochs = run_conf["num_epochs"]
     max_steps = run_conf["max_steps"]
