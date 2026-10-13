@@ -1,0 +1,29 @@
+# Benchmark run configuration (Hydra). Example:
+#   uv run python -m abstract_rl.scripts.run env=mountaincar alg=mpo seed=3 alg.policy_sigma=1.5
+# A run is the base configuration of the algorithm (alg/) with the environment overrides of env/<env>.yaml on top;
+# command line overrides of alg.* win over both.
+defaults:
+  - env: pendulum
+  - alg: trpo
+  - _self_
+
+seed: 1
+data_root: data
+# hard env-step budget of the training loops (null: none, unless the environment sets one)
+max_env_steps: null
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: ${data_root}/.multirun
+    subdir: ${hydra.job.num}
+  output_subdir: null
+  job:
+    chdir: false
+  job_logging:
+    root:
+      level: WARN
+  hydra_logging:
+    root:
+      level: WARN

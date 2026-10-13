@@ -1,0 +1,10 @@
+id: Pendulum-v1
+# no Gymnasium threshold, judged by the balance check of scripts.eval_balance (about -150 and better)
+success: -150.0
+# env-step budget (SB3 baselines, compare cut-off)
+steps: 800000
+# overrides of the algorithm defaults: "all" applies to both algorithms
+overrides:
+  all: {}
+  trpo: {env_discount: 0.95}
+  mpo: {num_epochs: 800, rnk_eps: 0.05}

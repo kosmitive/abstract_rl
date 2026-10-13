@@ -1,0 +1,7 @@
+id: InvertedDoublePendulum-v5
+success: 9100.0
+steps: 600000
+overrides:
+  all: {max_steps: 1000}
+  trpo: {num_epochs: 150, trpo_tr_eps: 0.005}
+  mpo: {num_epochs: 600}
