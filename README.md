@@ -17,15 +17,39 @@ with one- and multi-dimensional actions and is benchmarked against Stable-Baseli
 
 ## Install
 
+The package installs from git. Hydra configs are inside the wheel, so training does not need a checkout.
+
 ```bash
-git clone https://github.com/kosmitive/abstract_rl.git && cd abstract_rl
-uv sync                                   # add --extra mujoco and/or baselines for the benchmark extras
-uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
+uv add git+https://github.com/kosmitive/abstract_rl
+# extras: uv add "abstract-rl[mujoco] @ git+https://github.com/kosmitive/abstract_rl"
+#         uv add "abstract-rl[baselines] @ git+https://github.com/kosmitive/abstract_rl"
+#         uv add "abstract-rl[dev] @ git+https://github.com/kosmitive/abstract_rl"
+```
+
+From a checkout, `uv sync` (add `--extra mujoco`, `--extra baselines` or `--group dev`) installs the same tree.
+The console script is `abstract-rl`:
+
+```bash
+abstract-rl env=pendulum alg=trpo seed=1
+uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1   # equivalent, from a checkout
+```
+
+```python
+from abstract_rl import make_config, run_trpo
+
+conf = make_config(
+    "pendulum",
+    "trpo",
+    seed=1,
+    overrides=["alg.num_epochs=1", "alg.policy_batch_size=400", "data_root=data"],
+)
+returns = run_trpo(conf)  # shape (epochs, 2): mean and std of the raw episodic return
 ```
 
 JAX is installed from the CPU extra (`jax[cpu]`). A machine with CUDA can still run on the GPU; `jax-metal` is
 not used. The optional `baselines` extra installs Stable-Baselines3, and with it a CPU PyTorch wheel. That
-dependency stays out of the core package.
+dependency stays out of the core package. `mujoco` adds the Gymnasium MuJoCo environments. `dev` adds pytest,
+ruff and mypy.
 
 ## Results
 
@@ -85,14 +109,24 @@ smoothed training return reaches it (median over the seeds that do).
 ## Usage
 
 ```bash
-uv run python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=1 alg.num_epochs=100  # Hydra overrides
-uv run python -m abstract_rl.scripts.run env=mountaincar alg=mpo data_root=results -m seed=1,2,3,4,5  # sweep
-uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo --cfg job              # print the config
-uv run python -m abstract_rl.scripts.eval_returns data/HalfCheetah-v5/mpo/<run> --save       # greedy evaluation
-uv run python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run>              # Pendulum balance check
-uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 ppo --seed 1 --data-root results
-uv run python -m abstract_rl.scripts.compare results --out docs/                         # table and plots
-uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render         # replay a policy
+abstract-rl env=halfcheetah alg=mpo seed=1 alg.num_epochs=100          # Hydra overrides
+abstract-rl env=mountaincar alg=mpo data_root=results -m seed=1,2,3,4,5  # sweep
+abstract-rl env=pendulum alg=trpo --cfg job                            # print the config
+abstract-rl-eval data/HalfCheetah-v5/mpo/<run> --save                  # greedy evaluation
+python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run> # Pendulum balance check
+python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 ppo --seed 1 --data-root results
+abstract-rl-compare results --out docs/                                # table and plots
+python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render  # replay a policy
+```
+
+```python
+from abstract_rl import make_config, run_mpo_non_parametric, run_trpo
+
+# The YAML defaults are the benchmark budgets. These overrides are a one-epoch smoke run.
+run_trpo(make_config("pendulum", "trpo", seed=1, overrides=["alg.num_epochs=1", "alg.policy_batch_size=400"]))
+run_mpo_non_parametric(
+    make_config("mountaincar", "mpo", seed=1, overrides=["alg.num_epochs=1", "alg.env_sample=200"])
+)
 ```
 
 Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`),
@@ -104,18 +138,44 @@ environment table. The training loops get a flat dictionary with prefixes (`env_
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
 diagonal Gaussian policy from the action space.
 
+## Training environments
+
+| Environment | Training rollout | Evaluation |
+|---|---|---|
+| Pendulum-v1 | JAX step in `env/jax_classic.py`, `lax.scan` over time and `vmap` over parallel episodes | Gymnasium |
+| MountainCarContinuous-v0 | same JAX step | Gymnasium |
+| InvertedPendulum-v5 | Gymnasium (MuJoCo) | Gymnasium |
+| InvertedDoublePendulum-v5 | Gymnasium (MuJoCo) | Gymnasium |
+| HalfCheetah-v5 | Gymnasium (MuJoCo) | Gymnasium |
+
+The classic-control steps copy the Gymnasium formulas. gymnax Pendulum-v1 matches those formulas. gymnax MountainCarContinuous-v0 does not: it zeros velocity at the goal when velocity is negative, and it folds the time limit into `done`. This step zeros velocity only on the left wall (`position == -1.2` and velocity negative), and a time limit is not a done. Reset ranges match; the generator is JAX, so a seeded Gymnasium reset is not the same sequence.
+
+Parity is an open-loop rollout from the same physics state with the same actions (`tests/test_jax_classic.py`). Over 200 Pendulum steps, float64 state error is 0 and the reward error is 0; the observation differs by at most 2.4e-7 because Gymnasium casts it to float32. Float32, which is what training runs, drifts by 3.8e-5 in the state and 8.4e-5 in the reward. Over 200 MountainCar steps the float64 state differs by 2.1e-7 because Gymnasium stores that state as float32 after every step, and the reward matches. Float32 state error is 3.6e-7.
+
+MuJoCo stays on Gymnasium. MJX on this 4-CPU machine, same XML, `frame_skip` as a scan of `mjx.step` (there is no `nstep` argument), 30 matched actions, float32 MJX against float64 MuJoCo:
+
+| Environment | Gymnasium steps/s | MJX steps/s | max \|Δqpos\| | max \|Δqvel\| |
+|---|---:|---:|---:|---:|
+| InvertedPendulum-v5 | 46679 | 2506 | 2.6e-7 | 1.3e-6 |
+| InvertedDoublePendulum-v5 | 20001 | 1998 | 8.1e-6 | 9.6e-5 |
+| HalfCheetah-v5 | 23455 | 1563 | 4.0e-4 | 2.5e-2 |
+
+MJX is 10–19× slower here, and HalfCheetah velocity has already drifted by 2.5e-2. The Warp backend was not installed. brax and mujoco_playground are different tasks (different models, reset noise, rewards and terminations), so they are not drop-in replacements. The reward, observation and termination of the v5 environments live in the Gymnasium Python around `mj_step`.
+
 ## Epoch time
 
-Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1`. PyTorch is the previous implementation pinned to one thread. JAX "before" is the port before the loop pass, measured after its compile. JAX "after" skips epoch 0 (the compile). Steady epochs then report 0 compiles from `jax_log_compiles`.
+Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1`. PyTorch is the previous implementation pinned to one thread. "JAX loops" is the port after the scan pass and before this round. "JAX now" skips epoch 0 (the compile). The later epochs are flat, so the compile sits in epoch 0.
 
-| Run | PyTorch | JAX before | JAX after | Window after compile |
+| Run | PyTorch | JAX loops | JAX now | Window after compile |
 |---|---:|---:|---:|---|
-| TRPO Pendulum-v1 | 2.676 | 1.615 | 0.336 | epochs 1–4 |
-| MPO Pendulum-v1 | 2.686 | 2.02, climbing to 2.98 over 40 epochs | 1.416 | epochs 1–11 (12k of the 50k buffer) |
-| TRPO HalfCheetah-v5 | 3.103 | 4.160 | 1.070 | epochs 1–3 |
-| MPO HalfCheetah-v5 | 3.270 | 2.03, climbing to 2.66 over 8 epochs | 1.475 | epochs 1–7 |
+| TRPO Pendulum-v1 | 2.676 | 0.336 | 0.123 | epochs 1–4 |
+| MPO Pendulum-v1 | 2.686 | 1.416 | 1.361 | epochs 1–7 (8k of the 50k buffer) |
+| TRPO HalfCheetah-v5 | 3.103 | 1.070 | 0.953 | epochs 1–3 |
+| MPO HalfCheetah-v5 | 3.270 | 1.475 | 1.489 | epochs 1–5 |
 
-Phases over those same windows, in seconds. Each cell is the mean before this pass, then the mean after.
+On the same windows, the TRPO Pendulum rollout is 0.041s, the trust-region step 0.013s and the value fit 0.026s. TRPO HalfCheetah rollout stays on Gymnasium at 0.801s, the trust-region step is 0.049s and the value fit 0.059s. MPO Pendulum rollout is 0.018s. MPO HalfCheetah rollout is 0.084s. The MPO epoch is still the resample, Retrace and critic.
+
+Phases of the earlier loop pass, in seconds (mean before that pass, then mean after). The epoch table above is the later measurement.
 
 | Phase | TRPO Pendulum | TRPO HalfCheetah | MPO Pendulum | MPO HalfCheetah |
 |---|---:|---:|---:|---:|
@@ -149,16 +209,16 @@ Each training method keeps its name and its maths. The inner iteration is a JAX 
 | Temperature L-BFGS-B with `float()` each iteration | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | `lax.while_loop` damped Newton on the same dual; traced `size` | (20000, 20) float64: 1.031s → 0.052s (19.7×). On a (256, 20) draw the optimum has KL 0.1000 against ε 0.1 |
 | TRPO gradient, Fisher, and Python conjugate gradient, with a new jit every epoch | `trust_region_gradient.py`, `conjugate_gradient.py` | one `filter_jit`; `cg_solve` is `lax.while_loop` | Pendulum TRPO step 0.644s → 0.016s (40×); HalfCheetah 1.232s → 0.050s (25×) |
 | Line search `while` with `float(tr_obj)` per probe | `trust_region_gradient.py` `line_search` | `_backtrack` `lax.while_loop`; one log copy; one parameter write | 10 probes on a 4000-step batch: 0.0036s → 0.0033s (1.10×) |
-| Value fit built a new `value_and_grad` every epoch | `value_functions/fc_v_networks.py` | module-level `_v_value_and_grad`. The driver remains scipy L-BFGS-B | Pendulum 0.247s → 0.081s (3.0×); HalfCheetah 0.362s → 0.151s (2.4×) |
+| Value fit, SciPy L-BFGS-B, host `float()` each iteration | `value_functions/fc_v_networks.py` `perform_sgd` | `optax.lbfgs` zoom line search inside one `lax.scan` (`_fit_v`) | Same 25 steps on a 64-64 value net: Pendulum-sized batch 0.067s → 0.022s, loss 1.02018 → 1.02031; HalfCheetah-sized 0.138s → 0.048s, loss 0.95017 → 0.94989. In the epoch: 0.081s → 0.026s and 0.151s → 0.059s |
 | Critic Adam Python loop | `value_functions/fc_q_networks.py` | `lax.scan`, with donated weights and Adam state | Pendulum critic stays 0.69s |
 | M-step Python loop on the default path | `maximum_a_posteriori_policy_optimization_algorithm.py` `_mpo_scan` | `lax.scan`, with donated weights, both Adam states, and the multiplier | Pendulum 0.124s → 0.036s (3.4×); HalfCheetah 0.172s → 0.065s (2.6×) |
 | GAE and TD reverse loops | `gae_operator.py`, `td_operator.py` | `lax.scan` | a few hundredths of a second after epoch 0 |
 | `policy.act` once per environment step | `continuous_policy.py`, `numpy_act.py` | NumPy matmul; weights cached on `id(params)` | HalfCheetah act 1.449s → 0.136s (11×); Pendulum 0.442s → 0.048s (9×) |
-| Gymnasium rollout `while` | `env/mcmc_env_wrapper.py` | stays Python, because `env.step` is not a JAX function | HalfCheetah env step 0.759s → 0.494s |
+| Gymnasium rollout `while` | `env/mcmc_env_wrapper.py` | JAX `lax.scan` + `vmap` for Pendulum and MountainCarContinuous (`env/jax_classic.py`). MuJoCo stays Python | Pendulum rollout 0.193s → 0.041s. HalfCheetah stays Gymnasium, 0.801s |
 | Replay `.at[start:end].set` with Python bounds | `replay_buffer.py` | one host pack, then `_insert_transitions` / `_shift_transitions` (`jnp.where`, traced start and length, donated buffers) | device sync stays under 0.01s, and steady MPO epochs compile 0 times |
 | Q evaluation over the K sampled actions | `fc_q_networks.py` `q_values` | one matmul with the action axis folded into the batch | counted inside resample and Retrace |
 
-Host `if` statements remain on concrete values: empty buffers, filter flags, and `n_envs == 1`. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. Scipy still reads the value-fit scalar and gradient on the host once per L-BFGS iteration; optax 0.2.8 has no L-BFGS to put inside `lax.scan`. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`.
+Host `if` statements remain on concrete values: empty buffers, filter flags, `n_envs == 1`, and which environment has a JAX step. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. The value fit no longer calls SciPy. `jax` and `jaxlib` still install SciPy themselves; the library does not import it and does not list it. Optax zoom L-BFGS was faster than Optax backtracking and than optimistix BFGS/L-BFGS on the value loss, and it matches the SciPy loss. jaxopt L-BFGS is comparable and is not a dependency. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`. MuJoCo acting is still the NumPy policy; Pendulum and MountainCarContinuous sample with `gaussian_math` inside the scan.
 
 ## Architecture
 
@@ -171,7 +231,7 @@ src/abstract_rl/
 ├── data_structures/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryCollection, on-device ReplayBuffer, Batch
-├── env/                              MCMCEnvWrapper: whole episodes, optional Gymnasium vector env for TRPO
+├── env/                              MCMCEnvWrapper; JAX steps for Pendulum and MountainCar, Gymnasium otherwise
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
 ├── policy/                           univariate and diagonal Gaussian policy (Equinox), non-parametric policy
 ├── value_functions/                  fully connected V (L-BFGS) and Q (Adam) networks

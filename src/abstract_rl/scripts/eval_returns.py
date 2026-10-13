@@ -11,7 +11,6 @@ Per run the mean return over seeded start states is printed together with the su
 import argparse
 import json
 import os
-import sys
 
 import numpy as np
 
@@ -67,5 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if ok else 1
 
 
+def cli(argv: list[str] | None = None) -> None:
+    """Console entry point. The process status is 1 when a run is below its threshold."""
+    raise SystemExit(main(argv))
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    cli()

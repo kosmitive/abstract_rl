@@ -27,8 +27,13 @@ dependencies = [
     "optax>=0.2",
     "pandas>=2.2",
     "pillow>=10",
-    "scipy>=1.14",
 ]
+
+[project.scripts]
+abstract-rl = "abstract_rl.scripts.run:main"
+abstract-rl-eval = "abstract_rl.scripts.eval_returns:cli"
+abstract-rl-baselines = "abstract_rl.scripts.run_baselines:main"
+abstract-rl-compare = "abstract_rl.scripts.compare:main"
 
 [project.urls]
 Source = "https://github.com/kosmitive/abstract_rl"
@@ -41,6 +46,12 @@ baselines = [
     "sb3-contrib>=2.4",
     "stable-baselines3>=2.4",
 ]
+dev = [
+    "mypy>=2.4.0",
+    "pandas-stubs>=3.0.5.260914",
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
 
 [dependency-groups]
 dev = [
@@ -48,7 +59,6 @@ dev = [
     "pandas-stubs>=3.0.5.260914",
     "pytest>=8.3",
     "ruff>=0.7",
-    "scipy-stubs>=1.18.1.1",
 ]
 
 [build-system]
@@ -57,6 +67,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/abstract_rl"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "abstract_rl/config"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/abstract_rl", "config", "README.md", "LICENSE", "pyproject.toml"]
 
 # The optional baselines extra pulls PyTorch through Stable-Baselines3. Keep that wheel on the
 # CPU index so a CUDA-sized torch is not downloaded. The core package does not depend on torch.

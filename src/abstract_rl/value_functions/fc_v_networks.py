@@ -3,13 +3,11 @@
 from typing import Any
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.optimize
 from jaxtyping import Array, Float
 
-from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
+from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient, lbfgs_minimize
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
@@ -86,39 +84,34 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
     def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
         """L-BFGS on this batch.
 
-        ``VanillaGradient.perform_sgd`` is the same algorithm. The value-and-gradient is a module-level
-        jit, so a new epoch with the same batch shape does not compile again.
+        The whole fit is one jitted scan. States and targets are arguments, so a new epoch with the
+        same shapes does not compile again.
         """
         states = _f32(batch.states)
         targets = _f32(batch["tv"]).reshape(-1)
         flat0, unravel = ravel_module(self.params)
-        penalty = jnp.float32(self.l2)
-        old, _grad = _v_value_and_grad(self.params, states, targets, flat0, penalty)
-
-        def closure(x: np.ndarray) -> tuple[float, np.ndarray]:
-            loss, grad = _v_value_and_grad(self.params, states, targets, jnp.asarray(x, dtype=jnp.float32), penalty)
-            return float(loss), np.asarray(grad, dtype=np.float64)
-
-        updated, _, _ = scipy.optimize.fmin_l_bfgs_b(closure, np.asarray(flat0, dtype=np.float64), maxiter=maxiter)
-        updated_vector = jnp.asarray(updated, dtype=jnp.float32)
-        self.params = unravel(updated_vector)
+        updated, old, new = _fit_v(self.params, states, targets, flat0, jnp.float32(self.l2), int(maxiter))
+        self.params = unravel(updated)
         self.net = self.params
-        new, _grad = _v_value_and_grad(self.params, states, targets, updated_vector, penalty)
         self.cli.print(self.fmtstr % (curst, float(old), float(new)))
 
 
 @eqx.filter_jit
-def _v_value_and_grad(
+def _fit_v(
     network: MultilayerPerceptron,
     states: Float[Array, "batch obs"],
     targets: Float[Array, " batch"],
     vector: Float[Array, " params"],
     l2: Float[Array, ""],
-) -> tuple[Float[Array, ""], Float[Array, " params"]]:
-    """Loss and flat gradient. ``l2`` is an array so a new penalty value does not recompile."""
+    steps: int,
+) -> tuple[Float[Array, " params"], Float[Array, ""], Float[Array, ""]]:
+    """Flat L-BFGS fit. ``steps`` is static. ``l2`` is an array so a new penalty does not recompile."""
     _flat, unravel = ravel_module(network)
-    loss, grad = jax.value_and_grad(lambda candidate: _v_loss(unravel(candidate), states, targets, l2))(vector)
-    return loss, grad
+
+    def loss(candidate: Float[Array, " params"]) -> Float[Array, ""]:
+        return _v_loss(unravel(candidate), states, targets, l2)
+
+    return lbfgs_minimize(loss, vector, steps)
 
 
 def _v_loss(

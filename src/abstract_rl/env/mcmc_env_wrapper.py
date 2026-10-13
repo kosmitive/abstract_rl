@@ -6,6 +6,7 @@ import threading
 from typing import Any, cast
 
 import gymnasium as gym
+import jax.numpy as jnp
 import numpy as np
 from gymnasium.spaces.box import Box
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
@@ -15,6 +16,8 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.env.jax_classic import JAX_TRAIN_ENVS
+from abstract_rl.env.jax_rollout import collect_classic, trajectories_from_buffer
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
@@ -149,11 +152,15 @@ class MCMCEnvWrapper:
         Returns:
             The collected trajectories.
         """
-        n_envs = self._resolve_n_envs(batch_size, max_steps, render)
-        if n_envs == 1:
-            trajectories = self._execute_serial(policy, max_steps, batch_size, exploration, render)
+        # Pendulum and MountainCarContinuous step in JAX. MuJoCo and rendering stay on Gymnasium.
+        if self.env_name in JAX_TRAIN_ENVS and not render:
+            trajectories = self._execute_jax(policy, max_steps, batch_size, exploration)
         else:
-            trajectories = self._execute_vector(policy, max_steps, batch_size, exploration, n_envs)
+            n_envs = self._resolve_n_envs(batch_size, max_steps, render)
+            if n_envs == 1:
+                trajectories = self._execute_serial(policy, max_steps, batch_size, exploration, render)
+            else:
+                trajectories = self._execute_vector(policy, max_steps, batch_size, exploration, n_envs)
 
         collected = sum(len(traj) for traj in trajectories)
         if rew_field_name is not None:
@@ -234,6 +241,38 @@ class MCMCEnvWrapper:
         trajectory.raw_return = raw_return
         self.max_traj_len = max(self.max_traj_len, steps)
         return trajectory
+
+    def _execute_jax(
+        self,
+        policy: ContinuousPolicy,
+        max_steps: int,
+        batch_size: int,
+        exploration: bool,
+    ) -> list[Trajectory]:
+        """Jitted classic-control collection. The returned trajectories match the Gymnasium path."""
+        n_envs = self._resolve_n_envs(batch_size, max_steps, render=False)
+        buf = collect_classic(
+            policy.params,
+            self.mc.rng.split(),
+            jnp.asarray(self._obs_scale, dtype=jnp.float32),
+            jnp.float32(self._reward_scale),
+            jnp.float32(self._reward_offset),
+            self.env_name,
+            int(max_steps),
+            int(batch_size),
+            int(n_envs),
+            not exploration,
+            bool(self._normalize),
+        )
+        trajectories = trajectories_from_buffer(self, buf)
+        for trajectory in trajectories:
+            with self.thread_lock:
+                trajectory.traj_id = self.created_trajectories
+                self.created_trajectories += 1
+            self.state_filter.register(trajectory.all_states)
+            self.reward_filter.register(trajectory.rewards)
+            self.max_traj_len = max(self.max_traj_len, len(trajectory))
+        return trajectories
 
     def _execute_vector(
         self,

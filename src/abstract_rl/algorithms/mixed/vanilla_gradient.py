@@ -2,17 +2,16 @@
 
 The public methods are the ones the networks inherited before the JAX port. Adam over a
 device-backed trajectory collection is one ``lax.scan``; that scan is ``_scan_adam`` on the
-network, because the loss (Q or V) is the subclass's ``tr_obj``.
+network, because the loss (Q or V) is the subclass's ``tr_obj``. L-BFGS is Optax with the
+zoom line search, also one ``lax.scan``, so the value fit never leaves the jit.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
-import numpy as np
 import optax
-import scipy.optimize
 from jaxtyping import Array, Float
 
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
@@ -97,24 +96,45 @@ class VanillaGradient:
             self.cli.print(self.fmtstr % (curst, float(pre), float(post)))
 
     def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
-        """Fit ``tr_obj`` with L-BFGS-B.
+        """Fit ``tr_obj`` with L-BFGS.
 
         Args:
             curst: Step index, printed in the log line.
             batch: Batch the objective reads.
-            maxiter: Iteration cap.
+            maxiter: Iteration cap. Static for the scan, so a new cap compiles once.
         """
         flat0, unravel = ravel_module(self.params)
-        objective = eqx.filter_jit(lambda vector: self.objective_on(unravel(vector), batch))
-        value_and_grad = jax.jit(jax.value_and_grad(objective))
-        old = float(objective(flat0))
+        steps = int(maxiter)
 
-        def closure(x: np.ndarray) -> tuple[float, np.ndarray]:
-            vector = jnp.asarray(x, dtype=jnp.float32)
-            loss, grad = value_and_grad(vector)
-            return float(loss), np.asarray(grad, dtype=np.float64)
+        def loss(vector: Float[Array, " params"]) -> Float[Array, ""]:
+            return self.objective_on(unravel(vector), batch)
 
-        updated, _, _ = scipy.optimize.fmin_l_bfgs_b(closure, np.asarray(flat0, dtype=np.float64), maxiter=maxiter)
-        self.params = unravel(jnp.asarray(updated, dtype=jnp.float32))
-        new = float(objective(jnp.asarray(updated, dtype=jnp.float32)))
-        self.cli.print(self.fmtstr % (curst, old, new))
+        updated, old, new = eqx.filter_jit(lambda vector: lbfgs_minimize(loss, vector, steps))(flat0)
+        self.params = unravel(updated)
+        self.cli.print(self.fmtstr % (curst, float(old), float(new)))
+
+
+def lbfgs_minimize(
+    loss: Callable[[Float[Array, " params"]], Float[Array, ""]],
+    vector: Float[Array, " params"],
+    steps: int,
+) -> tuple[Float[Array, " params"], Float[Array, ""], Float[Array, ""]]:
+    """``steps`` Optax L-BFGS updates with the default zoom line search.
+
+    The first returned scalar is the loss before the first step. The second is the loss after
+    the last step. ``steps`` has to be a concrete integer because it is the length of the scan.
+    """
+    solver = optax.lbfgs()
+    opt_state = solver.init(vector)
+
+    def body(
+        carry: tuple[Float[Array, " params"], Any], _: None
+    ) -> tuple[tuple[Float[Array, " params"], Any], Float[Array, ""]]:
+        params, state = carry
+        value, grad = optax.value_and_grad_from_state(loss)(params, state=state)
+        updates, state = solver.update(grad, state, params, value=value, grad=grad, value_fn=loss)
+        params = optax.apply_updates(params, updates)
+        return (params, state), value
+
+    (params, _state), values = jax.lax.scan(body, (vector, opt_state), None, length=steps)
+    return params, values[0], loss(params)

@@ -1,9 +1,12 @@
-"""Hydra configuration of the benchmark runs (``config/`` at the repository root).
+"""Hydra configuration of the benchmark runs.
 
 ``config/alg/<alg>.yaml`` holds the Pendulum-v1 defaults of TRPO and MPO, ``config/env/<env>.yaml`` the Gymnasium id,
 the success threshold, the env-step budget and the overrides of the algorithm defaults (``all``, ``trpo``, ``mpo``).
 ``run_config`` merges them into the flat dictionary the training loops expect: algorithm defaults, then environment
 overrides, then explicit ``alg.<key>=...`` command line overrides.
+
+The directory is the copy installed next to this package (``abstract_rl/config``, included in the wheel) when that
+file is present, and the repository ``config/`` when running from a checkout.
 """
 
 import functools
@@ -13,7 +16,18 @@ from typing import Any
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+
+def _resolve_config_dir() -> Path:
+    packaged = Path(__file__).resolve().parents[1] / "config"
+    if (packaged / "config.yaml").is_file():
+        return packaged
+    checkout = Path(__file__).resolve().parents[3] / "config"
+    if (checkout / "config.yaml").is_file():
+        return checkout
+    raise FileNotFoundError("abstract_rl Hydra config was not found in the package or the repository checkout")
+
+
+CONFIG_DIR = _resolve_config_dir()
 ALGORITHMS = sorted(p.stem for p in (CONFIG_DIR / "alg").glob("*.yaml"))
 ALGORITHMS_SB3 = ["ppo", "trpo"]
 
