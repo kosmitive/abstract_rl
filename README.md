@@ -98,7 +98,7 @@ The same greedy protocol on the JAX port (20 episodes, start seeds 10000 + episo
 
 Against the PyTorch table, Pendulum TRPO is 0.8 points lower and Pendulum MPO 0.3 points lower, both 5/5. MountainCar TRPO is 0.7 points higher and MountainCar MPO matches 93.6, both 5/5. Inside a Pendulum seed the 20 starts are bimodal (some near 0, some near -250), so the within-seed std is about 85–93; the mean still clears -150.
 
-MPO on Pendulum has no `max_env_steps`. Each epoch asks for 1000 transitions and the 4-wide JAX round finishes 8 episodes of 200, so 800 epochs stored 1,280,000 steps rather than 800,000. MountainCar TRPO is 100 epochs of `policy_batch_size` 4000 and finishes the last round, which lands between 424,895 and 431,280. MountainCar MPO stops on `max_env_steps` 400,000.
+Those four JAX seeds were measured before the step budget was enforced. MPO on Pendulum stored 1,280,000 steps: each epoch asked for 1000 transitions and the 4-wide round finished 8 episodes of 200. MountainCar TRPO stored between 424,895 and 431,280. `max_env_steps` now defaults to the environment `steps` budget for both algorithms, and each collection stores exactly the number of transitions it was asked for, so a run stops on that budget.
 
 A short Gymnasium run, one seed, not the full budget: InvertedPendulum TRPO 20 epochs (51,169 steps) stochastic return 3.6 → 756, greedy 1000; MPO 30 epochs (31,060 steps) 6.6 → 1000, greedy 1000. InvertedDoublePendulum TRPO 15 epochs (60,408 steps) 34 → 91, greedy 162; MPO 20 epochs (20,217 steps) 74 → 356, greedy 573. HalfCheetah TRPO 8 epochs (88,000 steps) -313 → -232, greedy 337; MPO 10 epochs (10,000 steps) -524 → -164, greedy -114. The return moves up. Only the short InvertedPendulum runs clear their threshold.
 
@@ -144,7 +144,7 @@ run_mpo_non_parametric(
 )
 ```
 
-Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`),
+Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`; null uses the environment `steps` budget),
 `config/alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults) and `config/env/<env>.yaml` (Gymnasium `id`, `success`
 threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo`/`mpo`). Environments: `pendulum`,
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
@@ -162,6 +162,8 @@ diagonal Gaussian policy from the action space.
 | InvertedPendulum-v5 | Gymnasium (MuJoCo) | Gymnasium |
 | InvertedDoublePendulum-v5 | Gymnasium (MuJoCo) | Gymnasium |
 | HalfCheetah-v5 | Gymnasium (MuJoCo) | Gymnasium |
+
+Each collection stores exactly the transitions the epoch asked for, including when several environments step together. `max_env_steps` defaults to the environment `steps` field, and both training loops stop once that many transitions are stored.
 
 The classic-control steps copy the Gymnasium formulas. gymnax Pendulum-v1 matches those formulas. gymnax MountainCarContinuous-v0 does not: it zeros velocity at the goal when velocity is negative, and it folds the time limit into `done`. This step zeros velocity only on the left wall (`position == -1.2` and velocity negative), and a time limit is not a done. Reset ranges match; the generator is JAX, so a seeded Gymnasium reset is not the same sequence.
 

@@ -8,7 +8,7 @@ from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optim
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
@@ -89,20 +89,19 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     # number of environment steps collected in each epoch (for plotting learning curves over samples)
     logger.create_field("steps", 1)
 
-    # repeat for the number of given steps
-    # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
-    max_env_steps = run_conf.get("max_env_steps", None)
+    # stop at the env-step budget (defaults to the environment `steps` field); the last epoch is shortened
+    budget_raw = run_conf.get("max_env_steps", None)
+    max_env_steps = None if budget_raw is None else int(budget_raw)
     epoch_steps = policy_batch_size
     for e in range(num_epochs):
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
-        if max_env_steps:
-            done_steps = getattr(env, "total_steps", 0)
-            if done_steps >= max_env_steps:
-                break
-            policy_batch_size = min(epoch_steps, max_env_steps - done_steps)
+        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), max_env_steps)
+        if request is None:
+            break
+        policy_batch_size = request
 
         # --------------------------------
         # test policy

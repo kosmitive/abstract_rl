@@ -23,6 +23,27 @@ from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 
 
+def collection_request(done_steps: int, epoch_steps: int, max_env_steps: int | None) -> int | None:
+    """Transitions to ask for this epoch.
+
+    ``None`` means ``done_steps`` is already at ``max_env_steps`` and the run should stop. The last
+    epoch asks only for the steps still inside the budget. A missing budget keeps the full epoch.
+
+    Args:
+        done_steps: Environment steps already stored.
+        epoch_steps: Transitions one epoch asks for when the budget allows it.
+        max_env_steps: Hard cap. ``None`` or ``0`` leaves the epoch unchanged.
+
+    Returns:
+        The request for this epoch, or ``None`` when the budget is spent.
+    """
+    if not max_env_steps:
+        return epoch_steps
+    if done_steps >= max_env_steps:
+        return None
+    return min(epoch_steps, max_env_steps - done_steps)
+
+
 def _make_env(name: str) -> Any:
     """Build one environment. The default argument avoids a late-binding closure."""
 
@@ -138,13 +159,13 @@ class MCMCEnvWrapper:
         render: bool = False,
         rew_field_name: str | None = None,
     ) -> TrajectoryCollection:
-        """Collect complete episodes until at least ``batch_size`` transitions are stored.
+        """Collect episodes until exactly ``batch_size`` transitions are stored.
 
         Args:
             policy: Policy to roll out.
             max_steps: Maximum length of one episode.
-            batch_size: Minimum number of transitions. The last episode is finished, so the
-                collection can be a little longer.
+            batch_size: Number of transitions to store. An episode that would run past this count
+                is cut the way ``max_steps`` cuts it, and that cut is not a done.
             exploration: Sample actions when true, otherwise use the mode.
             render: Render the first episode. Forces a single environment.
             rew_field_name: Log the mean and std of the raw episodic return under this name.
@@ -190,7 +211,9 @@ class MCMCEnvWrapper:
         collected = 0
         trajectories: list[Trajectory] = []
         while collected < batch_size:
-            trajectory = self.execute_policy_once(max_steps, policy, render and collected == 0, opt=not exploration)
+            room = batch_size - collected
+            cap = room if max_steps is None else min(int(max_steps), room)
+            trajectory = self.execute_policy_once(cap, policy, render and collected == 0, opt=not exploration)
             trajectories.append(trajectory)
             collected += len(trajectory)
         return trajectories
@@ -282,7 +305,11 @@ class MCMCEnvWrapper:
         exploration: bool,
         n_envs: int,
     ) -> list[Trajectory]:
-        """Step ``n_envs`` environments. Episodes already started are finished past the budget."""
+        """Step ``n_envs`` environments and store exactly ``batch_size`` transitions.
+
+        An episode that would run past the budget is cut the way ``max_steps`` cuts it. Steps of a
+        vector tick that would pass ``batch_size`` are not recorded.
+        """
         vec = self._ensure_vector(n_envs)
         if self._seed is not None:
             obs, _info = vec.reset(seed=[int(self._seed) + i for i in range(n_envs)])
@@ -300,7 +327,16 @@ class MCMCEnvWrapper:
 
         trajectories: list[Trajectory] = []
         collected = 0
-        while np.any(recording):
+
+        def close_episode(index: int) -> None:
+            trajectory = builders[index].finalize()
+            trajectory.raw_return = float(raw[index])
+            self.max_traj_len = max(self.max_traj_len, int(steps[index]))
+            trajectories.append(trajectory)
+            raw[index] = 0.0
+            steps[index] = 0
+
+        while np.any(recording) and collected < batch_size:
             actions, log_density = policy.act(obs, deterministic=not exploration)
             next_obs, rewards, terminated, truncated, _info = vec.step(np.asarray(actions, dtype=np.float64))
             next_obs = self._preprocess(next_obs)
@@ -309,6 +345,12 @@ class MCMCEnvWrapper:
                 if not recording[i]:
                     if bool(terminated[i] or truncated[i]):
                         reset_mask[i] = True
+                    continue
+                if collected >= batch_size:
+                    if int(steps[i]) > 0:
+                        close_episode(i)
+                    recording[i] = False
+                    reset_mask[i] = True
                     continue
                 self.state_filter.register(next_obs[i])
                 reward = float(rewards[i])
@@ -319,16 +361,17 @@ class MCMCEnvWrapper:
                 action_np = np.asarray(actions[i], dtype=np.float64).reshape(-1)
                 log_prob = float(np.asarray(log_density[i]))
                 builders[i].observe(action_np, shaped, next_obs[i], log_prob, int(bool(terminated[i])))
+                collected += 1
                 hit_limit = max_steps is not None and int(steps[i]) >= max_steps
-                if bool(terminated[i] or truncated[i] or hit_limit):
-                    trajectory = builders[i].finalize()
-                    trajectory.raw_return = float(raw[i])
-                    self.max_traj_len = max(self.max_traj_len, int(steps[i]))
-                    trajectories.append(trajectory)
-                    collected += int(steps[i])
+                if bool(terminated[i] or truncated[i] or hit_limit or collected >= batch_size):
+                    close_episode(i)
                     reset_mask[i] = True
                     recording[i] = collected < batch_size
-            if not np.any(recording):
+            if collected >= batch_size or not np.any(recording):
+                for i in range(n_envs):
+                    if int(steps[i]) > 0:
+                        close_episode(i)
+                        recording[i] = False
                 break
             obs = next_obs
             if np.any(reset_mask):

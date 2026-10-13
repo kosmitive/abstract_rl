@@ -49,8 +49,12 @@ def run_config(cfg: DictConfig, overrides: list[str] | None = None) -> dict[str,
         key = item.lstrip("+~").partition("=")[0]
         if key.startswith("alg.") and key.count(".") == 1:
             conf[key[4:]] = alg[key[4:]]
+    # null at the top level means the environment `steps` budget. An environment override or a
+    # command-line `max_env_steps=` replaces it. The training loop stops at this count.
+    if conf.get("max_env_steps") is None:
+        conf["max_env_steps"] = int(cfg.env.steps)
     if cfg.max_env_steps is not None:
-        conf["max_env_steps"] = cfg.max_env_steps
+        conf["max_env_steps"] = int(cfg.max_env_steps)
     conf.update({"env_name": cfg.env.id, "seed": cfg.seed, "data_root": cfg.data_root})
     return conf
 

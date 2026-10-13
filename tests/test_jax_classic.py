@@ -93,14 +93,13 @@ def test_jax_collection_matches_the_gym_trajectory_contract(make_pendulum_mc):
 
         policy = UnivariateGaussianPolicy(mc)
     collection = mc.env.execute_policy(policy, 20, 30, exploration=True)
-    assert sum(len(traj) for traj in collection) >= 30
+    assert sum(len(traj) for traj in collection) == 30
     assert all(len(traj) <= 20 for traj in collection)
     assert all(traj.states.shape[1] == 2 for traj in collection)
     assert all(np.all((traj.dones == 0) | (traj.dones == 1)) for traj in collection)
-    # A done, when present, is the last transition. A time-limit cut is not a done.
+    # A done, when present, is the last transition. A time-limit or budget cut is not a done.
     for traj in collection:
-        if len(traj) < 20:
-            assert traj.dones[-1, 0] == 1
-            assert np.all(traj.dones[:-1] == 0)
-        else:
-            assert not np.any(traj.dones)
+        dones = np.asarray(traj.dones).reshape(-1)
+        if np.any(dones == 1):
+            assert dones[-1] == 1
+            assert np.all(dones[:-1] == 0)

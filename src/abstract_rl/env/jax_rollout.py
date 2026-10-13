@@ -1,9 +1,10 @@
 """On-policy rollouts for the classic-control JAX steps.
 
 ``lax.scan`` walks one episode and ``vmap`` walks the parallel environments. A ``lax.while_loop``
-starts another round of episodes until the transition budget is met. The last round is finished,
-so the collection can run past the budget, as the Gymnasium vector env does. Time-limit stops are
-not dones. The policy density is the JAX Gaussian, the same functions the update uses.
+starts another round until ``batch_size`` transitions are stored. Each environment in a round is
+capped so the round cannot record more steps than are still missing: the stored count is exactly
+``batch_size``. A cap cuts an episode the way ``max_steps`` does, and that cut is not a done.
+The policy density is the JAX Gaussian, the same functions the update uses.
 """
 
 from typing import NamedTuple
@@ -77,6 +78,7 @@ def _episode(
     reward_scale: Float[Array, ""],
     reward_offset: Float[Array, ""],
     env_name: str,
+    limit: Array,
 ) -> _Round:
     match env_name:
         case _ if env_name == PENDULUM:
@@ -114,7 +116,7 @@ def _episode(
         phys_out = jnp.where(record, nxt, phys)
         raw_out = raw_sum + jnp.where(record, reward, jnp.zeros((), dtype=jnp.float32))
         t_out = t + record.astype(jnp.int32)
-        alive_out = alive & ~terminated & ((t + 1) < max_steps)
+        alive_out = alive & ~terminated & ((t + 1) < limit)
         shaped = reward_scale * reward + reward_offset
         done = (terminated & record).astype(jnp.float32)
         return (phys_out, t_out, alive_out, step_key, raw_out), (proc, action, shaped, logp, done)
@@ -122,7 +124,7 @@ def _episode(
     init = (
         physics,
         jnp.int32(0),
-        jnp.bool_(True),
+        limit > jnp.int32(0),
         key,
         jnp.float32(0.0),
     )
@@ -146,11 +148,12 @@ def collect_classic(
     deterministic: bool,
     normalize: bool,
 ) -> _Buf:
-    """Collect at least ``batch_size`` transitions. ``max_steps``, ``batch_size`` and ``n_envs`` are static."""
+    """Collect exactly ``batch_size`` transitions. ``max_steps``, ``batch_size`` and ``n_envs`` are static."""
     obs_dim = obs_scale.shape[0]
     act_dim = len(params.action_center)
-    cap = batch_size + n_envs * max_steps
+    cap = batch_size
     max_ep = batch_size + n_envs
+    span = jnp.int32(max_steps)
     buf = _Buf(
         key=key,
         cursor=jnp.int32(0),
@@ -171,8 +174,11 @@ def collect_classic(
 
     def body(state: _Buf) -> _Buf:
         keys = jax.random.split(state.key, n_envs + 1)
+        remaining = jnp.int32(batch_size) - state.cursor
+        # Env i may record at most `span` steps, and the round's caps sum to at most `remaining`.
+        limits = jnp.clip(remaining - jnp.arange(n_envs, dtype=jnp.int32) * span, 0, span)
         rolled = jax.vmap(
-            lambda episode_key: _episode(
+            lambda episode_key, episode_limit: _episode(
                 episode_key,
                 params,
                 max_steps,
@@ -182,26 +188,34 @@ def collect_classic(
                 reward_scale,
                 reward_offset,
                 env_name,
+                episode_limit,
             )
-        )(keys[1:])
+        )(keys[1:], limits)
 
         def write_one(index: int, current: _Buf) -> _Buf:
             length = rolled.length[index]
             start = current.cursor
             slot = current.n_ep
-            return current._replace(
-                cursor=start + length,
-                n_ep=slot + jnp.int32(1),
-                obs=_write_rows(current.obs, start, rolled.obs[index], length),
-                act=_write_rows(current.act, start, rolled.act[index], length),
-                shaped=_write_rows(current.shaped, start, rolled.shaped[index], length),
-                logp=_write_rows(current.logp, start, rolled.logp[index], length),
-                done=_write_rows(current.done, start, rolled.done[index], length),
-                ep_start=current.ep_start.at[slot].set(start),
-                ep_len=current.ep_len.at[slot].set(length),
-                ep_raw=current.ep_raw.at[slot].set(rolled.raw[index]),
-                ep_final=current.ep_final.at[slot].set(rolled.final[index]),
-            )
+
+            def keep(buf: _Buf) -> _Buf:
+                return buf._replace(
+                    cursor=start + length,
+                    n_ep=slot + jnp.int32(1),
+                    obs=_write_rows(buf.obs, start, rolled.obs[index], length),
+                    act=_write_rows(buf.act, start, rolled.act[index], length),
+                    shaped=_write_rows(buf.shaped, start, rolled.shaped[index], length),
+                    logp=_write_rows(buf.logp, start, rolled.logp[index], length),
+                    done=_write_rows(buf.done, start, rolled.done[index], length),
+                    ep_start=buf.ep_start.at[slot].set(start),
+                    ep_len=buf.ep_len.at[slot].set(length),
+                    ep_raw=buf.ep_raw.at[slot].set(rolled.raw[index]),
+                    ep_final=buf.ep_final.at[slot].set(rolled.final[index]),
+                )
+
+            def drop(buf: _Buf) -> _Buf:
+                return buf
+
+            return jax.lax.cond(length > 0, keep, drop, current)
 
         updated = jax.lax.fori_loop(0, n_envs, write_one, state)
         return updated._replace(key=keys[0])
