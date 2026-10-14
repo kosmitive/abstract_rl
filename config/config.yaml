@@ -9,7 +9,7 @@ defaults:
 
 seed: 1
 data_root: data
-# hard env-step budget of the training loops (null: none, unless the environment sets one)
+# hard env-step budget of the training loops (null: the environment `steps` field)
 max_env_steps: null
 
 hydra:
