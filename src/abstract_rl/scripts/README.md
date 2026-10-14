@@ -12,7 +12,7 @@ abstract-rl -m env=mountaincar alg=mpo data_root=results seed=1,2,3,4,5
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
-`alg.<key>=value` overrides the environment table. HalfCheetah and the other MuJoCo ids need the `mujoco` extra. `trpo_pendulum` and `mpo_pendulum` are thin wrappers for the full Pendulum-v1 budgets and take no Hydra overrides:
+`alg.<key>=value` overrides the environment table. HalfCheetah, Humanoid and the other MuJoCo ids need the `mujoco` extra. Humanoid-v5 (`env=humanoid`) is a 3,000,000-step budget with observation 348 and action 17. `trpo_pendulum` and `mpo_pendulum` are thin wrappers for the full Pendulum-v1 budgets and take no Hydra overrides:
 
 ```
 uv run python -m abstract_rl.scripts.trpo_pendulum

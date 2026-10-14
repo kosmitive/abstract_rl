@@ -85,6 +85,7 @@ _ORDER = [
     "InvertedPendulum-v5",
     "InvertedDoublePendulum-v5",
     "HalfCheetah-v5",
+    "Humanoid-v5",
 ]
 
 

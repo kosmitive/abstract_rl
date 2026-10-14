@@ -6,8 +6,8 @@ Usage::
     uv run --extra mujoco python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=50
     uv run python -m abstract_rl.scripts.run --cfg job env=mountaincar alg=mpo   # print the composed config
 
-Environments: pendulum, mountaincar, inverted_pendulum, inverted_double_pendulum, halfcheetah. ``alg.<key>=value``
-overrides beat the environment table of ``config/env/<env>.yaml``. Runs are written to
+Environments: pendulum, mountaincar, inverted_pendulum, inverted_double_pendulum, halfcheetah, humanoid.
+``alg.<key>=value`` overrides beat the environment table of ``config/env/<env>.yaml``. Runs are written to
 ``<data_root>/<env id>/<alg>/<timestamp>/``.
 """
 

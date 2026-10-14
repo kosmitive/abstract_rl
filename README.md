@@ -98,6 +98,7 @@ A seed counts as solved on its own greedy return, so the five-seed mean can sit 
   the same 400k budget; with defaults both SB3 algorithms score 0 there. On Pendulum-v1 the zoo settings were worse
   than the defaults (TRPO -136, PPO -226), so the defaults are shown.
 - **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** use the overrides in `config/env` and are not separately re-tuned. Solved counts for the JAX runs are in the table.
+- **Humanoid-v5** is in the environment list and has no 5-seed result yet. The budget is 3,000,000 steps, which is shorter than the 5–10 million steps usually used for this task. Gymnasium sets no reward threshold. The solved line is 5000: `healthy_reward` is 5, so staying upright for the full 1000-step episode with no forward reward and negligible costs is about 5000, and walking scores higher. The observation is 348 and the action is 17 torques in [-0.4, 0.4]. A fall (torso height outside [1, 2]) terminates the episode. TRPO uses a [256, 256] policy and value net and a batch of 15,000 (200 epochs). MPO uses a [256, 256] policy, the existing [256, 256] critic, `env_sample` 1000 (3000 epochs), exploration std 0.5 and trust region 0.02. `abstract-rl env=humanoid alg=trpo seed=1` needs the `mujoco` extra. On this 4-CPU machine, after the compile epoch, TRPO takes 6.66 s/epoch (rollout about 3100 env steps/s), so 200 epochs is about 22 minutes. MPO takes 3.29 s/epoch while the replay still holds a few thousand rows (rollout about 3000 env steps/s, the critic is most of the epoch). At that rate 3000 epochs is about 2.7 hours; a full replay adds the resample and Retrace work on top.
 
 ## Usage
 
@@ -125,7 +126,7 @@ run_mpo_non_parametric(
 Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`; null uses the environment `steps` budget),
 `config/alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults) and `config/env/<env>.yaml` (Gymnasium `id`, `success`
 threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo`/`mpo`). Environments: `pendulum`,
-`mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
+`mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`, `humanoid`. `alg.<key>=...` overrides beat the
 environment table. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
@@ -140,6 +141,7 @@ diagonal Gaussian policy from the action space.
 | InvertedPendulum-v5 | Gymnasium (MuJoCo) | Gymnasium |
 | InvertedDoublePendulum-v5 | Gymnasium (MuJoCo) | Gymnasium |
 | HalfCheetah-v5 | Gymnasium (MuJoCo) | Gymnasium |
+| Humanoid-v5 | Gymnasium (MuJoCo) | Gymnasium |
 
 Each collection stores exactly the transitions the epoch asked for, including when several environments step together. `max_env_steps` defaults to the environment `steps` field, and both training loops stop once that many transitions are stored.
 
