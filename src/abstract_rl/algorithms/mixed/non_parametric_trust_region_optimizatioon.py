@@ -1,67 +1,153 @@
+"""Dual of the non-parametric MPO E-step."""
+
+import jax
+import jax.numpy as jnp
 import numpy as np
-import scipy.optimize
-import torch
-from numpy import float32
+from jaxtyping import Array, Float
 
 from abstract_rl.misc.cli_printer import CliPrinter
 
+jax.config.update("jax_enable_x64", True)
 
-def temperature_dual(q_tensor: torch.Tensor, eta: torch.Tensor, eps: float) -> torch.Tensor:
+
+def temperature_dual(q_values: Float[Array, "batch k"], eta: Float[Array, ""], eps: float) -> Float[Array, ""]:
+    """Dual ``g(η) = η ε + η mean_s log mean_a exp(Q(s, a) / η)``.
+
+    Args:
+        q_values: Q samples, shape ``[batch, k]``.
+        eta: Temperature.
+        eps: KL bound of the E-step.
+
+    Returns:
+        Scalar dual value.
     """
-    Dual function of the non parametric E-step for a fixed temperature, see https://arxiv.org/abs/1806.06920.
+    max_q = jnp.max(q_values, axis=1, keepdims=True)
+    log_mean_exp = jax.nn.logsumexp((q_values - max_q) / eta, axis=1) - jnp.log(q_values.shape[1])
+    return eta * eps + jnp.mean(max_q) + eta * jnp.mean(log_mean_exp)
 
-        g(eta) = eta * eps + eta * mean_s log mean_a exp(Q(s, a) / eta)
 
-    :param q_tensor: A tensor of [NxA] with N states and A actions.
-    :param eta: The temperature.
-    :param eps: The KL bound.
-    :return: The value of the dual function.
+def masked_temperature_dual(
+    q_values: Float[Array, "batch k"], size: Array, eta: Float[Array, ""], eps: float
+) -> Float[Array, ""]:
+    """``temperature_dual`` averaged over the first ``size`` rows of a fixed allocation.
+
+    The tail is excluded from the mean, which is the same dual as passing ``q_values[:size]``
+    without compiling a new shape every time the replay grows.
     """
-    max_q = torch.max(q_tensor, dim=1, keepdim=True).values
-    log_mean_exp = torch.logsumexp((q_tensor - max_q) / eta, dim=1) - np.log(q_tensor.shape[1])
-    return eta * eps + torch.mean(max_q.view(-1)) + eta * torch.mean(log_mean_exp)
+    valid = (jnp.arange(q_values.shape[0]) < size).astype(q_values.dtype)
+    absent = jnp.array(-1.0e30, dtype=q_values.dtype)
+    present = valid[:, None] > 0
+    max_q = jnp.max(jnp.where(present, q_values, absent), axis=1, keepdims=True)
+    shifted = jnp.where(present, (q_values - max_q) / eta, absent)
+    log_mean_exp = jax.nn.logsumexp(shifted, axis=1) - jnp.log(q_values.shape[1])
+    count = jnp.maximum(jnp.sum(valid), 1.0)
+    return eta * eps + jnp.sum(max_q[:, 0] * valid) / count + eta * jnp.sum(log_mean_exp * valid) / count
+
+
+def _masked_stats(q_values: Float[Array, "batch k"], size: Array) -> tuple[Float[Array, ""], Float[Array, ""]]:
+    """Mean and standard deviation of the stored prefix, for the temperature log line."""
+    valid = (jnp.arange(q_values.shape[0]) < size).astype(q_values.dtype)
+    count = jnp.maximum(jnp.sum(valid), 1.0) * q_values.shape[1]
+    present = valid[:, None] > 0
+    mean = jnp.sum(jnp.where(present, q_values, 0)) / count
+    variance = jnp.sum(jnp.where(present, jnp.square(q_values - mean), 0)) / count
+    return mean, jnp.sqrt(variance)
+
+
+_masked_stats_jit = jax.jit(_masked_stats)
+
+
+@jax.jit
+def _newton_temperature(
+    q_values: Float[Array, "batch k"],
+    size: Array,
+    eta0: Float[Array, ""],
+    eps: float,
+    max_steps: int,
+) -> tuple[Float[Array, ""], Array, Float[Array, ""]]:
+    """Newton steps on the scalar dual. The minimum is the same point L-BFGS-B was solving for.
+
+    The dual is convex in the temperature, so a damped Newton step reaches that minimum without
+    a host synchronisation on every iteration.
+    """
+
+    def loss(eta: Float[Array, ""]) -> Float[Array, ""]:
+        return masked_temperature_dual(q_values, size, eta, eps)
+
+    def cond(state: tuple[Float[Array, ""], Array, Array, Float[Array, ""]]) -> Array:
+        _eta, step, done, _dual = state
+        return (step < max_steps) & (~done)
+
+    def body(
+        state: tuple[Float[Array, ""], Array, Array, Float[Array, ""]],
+    ) -> tuple[Float[Array, ""], Array, Array, Float[Array, ""]]:
+        eta, step, _done, dual = state
+        grad = jax.grad(loss)(eta)
+        hess = jnp.maximum(jax.grad(jax.grad(loss))(eta), 1e-12)
+
+        def shrink(
+            carry: tuple[Float[Array, ""], Float[Array, ""], Array], alpha: Float[Array, ""]
+        ) -> tuple[tuple[Float[Array, ""], Float[Array, ""], Array], None]:
+            best, best_loss, found = carry
+            trial = jnp.clip(eta - alpha * grad / hess, 1e-6, 1e6)
+            value = loss(trial)
+            take = (value <= dual) & (~found) & jnp.isfinite(value)
+            best = jnp.where(take, trial, best)
+            best_loss = jnp.where(take, value, best_loss)
+            return (best, best_loss, found | take), None
+
+        alphas = jnp.asarray([1.0, 0.5, 0.25, 0.125, 1e-2], dtype=jnp.float64)
+        (nxt, nxt_loss, found), _unused = jax.lax.scan(shrink, (eta, dual, jnp.bool_(False)), alphas)
+        done = (jnp.abs(grad) < 1e-6) | (~found)
+        return jnp.where(found, nxt, eta), step + jnp.int32(1), done, jnp.where(found, nxt_loss, dual)
+
+    eta, steps, _done, dual = jax.lax.while_loop(
+        cond,
+        body,
+        (jnp.clip(eta0, 1e-6, 1e6), jnp.int32(0), jnp.bool_(False), loss(jnp.clip(eta0, 1e-6, 1e6))),
+    )
+    return eta, steps, dual
 
 
 def find_optimal_temperature(
-    q_tensor: torch.Tensor, eps: float, eta0: float32 | float = 1.0, lr: float | None = None, max_steps: int = 200
-) -> torch.Tensor:
+    q_values: Float[Array, "batch k"] | np.ndarray,
+    eps: float,
+    eta0: float = 1.0,
+    lr: float | None = None,
+    max_steps: int = 200,
+    size: int | None = None,
+) -> Float[Array, " 1"]:
+    """Minimise the convex temperature dual.
+
+    Args:
+        q_values: Q samples, shape ``[batch, k]``.
+        eps: KL bound.
+        eta0: Initial temperature.
+        lr: Unused. Kept so older call sites still pass a learning rate.
+        max_steps: Iteration cap.
+        size: How many leading rows are real samples. ``None`` uses every row. Passing the
+            replay capacity with this limit keeps the compiled dual fixed while the buffer fills.
+
+    Returns:
+        Optimal temperature, shape ``[1]``, float32.
     """
-    Uses a batch of data to find the optimal temperature eta for reweighting by minimizing the convex dual.
-    :param q_tensor: A tensor of [NxA] with N states and A actions.
-    :param eps: The eps to use.
-    :param eta0: The initial eta
-    :param lr: Unused, kept for backwards compatibility (the dual is solved with L-BFGS-B).
-    :param max_steps: Maximum number of iterations of the solver.
-    :return: The found optimal temperature as a tensor of shape [1].
-    """
+    del lr
     cli = CliPrinter().instance
+    q_values = jnp.asarray(q_values, dtype=jnp.float64)
+    limit = jnp.int32(q_values.shape[0] if size is None else size)
+    mean, std = _masked_stats_jit(q_values, limit)
     cli.empty().print("solve for q(a|s)").empty()
     with cli.indent():
         cli.print("max	\t\t∫ u(s) ∫ q(a|s) Q(s,a) dads")
         cli.print("st.	\t\t∫ u(s) KL(q(a|s), π(a|s)) ds < ε")
         cli.print("    \t\t∫∫ u(s) q(a|s) dads = 1")
-
     cli.empty().print("statistics of problem").empty()
     with cli.indent():
-        cli.print(f"Q(s,a) \t~ {torch.mean(q_tensor):.5f} +- [{torch.std(q_tensor):.5f}]")
+        cli.print(f"Q(s,a) \t~ {float(mean):.5f} +- [{float(std):.5f}]")
         cli.print(f"ε \t\t= {eps}")
 
-    q_tensor = q_tensor.double()
-
-    def fn(x: np.ndarray) -> tuple[float, np.ndarray]:
-        eta = torch.tensor(x[0], dtype=torch.float64, requires_grad=True)
-        obj = temperature_dual(q_tensor, eta, eps)
-        obj.backward()
-        assert eta.grad is not None
-        return obj.item(), np.array([eta.grad.item()])
-
-    eta0 = float(np.clip(np.asarray(eta0).reshape(-1)[0], 1e-6, None))
-    res = scipy.optimize.minimize(
-        fn, np.array([eta0]), jac=True, method="L-BFGS-B", bounds=[(1e-6, None)], options={"maxiter": max_steps}
-    )
-    eta = float(res.x[0])
-
+    start = jnp.asarray(eta0, dtype=jnp.float64).reshape(())
+    eta, iters, dual = _newton_temperature(q_values, limit, start, eps, int(max_steps))
     with cli.indent():
-        cli.empty().print(f"eta* = {eta:.6f} (dual = {res.fun:.6f}, iterations = {res.nit})")
-
-    return torch.tensor([eta], dtype=torch.float32)
+        cli.empty().print(f"eta* = {float(eta):.6f} (dual = {float(dual):.6f}, iterations = {int(iters)})")
+    return jnp.asarray([eta], dtype=jnp.float32)

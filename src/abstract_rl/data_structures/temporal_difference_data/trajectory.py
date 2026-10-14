@@ -1,8 +1,8 @@
 from typing import Any
 
+import jax
 import numpy as np
 import pandas as pd
-import torch
 
 from abstract_rl.misc.cli_printer import CliPrinter
 
@@ -44,8 +44,8 @@ class Trajectory:
 
     def __setitem__(self, key: str, item: Any) -> None:
         # annotations are stored as numpy arrays, so sampling from many trajectories stays cheap
-        if isinstance(item, torch.Tensor):
-            item = item.detach().cpu().numpy()
+        if isinstance(item, jax.Array):
+            item = np.asarray(item)
         self._annotations[key] = item
 
     def __getitem__(self, key: str) -> Any:
