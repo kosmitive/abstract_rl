@@ -51,7 +51,7 @@ conf = make_config(
 returns = run_trpo(conf)  # shape (epochs, 2): mean and std of the raw episodic return
 ```
 
-The JAX dependency is the CPU extra `jax[cpu]`. `jax-metal` is not a dependency, and the package does not install a CUDA build of JAX. The `baselines` extra installs Stable-Baselines3 and, through it, a CPU PyTorch wheel. The core package does not depend on PyTorch. `mujoco` adds the Gymnasium MuJoCo environments.
+The JAX dependency is the CPU extra `jax[cpu]` (a fresh install reports a CPU device). `jax-metal` is not a dependency, and the package does not install a CUDA build of JAX. The `baselines` extra installs Stable-Baselines3, which depends on PyTorch. The core package does not. On Linux that torch wheel comes from PyPI and pulls the CUDA libraries; `tool.uv.sources` names a CPU index, and the lockfile currently records the PyPI wheel. `mujoco` adds the Gymnasium MuJoCo environments.
 
 ## Results
 
@@ -103,7 +103,7 @@ A seed counts as solved on its own greedy return, so the five-seed mean can sit 
 
 ```bash
 abstract-rl env=halfcheetah alg=mpo seed=1 alg.num_epochs=100            # Hydra overrides; needs the mujoco extra
-abstract-rl env=mountaincar alg=mpo data_root=results -m seed=1,2,3,4,5  # Hydra sweep
+abstract-rl -m env=mountaincar alg=mpo data_root=results seed=1,2,3,4,5  # Hydra sweep; -m has to come first
 abstract-rl env=pendulum alg=trpo --cfg job                              # print the config
 abstract-rl-eval data/HalfCheetah-v5/mpo/<run> --save                    # greedy evaluation
 python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run>   # Pendulum balance check

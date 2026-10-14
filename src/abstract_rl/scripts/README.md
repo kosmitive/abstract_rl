@@ -8,7 +8,7 @@ Benchmark runs use Hydra. `config/` at the repository root holds the tuned TRPO 
 abstract-rl env=pendulum alg=trpo seed=1
 abstract-rl env=halfcheetah alg=mpo seed=2 alg.num_epochs=100 alg.policy_sigma=0.5
 abstract-rl env=pendulum alg=trpo --cfg job
-abstract-rl env=mountaincar alg=mpo data_root=results -m seed=1,2,3,4,5
+abstract-rl -m env=mountaincar alg=mpo data_root=results seed=1,2,3,4,5
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
@@ -31,7 +31,7 @@ uv run python -m abstract_rl.scripts.plot_learning_curve data/Pendulum-v1/trpo/<
 uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run>
 ```
 
-`eval_balance --gif` writes an rgb-array GIF and does not need a display. `run_policy --render` opens a window.
+`abstract-rl-eval` exits with status 1 when a run's greedy return is below the environment threshold. `eval_balance --gif` writes an rgb-array GIF. `run_policy --render` requests a display window.
 
 Baselines (the `baselines` extra: Stable-Baselines3 PPO and sb3-contrib TRPO) and the comparison of a results tree:
 
