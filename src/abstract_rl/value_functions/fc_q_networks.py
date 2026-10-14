@@ -183,6 +183,11 @@ def _copy_leaf(value: object) -> object:
     return value
 
 
+# Measured on a 1000 x 256 critic: unroll 8 was faster than 1, 2, 4 and 16. A longer unroll
+# did not pay for itself. The constant is static, so each step count still compiles once.
+_ADAM_UNROLL = 8
+
+
 @eqx.filter_jit(donate="all-except-first")
 def _critic_scan(
     data: tuple[Float[Array, "cap obs"], Float[Array, "cap act"], Float[Array, " cap"], PRNGKeyArray, Array],
@@ -196,7 +201,9 @@ def _critic_scan(
     """Scan Adam updates. Returns the new weights, optimiser state, and pre/post losses.
 
     Replay arrays are the first argument and are not donated. The weight leaves and the Adam
-    state are donated into the values this function returns.
+    state are donated into the values this function returns. The scan is unrolled
+    ``_ADAM_UNROLL`` steps. Indices are still one ``split`` and one ``randint`` per step, in
+    that order.
     """
     states, actions, targets, key, size = data
 
@@ -217,7 +224,9 @@ def _critic_scan(
         post = jax.lax.cond(step % 10 == 0, lambda w: loss_on(w, idx), lambda _w: pre, weights)
         return (weights, state, key_), (pre, post)
 
-    (diff, opt_state, _), (pre, post) = jax.lax.scan(body, (diff, opt_state, key), jnp.arange(num_steps))
+    (diff, opt_state, _), (pre, post) = jax.lax.scan(
+        body, (diff, opt_state, key), jnp.arange(num_steps), unroll=_ADAM_UNROLL
+    )
     return diff, opt_state, pre, post
 
 
