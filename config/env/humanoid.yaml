@@ -3,11 +3,10 @@
 # A fall terminates the episode: torso height outside [1, 2] (terminate_when_unhealthy).
 # The time limit is 1000 steps.
 # 3000000 env steps is a reduced budget. Published Humanoid runs usually use 5–10 million steps or more.
-# Gymnasium registers no reward_threshold. success is 5000 because healthy_reward is 5, so an episode
-# that stays upright for all 1000 steps, with no forward reward and negligible costs, scores about 5000.
-# Walking adds forward reward on top of that.
+# Gymnasium registers no reward_threshold. healthy_reward is 5 per step, so 5000 is an episode that
+# only stands for all 1000 steps. success is 8000, which requires forward reward and so a real walk.
 id: Humanoid-v5
-success: 5000.0
+success: 8000.0
 steps: 3000000
 overrides:
   all: {max_steps: 1000}

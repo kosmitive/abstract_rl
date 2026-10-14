@@ -25,7 +25,7 @@
  },
  "SUCCESS": {
   "HalfCheetah-v5": 4800.0,
-  "Humanoid-v5": 5000.0,
+  "Humanoid-v5": 8000.0,
   "InvertedDoublePendulum-v5": 9100.0,
   "InvertedPendulum-v5": 950.0,
   "MountainCarContinuous-v0": 90.0,
