@@ -10,6 +10,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc import buckets
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 from abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder import (
     NonParametricVariationalPolicyBuilder,
@@ -48,21 +49,31 @@ class VariationalRankingOperator(TrajectoryOperator):
     def apply(self, replay: ReplayBuffer) -> None:
         """Write ``ranking`` for the stored extra actions. ``hook`` must have run first.
 
-        The softmax runs on the full allocation. ``size`` is a traced scalar, so filling the
-        replay does not compile a new kernel.
+        The softmax covers a power-of-two prefix of the allocation. It is per state. A shorter
+        prefix matches the full-buffer rows up to one float32 ulp, because the batched kernel
+        depends on the row count; at full width the kernel is the full-buffer one. ``hook`` has
+        already fit η on every stored row.
         """
         if replay.size == 0:
             return
         eta = jnp.float32(float(np.reshape(self.b.eta, ())))
-        replay.ranking = _ranking_full(replay.add_q, jnp.int32(replay.size), eta)
+        width = buckets.active_width(replay.size, int(replay.add_q.shape[0]))
+        replay.ranking = _ranking_full(replay.add_q, jnp.int32(replay.size), eta, width)
 
 
 @eqx.filter_jit
-def _ranking_full(q_values: Float[Array, "cap k"], size: Array, eta: Float[Array, ""]) -> Float[Array, "cap k"]:
-    """Per-state log weights for the stored prefix. Rows past ``size`` are zero."""
-    weights = jax.nn.log_softmax(q_values / eta, axis=-1)
-    valid = jnp.arange(q_values.shape[0]) < size
-    return jnp.where(valid[:, None], weights, 0)
+def _ranking_full(
+    q_values: Float[Array, "cap k"], size: Array, eta: Float[Array, ""], width: int
+) -> Float[Array, "cap k"]:
+    """Per-state log weights for the first ``width`` rows. Rows past ``size`` are zero.
+
+    ``width`` is static. Log-softmax is independent across rows. A shorter batch matches those
+    rows up to one float32 ulp; the full allocation is the steady-state kernel.
+    """
+    weights = jax.nn.log_softmax(q_values[:width] / eta, axis=-1)
+    valid = jnp.arange(width) < size
+    head = jnp.where(valid[:, None], weights, 0)
+    return jnp.zeros_like(q_values).at[:width].set(head)
 
 
 def e_step_log_weights(q_values: Float[Array, "batch k"] | np.ndarray, eta: float) -> Float[Array, "batch k"]:

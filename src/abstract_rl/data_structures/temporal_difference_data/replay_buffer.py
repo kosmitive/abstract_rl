@@ -1,8 +1,9 @@
 """Fixed-capacity replay stored as on-device arrays.
 
 Transitions are packed at the front of the buffer. Sampling inside a jitted update indexes
-``0 .. size`` and never sees the unused tail, so the compiled shapes stay constant as the
-buffer fills.
+``0 .. size``. Buffer-wide passes compile a power-of-two prefix that covers the fill, and the
+allocation itself once the next power of two would exceed it, so the number of compiles is
+logarithmic in the capacity.
 """
 
 from typing import Any

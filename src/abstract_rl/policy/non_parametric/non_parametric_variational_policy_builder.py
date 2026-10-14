@@ -5,6 +5,7 @@ import numpy as np
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc import buckets
 from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy
 
 
@@ -27,13 +28,19 @@ class NonParametricVariationalPolicyBuilder:
         self.log.create_field("eta", 1)
 
     def calc_eta(self) -> None:
-        """Minimise the dual on every stored Q sample and log the temperature."""
+        """Minimise the dual on every stored Q sample and log the temperature.
+
+        The mean is over the stored rows, not over the M-step minibatch. The device array is
+        sliced to the same power-of-two prefix as the other buffer-wide kernels; rows past
+        ``size`` stay masked out of the mean.
+        """
         collection = self.mc.get("tc")
         device = getattr(collection, "device", None)
         stored = None
         if device is not None and device.size:
-            q_values = device.add_q
             stored = int(device.size)
+            width = buckets.active_width(stored, int(device.add_q.shape[0]))
+            q_values = device.add_q[:width]
         else:
             q_values = np.concatenate([np.asarray(traj["add_q"]) for traj in collection.trajectories()])
         eta = find_optimal_temperature(

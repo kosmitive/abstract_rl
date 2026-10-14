@@ -21,6 +21,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc import buckets
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, log_prob
@@ -80,8 +81,9 @@ class RetraceOperator(TrajectoryOperator):
     def apply(self, replay: ReplayBuffer, key: PRNGKeyArray) -> None:
         """Write ``q`` and ``tq`` for every stored transition.
 
-        Episodes are gathered on device into a slot count fixed by the buffer capacity, so the
-        kernel shape does not follow the number of stored episodes. Empty slots are skipped.
+        Episodes are gathered into a power-of-two slot count (the full-buffer count once that
+        many episodes are stored). Leading slots use the same per-chunk keys as a full scan.
+        Empty slots are skipped.
 
         Args:
             replay: Replay whose behaviour log probabilities are the denominator of the trace.
@@ -90,7 +92,7 @@ class RetraceOperator(TrajectoryOperator):
         if replay.size == 0 or not replay.episodes:
             return
         pad = replay.pad_limit
-        slots = _slot_count(replay.capacity, pad)
+        slots = buckets.slot_width(len(replay.episodes), _slot_count(replay.capacity, pad), _CHUNK)
         q = replay.q
         tq = replay.tq
         reset = True

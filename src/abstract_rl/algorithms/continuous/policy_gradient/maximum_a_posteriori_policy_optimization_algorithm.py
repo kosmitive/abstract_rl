@@ -19,6 +19,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc import buckets
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import l2_norm
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
@@ -474,20 +475,24 @@ def _full_lagrangian(
 def _fill_target_stats(replay: ReplayBuffer, target: GaussianParams) -> None:
     """Cache the target policy's sufficient statistics for the KL constraint.
 
-    One scan over the allocation. ``size`` is traced, so the compile stays put as the replay fills.
+    The scan covers a power-of-two prefix of the allocation (the whole allocation once the buffer
+    is full). There is no randomness, so those rows match a full scan. ``n_chunks`` is static.
     """
     if replay.size == 0:
         return
-    replay.target_stats = _target_stats_all(target, replay.states, jnp.int32(replay.size))
+    n_chunks = buckets.chunk_count(replay.size, replay.capacity, _STATS_CHUNK)
+    replay.target_stats = _target_stats_all(target, replay.states, jnp.int32(replay.size), n_chunks)
 
 
 @eqx.filter_jit
 def _target_stats_all(
-    target: GaussianParams, states: Float[Array, "cap obs"], size: Array
+    target: GaussianParams, states: Float[Array, "cap obs"], size: Array, n_chunks: int
 ) -> Float[Array, "cap stats"]:
-    """Sufficient statistics of a frozen policy for every allocated row. The tail is zero."""
+    """Sufficient statistics of a frozen policy for the first ``n_chunks`` blocks. The tail is zero.
+
+    There is no randomness. Block ``i`` reads the same rows a full-allocation scan would.
+    """
     capacity = states.shape[0]
-    n_chunks = (capacity + _STATS_CHUNK - 1) // _STATS_CHUNK
 
     def body(carry: Array, index: Array) -> tuple[Array, Array]:
         start = index * _STATS_CHUNK
@@ -497,8 +502,9 @@ def _target_stats_all(
         return carry, jnp.where(valid[:, None], stats, 0)
 
     _carry, stats = jax.lax.scan(body, jnp.int32(0), jnp.arange(n_chunks))
-    width = n_chunks * _STATS_CHUNK
-    return stats.reshape((width, stats.shape[-1]))[:capacity]
+    flat = stats.reshape((n_chunks * _STATS_CHUNK, stats.shape[-1]))
+    prefix = min(n_chunks * _STATS_CHUNK, capacity)
+    return jnp.zeros((capacity, flat.shape[-1]), dtype=flat.dtype).at[:prefix].set(flat[:prefix])
 
 
 def _lagrangian(

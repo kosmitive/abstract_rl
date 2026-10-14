@@ -12,6 +12,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc import buckets
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, log_prob, sample
@@ -21,7 +22,7 @@ _CHUNK = 512
 
 
 class ResampleOperator(TrajectoryOperator):
-    """E-step action samples. The whole buffer is scored in fixed-size chunks."""
+    """E-step action samples. Stored rows are scored in fixed-size chunks."""
 
     def __init__(self, mc: ModelConfiguration) -> None:
         assert isinstance(mc, ModelConfiguration)
@@ -71,20 +72,23 @@ class ResampleOperator(TrajectoryOperator):
     def apply(self, replay: ReplayBuffer, key: PRNGKeyArray) -> None:
         """Fill ``add_act``, ``add_q`` and ``add_pi`` for every stored state.
 
-        The compiled scan covers the whole allocation and masks rows past ``size``, so a growing
-        replay does not change the compiled shape and does not rewrite the buffer once per chunk.
+        The scan length is a power-of-two prefix of the allocation (the whole allocation once the
+        buffer is full). Chunk ``i`` still draws ``split(key, n_full)[i]``, the same key the
+        full-allocation scan uses, so the stored rows do not depend on the prefix length.
 
         Args:
             replay: Replay to update in place.
-            key: Random key, split once per chunk inside the scan.
+            key: Random key. One key per full-allocation chunk; only the filled chunks are run.
         """
         if replay.size == 0:
             return
+        n_chunks = buckets.chunk_count(replay.size, replay.capacity, _CHUNK)
         actions, q_hat, log_density = resample_buffer(
             (self.policy.params, self.q_net.params, replay.states, key, self.add_act, jnp.int32(replay.size)),
             replay.add_act,
             replay.add_q,
             replay.add_pi,
+            n_chunks,
         )
         replay.add_act = actions
         replay.add_q = q_hat
@@ -126,16 +130,18 @@ def resample_buffer(
     add_act: Float[Array, "cap k act"],
     add_q: Float[Array, "cap k"],
     add_pi: Float[Array, "cap k"],
+    n_chunks: int,
 ) -> tuple[Float[Array, "cap k act"], Float[Array, "cap k"], Float[Array, "cap k"]]:
-    """Score every allocated row. Rows at or past ``size`` are zero and are not a new compile.
+    """Score the first ``n_chunks`` blocks. Rows at or past ``size`` are zero.
 
-    The previous ``add_*`` buffers are donated and overwritten. The policy, Q network and states
-    stay live for the rest of the update.
+    ``n_chunks`` is static, so each power-of-two prefix compiles once. Keys are split for the
+    whole allocation; block ``i`` uses the same key it would in a full scan. The previous
+    ``add_*`` buffers are donated and overwritten. The policy, Q network and states stay live.
     """
     policy, q_net, states, key, n_actions, size = kept
     capacity = states.shape[0]
-    n_chunks = (capacity + _CHUNK - 1) // _CHUNK
-    keys = jax.random.split(key, n_chunks)
+    n_full = (capacity + _CHUNK - 1) // _CHUNK
+    keys = jax.random.split(key, n_full)
 
     def body(carry: Array, index: Array) -> tuple[Array, tuple[Array, Array, Array]]:
         start = index * _CHUNK
@@ -148,10 +154,13 @@ def resample_buffer(
         return carry, (actions, q_hat, log_density)
 
     _carry, (actions, q_hat, log_density) = jax.lax.scan(body, jnp.int32(0), jnp.arange(n_chunks))
-    width = n_chunks * _CHUNK
     act = actions.shape[-1]
+    flat_actions = actions.reshape((n_chunks * _CHUNK, n_actions, act))
+    flat_q = q_hat.reshape((n_chunks * _CHUNK, n_actions))
+    flat_pi = log_density.reshape((n_chunks * _CHUNK, n_actions))
+    prefix = min(n_chunks * _CHUNK, capacity)
     return (
-        add_act.at[:].set(actions.reshape((width, n_actions, act))[:capacity]),
-        add_q.at[:].set(q_hat.reshape((width, n_actions))[:capacity]),
-        add_pi.at[:].set(log_density.reshape((width, n_actions))[:capacity]),
+        jnp.zeros_like(add_act).at[:prefix].set(flat_actions[:prefix]),
+        jnp.zeros_like(add_q).at[:prefix].set(flat_q[:prefix]),
+        jnp.zeros_like(add_pi).at[:prefix].set(flat_pi[:prefix]),
     )
