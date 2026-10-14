@@ -11,10 +11,8 @@ Per run the mean return over seeded start states is printed together with the su
 import argparse
 import json
 import os
-import sys
 
 import numpy as np
-import torch
 
 from abstract_rl.scripts.eval_balance import load_policy
 from abstract_rl.scripts.hydra_conf import success
@@ -30,10 +28,9 @@ def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000) -> tuple[str,
         obs, _ = env.reset(seed=seed + i)
         total, steps, done = 0.0, 0, False
         while not done and (max_steps is None or steps < max_steps):
-            with torch.no_grad():
-                s = torch.as_tensor(env_wrapper._preprocess(obs), dtype=torch.float32).view(1, -1)
-                a = policy.mode(states=s).reshape(-1).numpy().astype(np.float64)
-            obs, r, terminated, truncated, _ = env.step(a)
+            state = np.asarray(env_wrapper._preprocess(obs), dtype=np.float64).reshape(1, -1)
+            action = np.asarray(policy.mode(states=state)).reshape(-1).astype(np.float64)
+            obs, r, terminated, truncated, _ = env.step(action)
             total += float(r)
             steps += 1
             done = terminated or truncated
@@ -69,5 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if ok else 1
 
 
+def cli(argv: list[str] | None = None) -> None:
+    """Console entry point. The process status is 1 when a run is below its threshold."""
+    raise SystemExit(main(argv))
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    cli()
