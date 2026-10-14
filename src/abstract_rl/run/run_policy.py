@@ -4,7 +4,6 @@ import argparse
 from os.path import join
 
 import numpy as np
-import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
@@ -34,7 +33,7 @@ def run_policy(run_dir: str, episodes: int = 5, render: bool = False, stochastic
     # policy neural_modules
     with conf.ns("policy"):
         policy = select_policy(mc)
-        policy.load_state_dict(torch.load(join(run_dir, "model/last", "policy.data"), weights_only=True))
+        policy.load(join(run_dir, "model/last", "policy.data"))
 
     returns = []
     with conf.ns("policy"):
