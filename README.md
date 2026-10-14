@@ -17,21 +17,26 @@ with one- and multi-dimensional actions and is benchmarked against Stable-Baseli
 
 ## Install
 
-The package installs from git. Hydra configs are inside the wheel, so training does not need a checkout.
+Python 3.13 (`requires-python` is `>=3.13,<3.14`). The package installs from git. Hydra configs are inside the wheel, so training does not need a checkout.
 
 ```bash
 uv add git+https://github.com/kosmitive/abstract_rl
-# extras: uv add "abstract-rl[mujoco] @ git+https://github.com/kosmitive/abstract_rl"
-#         uv add "abstract-rl[baselines] @ git+https://github.com/kosmitive/abstract_rl"
-#         uv add "abstract-rl[dev] @ git+https://github.com/kosmitive/abstract_rl"
+uv add "abstract-rl[mujoco] @ git+https://github.com/kosmitive/abstract_rl"
+uv add "abstract-rl[baselines] @ git+https://github.com/kosmitive/abstract_rl"
+uv add "abstract-rl[dev] @ git+https://github.com/kosmitive/abstract_rl"
+
+pip install git+https://github.com/kosmitive/abstract_rl
+pip install "abstract-rl[mujoco] @ git+https://github.com/kosmitive/abstract_rl"
+pip install "abstract-rl[baselines] @ git+https://github.com/kosmitive/abstract_rl"
+pip install "abstract-rl[dev] @ git+https://github.com/kosmitive/abstract_rl"
 ```
 
-From a checkout, `uv sync` (add `--extra mujoco`, `--extra baselines` or `--group dev`) installs the same tree.
-The console script is `abstract-rl`:
+From a checkout, `uv sync` installs the same tree. `--extra mujoco` and `--extra baselines` add those extras. `--group dev` (the same packages as the `dev` extra) adds pytest, ruff and mypy.
 
 ```bash
 abstract-rl env=pendulum alg=trpo seed=1
-uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1   # equivalent, from a checkout
+abstract-rl env=pendulum alg=trpo --cfg job          # print the composed Hydra config
+python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1   # same entry point
 ```
 
 ```python
@@ -46,92 +51,65 @@ conf = make_config(
 returns = run_trpo(conf)  # shape (epochs, 2): mean and std of the raw episodic return
 ```
 
-JAX is installed from the CPU extra (`jax[cpu]`). A machine with CUDA can still run on the GPU; `jax-metal` is
-not used. The optional `baselines` extra installs Stable-Baselines3, and with it a CPU PyTorch wheel. That
-dependency stays out of the core package. `mujoco` adds the Gymnasium MuJoCo environments. `dev` adds pytest,
-ruff and mypy.
+The JAX dependency is the CPU extra `jax[cpu]`. `jax-metal` is not a dependency, and the package does not install a CUDA build of JAX. The `baselines` extra installs Stable-Baselines3 and, through it, a CPU PyTorch wheel. The core package does not depend on PyTorch. `mujoco` adds the Gymnasium MuJoCo environments.
 
 ## Results
 
-The table below is the previous PyTorch run of this repository (5 seeds, same Hydra configs). The JAX port keeps
-those configs and the algorithm. A per-epoch timing comparison of the two implementations is in
-[Epoch time](#epoch-time).
+JAX greedy evaluation at the default environment-step budgets, 5 seeds per cell. A per-epoch timing comparison with the previous implementation is in [Epoch time](#epoch-time).
 
-Configurations are Hydra YAML files in [`config/`](config) (`run env=<env> alg=<alg> seed=N`),
-**5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `config/env/<env>.yaml`).
-*Greedy return* is the mean of 20 seeded evaluation episodes with the policy mean (final policy), averaged over seeds
-± std over seeds. *Solved* counts seeds whose greedy return reaches the threshold (Gymnasium reward threshold;
-Pendulum-v1 has none, -150 corresponds to swing-up and balance). *Steps to threshold* is the first step at which the
-smoothed training return reaches it (median over the seeds that do).
+Configurations are Hydra YAML files in [`config/`](config) (`abstract-rl env=<env> alg=<alg> seed=N`).
+*Greedy return* for abstract_rl is the mean over the five seeds. Each seed is the mean of 20 evaluation episodes (start seeds 10000 + episode, policy mean, raw Gymnasium return) of the final policy. *Solved* counts seeds that reach the threshold (the Gymnasium reward threshold; Pendulum-v1 has none, so -150 is swing-up and balance). abstract_rl stops at `steps` in `config/env/<env>.yaml`. The Stable-Baselines3 rows are the earlier comparison and still report mean ± std, the step count that comparison recorded, and *steps to threshold* (the first step at which the smoothed training return reaches the threshold, median over the seeds that do). Steps to threshold was not recorded for these JAX runs.
 
-| Environment | Algorithm | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
+| Environment | Algorithm | Seeds | Steps | Greedy return | Solved | Steps to threshold |
 |---|---|---|---|---|---|---|
-| Pendulum-v1 (≥ -150) | TRPO (abstract_rl) | 5 | 800,000 | -127.7 ± 2.7 | 5/5 | 192,000 (5/5) |
-| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -123.8 ± 1.0 | 5/5 | 40,000 (5/5) |
+| Pendulum-v1 (≥ -150) | TRPO (abstract_rl) | 5 | 800,000 | -128.7 | 5/5 | — |
+| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -121.9 | 5/5 | — |
 | Pendulum-v1 (≥ -150) | TRPO (SB3) | 5 | 800,000 | -124.0 ± 1.6 | 5/5 | 204,000 (5/5) |
 | Pendulum-v1 (≥ -150) | PPO (SB3) | 5 | 800,000 | -156.1 ± 38.5 | 3/5 | 536,000 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | TRPO (abstract_rl) | 5 | 401,254 | 94.1 ± 0.7 | 5/5 | 44,286 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,039 | 93.6 ± 0.0 | 5/5 | 52,000 (5/5) |
+| MountainCarContinuous-v0 (≥ 90) | TRPO (abstract_rl) | 5 | 400,000 | 94.7 | 5/5 | — |
+| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,000 | 93.6 | 5/5 | — |
 | MountainCarContinuous-v0 (≥ 90) | TRPO (SB3) | 5 | 400,072 | 74.7 ± 37.5 | 4/5 | 52,013 (4/5) |
 | MountainCarContinuous-v0 (≥ 90) | PPO (SB3) | 5 | 399,927 | 54.8 ± 76.7 | 4/5 | 5,998 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | TRPO (abstract_rl) | 5 | 151,370 | 1000.0 ± 0.0 | 5/5 | 28,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,663 | 950.2 ± 99.6 | 4/5 | 19,000 (5/5) |
+| InvertedPendulum-v5 (≥ 950) | TRPO (abstract_rl) | 5 | 150,000 | 910.3 | 4/5 | — |
+| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,000 | 1000 | 5/5 | — |
 | InvertedPendulum-v5 (≥ 950) | TRPO (SB3) | 5 | 150,523 | 1000.0 ± 0.0 | 5/5 | 29,000 (5/5) |
 | InvertedPendulum-v5 (≥ 950) | PPO (SB3) | 5 | 150,220 | 1000.0 ± 0.0 | 5/5 | 28,000 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 602,473 | 9092.1 ± 218.8 | 2/5 | 211,015 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,178 | 5937.0 ± 4162.1 | 3/5 | 66,066 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 600,000 | 8579.6 | 3/5 | — |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,000 | 9345.6 | 5/5 | — |
 | InvertedDoublePendulum-v5 (≥ 9100) | TRPO (SB3) | 5 | 599,517 | 8270.3 ± 602.2 | 0/5 | 107,946 (5/5) |
 | InvertedDoublePendulum-v5 (≥ 9100) | PPO (SB3) | 5 | 599,587 | 9175.8 ± 225.2 | 3/5 | 197,967 (5/5) |
-| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 1903.7 ± 862.3 | 0/5 | never |
-| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 8350.6 ± 1043.4 | 5/5 | 198,000 (5/5) |
+| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 2336.3 | 0/5 | — |
+| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 6889.3 | 4/5 | — |
 | HalfCheetah-v5 (≥ 4800) | TRPO (SB3) | 5 | 1,200,000 | 2547.9 ± 1314.1 | 0/5 | never |
 | HalfCheetah-v5 (≥ 4800) | PPO (SB3) | 5 | 1,200,000 | 1620.3 ± 59.9 | 0/5 | never |
 
-The same greedy protocol on the JAX port (20 episodes, start seeds 10000 + episode, policy mean, raw Gymnasium return). Std is over the five seed means.
-
-| Environment | Algorithm | Per-seed greedy return | Mean ± std | Solved | Env steps |
-|---|---|---|---|---|---|
-| Pendulum-v1 (≥ -150) | TRPO | -124.9, -124.9, -126.9, -132.8, -132.8 | -128.5 ± 4.0 | 5/5 | 800,000 |
-| Pendulum-v1 (≥ -150) | MPO | -123.9, -126.5, -123.1, -124.5, -122.3 | -124.1 ± 1.6 | 5/5 | 1,280,000 |
-| MountainCarContinuous-v0 (≥ 90) | TRPO | 95.0, 95.1, 94.5, 94.0, 95.5 | 94.8 ± 0.6 | 5/5 | 425k–431k |
-| MountainCarContinuous-v0 (≥ 90) | MPO | 93.5, 93.6, 93.5, 93.7, 93.6 | 93.6 ± 0.1 | 5/5 | 400,009–400,059 |
-
-Against the PyTorch table, Pendulum TRPO is 0.8 points lower and Pendulum MPO 0.3 points lower, both 5/5. MountainCar TRPO is 0.7 points higher and MountainCar MPO matches 93.6, both 5/5. Inside a Pendulum seed the 20 starts are bimodal (some near 0, some near -250), so the within-seed std is about 85–93; the mean still clears -150.
-
-Those four JAX seeds were measured before the step budget was enforced. MPO on Pendulum stored 1,280,000 steps: each epoch asked for 1000 transitions and the 4-wide round finished 8 episodes of 200. MountainCar TRPO stored between 424,895 and 431,280. `max_env_steps` now defaults to the environment `steps` budget for both algorithms, and each collection stores exactly the number of transitions it was asked for, so a run stops on that budget.
-
-A short Gymnasium run, one seed, not the full budget: InvertedPendulum TRPO 20 epochs (51,169 steps) stochastic return 3.6 → 756, greedy 1000; MPO 30 epochs (31,060 steps) 6.6 → 1000, greedy 1000. InvertedDoublePendulum TRPO 15 epochs (60,408 steps) 34 → 91, greedy 162; MPO 20 epochs (20,217 steps) 74 → 356, greedy 573. HalfCheetah TRPO 8 epochs (88,000 steps) -313 → -232, greedy 337; MPO 10 epochs (10,000 steps) -524 → -164, greedy -114. The return moves up. Only the short InvertedPendulum runs clear their threshold.
+A seed counts as solved on its own greedy return, so the five-seed mean can sit below the threshold while most seeds solve (InvertedPendulum TRPO 910.3 with 4/5, InvertedDoublePendulum TRPO 8579.6 with 3/5).
 
 ![benchmark](docs/benchmark.png)
 
+`docs/benchmark.png` is the learning-curve figure from the earlier PyTorch abstract_rl runs plotted against these same SB3 baselines. The greedy numbers above are the JAX runs at the default budgets.
+
 - **Tuned for Pendulum-v1 and MountainCarContinuous-v0** (one setting each): TRPO Pendulum discount 0.95, MPO
-  Pendulum E-step epsilon `rnk_eps` 0.05, MPO MountainCar fixed (not learned) exploration std 2.0. A learned std
-  shrinks to ≈ 0 before the sparse goal is found, which made 2/5 seeds fail before. These runs stop at the exact
-  step budget (`max_env_steps`).
-- **Pendulum balance check** (`scripts/eval_balance.py`, |θ| < 0.1 rad in the last 100 of 200 steps, 20 start
-  states): TRPO and MPO balance in 5/5 seeds and 20/20 episodes each (max |θ| 0.012-0.057 rad TRPO, 0.032-0.098 rad MPO).
+  Pendulum E-step epsilon `rnk_eps` 0.05, MPO MountainCar fixed exploration std 2.0. A learned std
+  shrinks to about 0 before the sparse goal is found, which made 2/5 seeds fail before. `max_env_steps` defaults to each environment's `steps` budget.
+- **Pendulum balance check** (`abstract_rl.scripts.eval_balance`, |θ| < 0.1 rad in the last 100 of 200 steps). The command is in [Usage](#usage).
 - **SB3 baselines**: library defaults, except MountainCarContinuous-v0, which uses the
   [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) hyper-parameters (`--zoo`, gSDE exploration) at
   the same 400k budget; with defaults both SB3 algorithms score 0 there. On Pendulum-v1 the zoo settings were worse
   than the defaults (TRPO -136, PPO -226), so the defaults are shown.
-- **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** are not re-tuned. MPO stops after a fixed number of epochs
-  and finishes the running episode, so on the two pendulums it ran up to 4-6% past the budget; the learning curves are
-  cut at the budget, the greedy return is the one of the final policy. MPO is less stable late in training there
-  (one InvertedPendulum seed, two InvertedDoublePendulum seeds collapse after reaching the maximum).
-- Runs were made on Linux (Python 3.13) and a MacBook (Python 3.14) with one CPU thread; seeds are fixed but results
-  are not bit-reproducible across machines.
+- **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** use the overrides in `config/env` and are not separately re-tuned. Solved counts for the JAX runs are in the table.
 
 ## Usage
 
 ```bash
-abstract-rl env=halfcheetah alg=mpo seed=1 alg.num_epochs=100          # Hydra overrides
-abstract-rl env=mountaincar alg=mpo data_root=results -m seed=1,2,3,4,5  # sweep
-abstract-rl env=pendulum alg=trpo --cfg job                            # print the config
-abstract-rl-eval data/HalfCheetah-v5/mpo/<run> --save                  # greedy evaluation
-python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run> # Pendulum balance check
-python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 ppo --seed 1 --data-root results
-abstract-rl-compare results --out docs/                                # table and plots
-python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render  # replay a policy
+abstract-rl env=halfcheetah alg=mpo seed=1 alg.num_epochs=100            # Hydra overrides; needs the mujoco extra
+abstract-rl env=mountaincar alg=mpo data_root=results -m seed=1,2,3,4,5  # Hydra sweep
+abstract-rl env=pendulum alg=trpo --cfg job                              # print the config
+abstract-rl-eval data/HalfCheetah-v5/mpo/<run> --save                    # greedy evaluation
+python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run>   # Pendulum balance check
+abstract-rl-baselines HalfCheetah-v5 ppo --seed 1 --data-root results    # baselines extra
+abstract-rl-compare results --out docs/                                  # writes benchmark.md and benchmark.png
+python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run>         # replay; add --render on a display
 ```
 
 ```python
@@ -181,7 +159,7 @@ MJX is 10–19× slower here, and HalfCheetah velocity has already drifted by 2.
 
 ## Epoch time
 
-Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1`. PyTorch is the previous implementation pinned to one thread. "JAX loops" is the port after the scan pass and before this round. "JAX now" skips epoch 0 (the compile). The later epochs are flat, so the compile sits in epoch 0.
+Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1`. The PyTorch column is the previous implementation pinned to one thread. "JAX loops" is the port after the scan pass and before the classic-control rollout. "JAX now" skips epoch 0 (the compile). The later epochs are flat, so the compile sits in epoch 0. The MPO critic time in this table is the Adam scan before it was unrolled; the shipped scan is below.
 
 | Run | PyTorch | JAX loops | JAX now | Window after compile |
 |---|---:|---:|---:|---|
@@ -190,7 +168,7 @@ Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1
 | TRPO HalfCheetah-v5 | 3.103 | 1.070 | 0.953 | epochs 1–3 |
 | MPO HalfCheetah-v5 | 3.270 | 1.475 | 1.489 | epochs 1–5 |
 
-On the same windows, the TRPO Pendulum rollout is 0.041s, the trust-region step 0.013s and the value fit 0.026s. TRPO HalfCheetah rollout stays on Gymnasium at 0.801s, the trust-region step is 0.049s and the value fit 0.059s. MPO Pendulum rollout is 0.018s. MPO HalfCheetah rollout is 0.084s. The MPO epoch is still the resample, Retrace and critic.
+On the same windows, the TRPO Pendulum rollout is 0.041s, the trust-region step 0.013s and the value fit 0.026s (Optax L-BFGS). TRPO HalfCheetah rollout stays on Gymnasium at 0.801s, the trust-region step is 0.049s and the value fit 0.059s. MPO Pendulum rollout is 0.018s. MPO HalfCheetah rollout is 0.084s. The MPO epoch is still the resample, Retrace and critic. The shipped critic scan unrolls 8 Adam steps. A later measurement of that 1000 × 256 fit on a 4-CPU machine is 503 ms, against 690 ms for the same scan unrolled one step at a time.
 
 Phases of the earlier loop pass, in seconds (mean before that pass, then mean after). The epoch table above is the later measurement.
 
@@ -209,7 +187,7 @@ Phases of the earlier loop pass, in seconds (mean before that pass, then mean af
 | critic | — | — | 0.699 → 0.686 | 0.605 → 0.594 |
 | device sync | — | — | climbed 0.06 → 0.22; now <0.01 | now <0.01 |
 
-Resample scans the whole allocation, so its cost is the full-buffer figure from the first steady epoch. Retrace skips empty episode slots. On Pendulum it grows with the stored episodes (0.021s at epoch 1, 0.094s at epoch 11) while the epoch stays between 1.39s and 1.44s. The slope is about 0.007s of Retrace per thousand new steps. HalfCheetah stores one episode per epoch, and the first eight share one slot chunk, so Retrace stayed flat in that window.
+Those phase times predate the filled-prefix scans. Resample, the temperature dual, ranking, target statistics and Retrace now run on a power-of-two prefix of the filled rows (`misc/buckets.py`), and on the whole allocation once the next power of two would pass the capacity. On a 50,000-row Pendulum buffer that switch happens after 32,768 stored transitions. The full-buffer resample costs above (about 0.47s on Pendulum, 0.57s on HalfCheetah) are the steady-state figures. Retrace still skips empty episode slots. In that earlier window it grew with the stored Pendulum episodes (0.021s at epoch 1, 0.094s at epoch 11) while the epoch stayed between 1.39s and 1.44s. HalfCheetah stores one episode per epoch, and the first eight share one slot chunk, so Retrace stayed flat in that window.
 
 The 5-seed greedy evaluation after this round is in [Results](#results). On an earlier seed-1 run, before the loop pass, the stochastic Pendulum return moved from -1172 to -178 over 40 TRPO epochs and from -1477 to -150 over 40 MPO epochs.
 
@@ -222,12 +200,12 @@ Each training method keeps its name and its maths. The inner iteration is a JAX 
 | Retrace backup `k = 1 .. bootstrap` | `operator/retrace_operator.py` `retrace_accumulate` | `lax.scan` | max abs err 6.7e-16. A 32×1000 backup is 0.0001s unrolled and 0.0006s as a scan (0.21×). The epoch win is the fused slot kernel: Pendulum Retrace 0.207s → 0.021s at the same fill |
 | Retrace chunks, host pad, Python loop | `operator/retrace_operator.py` `apply` | one `filter_jit`; `lax.cond` skips empty chunks; device scatter-add; donated `q` and `tq` | included in the Retrace timing above |
 | Resample chunks and a `.at.set` per chunk | `operator/resample_actions_operator.py` `apply` | `lax.scan` over a fixed chunk count; donated `add_act`, `add_q`, `add_pi` | flat 0.47s Pendulum / 0.57s HalfCheetah. The previous path started near 0.24s and rose with the buffer |
-| Ranking on `add_q[:size]` | `operator/np_rew_operator.py` | `filter_jit` on the full buffer, traced `size` | 0.07–0.10s → under 0.005s. Growing `size` no longer retraces |
+| Ranking on `add_q[:size]` | `operator/np_rew_operator.py` | `filter_jit` on a power-of-two prefix, traced fill | 0.07–0.10s → under 0.005s on the full buffer. A new width compiles once |
 | Temperature L-BFGS-B with `float()` each iteration | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | `lax.while_loop` damped Newton on the same dual; traced `size` | (20000, 20) float64: 1.031s → 0.052s (19.7×). On a (256, 20) draw the optimum has KL 0.1000 against ε 0.1 |
 | TRPO gradient, Fisher, and Python conjugate gradient, with a new jit every epoch | `trust_region_gradient.py`, `conjugate_gradient.py` | one `filter_jit`; `cg_solve` is `lax.while_loop` | Pendulum TRPO step 0.644s → 0.016s (40×); HalfCheetah 1.232s → 0.050s (25×) |
 | Line search `while` with `float(tr_obj)` per probe | `trust_region_gradient.py` `line_search` | `_backtrack` `lax.while_loop`; one log copy; one parameter write | 10 probes on a 4000-step batch: 0.0036s → 0.0033s (1.10×) |
 | Value fit, SciPy L-BFGS-B, host `float()` each iteration | `value_functions/fc_v_networks.py` `perform_sgd` | `optax.lbfgs` zoom line search inside one `lax.scan` (`_fit_v`) | Same 25 steps on a 64-64 value net: Pendulum-sized batch 0.067s → 0.022s, loss 1.02018 → 1.02031; HalfCheetah-sized 0.138s → 0.048s, loss 0.95017 → 0.94989. In the epoch: 0.081s → 0.026s and 0.151s → 0.059s |
-| Critic Adam Python loop | `value_functions/fc_q_networks.py` | `lax.scan`, with donated weights and Adam state | Pendulum critic stays 0.69s |
+| Critic Adam Python loop | `value_functions/fc_q_networks.py` | `lax.scan` unrolled 8 steps, donated weights and Adam state | loop pass 0.69s; shipped 1000 × 256 scan 503 ms (690 ms unrolled once) |
 | M-step Python loop on the default path | `maximum_a_posteriori_policy_optimization_algorithm.py` `_mpo_scan` | `lax.scan`, with donated weights, both Adam states, and the multiplier | Pendulum 0.124s → 0.036s (3.4×); HalfCheetah 0.172s → 0.065s (2.6×) |
 | GAE and TD reverse loops | `gae_operator.py`, `td_operator.py` | `lax.scan` | a few hundredths of a second after epoch 0 |
 | `policy.act` once per environment step | `continuous_policy.py`, `numpy_act.py` | NumPy matmul; weights cached on `id(params)` | HalfCheetah act 1.449s → 0.136s (11×); Pendulum 0.442s → 0.048s (9×) |
@@ -282,7 +260,7 @@ uv run pytest                                          # unit and short training
 The original code (2019, Python 3.6, PyTorch 1.0, gym 0.12) targeted robot control experiments. The port keeps the
 module layout and operator design. In short:
 
-- uv + `pyproject.toml` (Python ≥ 3.13, src layout, `abstract_rl.*` imports), ruff, mypy, pytest; `gym` → `gymnasium`
+- uv + `pyproject.toml` (Python 3.13, src layout, `abstract_rl.*` imports), ruff, mypy, pytest; `gym` → `gymnasium`
   (`terminated`/`truncated`). Networks are Equinox modules, optimisers are Optax, and the core package does not
   depend on PyTorch.
 - Removed (still in the history of `main`): the experimental SAC, the dueling Q network, the circular tail
