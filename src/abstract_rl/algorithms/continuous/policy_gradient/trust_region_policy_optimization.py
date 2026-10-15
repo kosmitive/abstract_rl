@@ -1,11 +1,14 @@
 """Trust region policy optimisation with GAE advantages."""
 
+import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
 from abstract_rl.algorithms.mixed.trust_region_gradient import TrustRegionGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.obs_norm import normalize_obs
+from abstract_rl.policy.continuous.gaussian_math import GaussianParams, kl_divergence, likelihood_ratio
 
 
 class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
@@ -37,7 +40,9 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
         Returns:
             Scalar mean KL.
         """
-        return self.policy.kl_divergence(batch, est="mean", mode="m-projection")
+        states = normalize_obs(self.policy.observation_norm(), jnp.asarray(batch.states, dtype=jnp.float32))
+        target = self.policy.mc.get("policy", True).params
+        return self.tr_divergence(self.policy.params, target, states)
 
     def tr_obj(self, batch: Batch) -> Float[Array, ""]:
         """Negative standardised likelihood-ratio surrogate.
@@ -48,4 +53,31 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
         Returns:
             Scalar surrogate. Lower is a better step.
         """
-        return self.policy.likelihood_ratio(batch)
+        states = normalize_obs(self.policy.observation_norm(), jnp.asarray(batch.states, dtype=jnp.float32))
+        return self.tr_objective(
+            self.policy.params,
+            states,
+            jnp.asarray(batch.actions, dtype=jnp.float32),
+            jnp.asarray(batch.log_likelihoods, dtype=jnp.float32),
+            jnp.asarray(batch["a"], dtype=jnp.float32),
+        )
+
+    @staticmethod
+    def tr_objective(
+        params: GaussianParams,
+        states: Float[Array, "batch obs"],
+        actions: Float[Array, "batch act"],
+        old_log_prob: Float[Array, " batch"],
+        advantages: Float[Array, " batch"],
+    ) -> Float[Array, ""]:
+        """Surrogate used by the natural step and by ``tr_obj``."""
+        return likelihood_ratio(params, states, actions, old_log_prob, advantages)
+
+    @staticmethod
+    def tr_divergence(
+        params: GaussianParams,
+        target: GaussianParams,
+        states: Float[Array, "batch obs"],
+    ) -> Float[Array, ""]:
+        """Mean m-projection KL used by the natural step and by ``tr_distance``."""
+        return kl_divergence(params, target, states, mode_name="m-projection", est="mean")

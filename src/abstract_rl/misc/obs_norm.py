@@ -1,7 +1,6 @@
 """Running observation statistics applied when the policy acts and when it trains.
 
-``filter_states`` used to rewrite stored trajectories after the action had been chosen on the raw
-observation. These statistics are the replacement. They are a Welford aggregate (count, mean, second
+Stored trajectories keep the raw observation. These statistics are a Welford aggregate (count, mean, second
 moment), updated from the observations just collected and held fixed for the following policy and
 value update. The same affine is used in the rollout, including the jitted classic-control scan, in
 TRPO and MPO, and in greedy evaluation.

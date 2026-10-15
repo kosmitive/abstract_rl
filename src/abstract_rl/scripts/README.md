@@ -6,13 +6,13 @@ Benchmark runs use Hydra. `config/` at the repository root holds the tuned TRPO 
 
 ```
 abstract-rl env=pendulum alg=trpo seed=1
-abstract-rl env=halfcheetah alg=mpo seed=2 alg.num_epochs=100 alg.policy_sigma=0.5
+abstract-rl env=halfcheetah alg=mpo seed=2 env.steps=100000
 abstract-rl env=pendulum alg=trpo --cfg job
 abstract-rl -m env=mountaincar alg=mpo data_root=results seed=1,2,3,4,5
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
-`alg=mpo` is the paper M-step (decoupled KL with ε_μ 0.1 and ε_Σ 1e-4, a state-dependent Cholesky policy, SGD temperature). The previous joint KL, diagonal Gaussian and Newton temperature solve are `alg.mpo_kl_mode=joint alg.policy_type=auto alg.policy_cov_type=single alg.eta_solver=newton`. `alg.<key>=value` overrides the environment table. HalfCheetah, Humanoid and the other MuJoCo ids need the `mujoco` extra. Humanoid-v5 (`env=humanoid`) is a 3,000,000-step budget with observation 348 and action 17. Solved means a return of 8000: the healthy reward is 5 per step, so 5000 is only standing for 1000 steps, and 8000 requires walking. `trpo_pendulum` and `mpo_pendulum` are thin wrappers for the full Pendulum-v1 budgets and take no Hydra overrides:
+`alg=mpo` is the paper M-step (decoupled KL with ε_μ 0.1 and ε_Σ 1e-4, a state-dependent Cholesky policy, SGD temperature). `policy_cov_type` selects `full`, `single`, `fixed` or `state`. The training budget is `env.steps`; each epoch collects `env_sample` transitions. `alg.<key>=value` overrides the environment table. HalfCheetah, Humanoid and the other MuJoCo ids need the `mujoco` extra. Humanoid-v5 (`env=humanoid`) is a 3,000,000-step budget with observation 348 and action 17. Solved means a return of 8000: the healthy reward is 5 per step, so 5000 is only standing for 1000 steps, and 8000 requires walking. `trpo_pendulum` and `mpo_pendulum` are thin wrappers for the full Pendulum-v1 budgets and take no Hydra overrides:
 
 ```
 uv run python -m abstract_rl.scripts.trpo_pendulum
@@ -42,9 +42,3 @@ abstract-rl-compare results --out docs/
 ```
 
 `abstract-rl-compare` writes `benchmark.md` and `benchmark.png` into `--out`. Passing `--out docs/` replaces the learning-curve figure stored in this repository.
-
-The critic micro-benchmark times the Adam scan without training:
-
-```
-uv run python -m abstract_rl.scripts.benchmark_critic --steps 1000 --batch 256
-```

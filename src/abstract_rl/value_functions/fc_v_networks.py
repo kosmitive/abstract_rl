@@ -71,9 +71,6 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
         """Value of each state, shape ``[batch, 1]``."""
         return self.params.forward(normalize_mc(self.mc, states))
 
-    def v_val(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch 1"]:
-        return self.forward(states)
-
     def tr_obj(self, batch: Batch) -> Float[Array, ""]:
         """Mean squared error plus an L2 penalty on the weights."""
         return self.objective_on(self.params, batch)

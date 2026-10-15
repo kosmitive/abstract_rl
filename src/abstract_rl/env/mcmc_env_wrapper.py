@@ -19,7 +19,6 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.env.jax_classic import JAX_TRAIN_ENVS
 from abstract_rl.env.jax_rollout import collect_classic, trajectories_from_buffer
 from abstract_rl.misc.cli_printer import CliPrinter
-from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 
 
@@ -42,6 +41,16 @@ def collection_request(done_steps: int, epoch_steps: int, max_env_steps: int | N
     if done_steps >= max_env_steps:
         return None
     return min(epoch_steps, max_env_steps - done_steps)
+
+
+def training_epochs(budget: int, epoch_steps: int) -> int:
+    """How many epochs cover ``budget`` when each epoch collects ``epoch_steps``.
+
+    The last epoch is shorter when the budget is not a multiple of the collection size.
+    """
+    if epoch_steps <= 0:
+        raise ValueError(f"env_sample must be positive, got {epoch_steps}")
+    return (int(budget) + int(epoch_steps) - 1) // int(epoch_steps)
 
 
 def _make_env(name: str) -> Any:
@@ -74,7 +83,6 @@ class MCMCEnvWrapper:
         self._vector_envs = int(conf.get("vector_envs", 0))
 
         self.conf = conf
-        self.num_epochs = conf.get_root("num_epochs")
         self.env_name = conf["name"]
         self.env = gym.make(self.env_name, render_mode="human" if self.render else None)
         self._seed = conf.get_root("seed")
@@ -97,8 +105,6 @@ class MCMCEnvWrapper:
         self._obs_scale = np.where(np.isfinite(high) & (high > 0), high, 1.0)
         self._reward_scale = float(conf.get("reward_scale", 1.0))
         self._reward_offset = float(conf.get("reward_offset", 0.0))
-
-        self.reward_filter = RunningCenteredFilter("rewards", 1)
 
     def discount(self) -> float:
         """Discount factor of the environment."""
@@ -249,7 +255,6 @@ class MCMCEnvWrapper:
             state = self._preprocess(state)
             raw_return += float(reward)
             shaped = self._reward_scale * float(reward) + self._reward_offset
-            self.reward_filter.register(np.asarray([shaped], dtype=np.float64))
             steps += 1
             builder.observe(action_np, shaped, state, log_prob, int(terminated))
             if render:
@@ -296,7 +301,6 @@ class MCMCEnvWrapper:
             with self.thread_lock:
                 trajectory.traj_id = self.created_trajectories
                 self.created_trajectories += 1
-            self.reward_filter.register(trajectory.rewards)
             self.max_traj_len = max(self.max_traj_len, len(trajectory))
         return trajectories
 
@@ -356,7 +360,6 @@ class MCMCEnvWrapper:
                 reward = float(rewards[i])
                 raw[i] += reward
                 shaped = self._reward_scale * reward + self._reward_offset
-                self.reward_filter.register(np.asarray([shaped], dtype=np.float64))
                 steps[i] += 1
                 action_np = np.asarray(actions[i], dtype=np.float64).reshape(-1)
                 log_prob = float(np.asarray(log_density[i]))

@@ -78,15 +78,12 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
             bool(conf.get("layer_norm", False)),
             str(conf.get("init", "orthogonal")),
         )
-        # ``fc_net`` is the historical name of this module. ``params`` is the Equinox leaf the optimiser writes.
-        self.fc_net = self.params
         VanillaGradient.__init__(self, str(conf.get("optimizer", "adam")), float(conf.get("lr", 1e-3)))
 
     def clone(self) -> "FullyQNeuralNet":
         other = FullyQNeuralNet.__new__(FullyQNeuralNet)
         other.mc = self.mc
         other.params = copy_module(self.params)
-        other.fc_net = other.params
         other.env = self.env
         other.action_dim = self.action_dim
         other.lr = self.lr
@@ -100,7 +97,6 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
 
     def sync(self, v: "FullyQNeuralNet") -> "FullyQNeuralNet":
         v.params = self.params
-        v.fc_net = v.params
         return v
 
     def save(self, path: str) -> None:
@@ -108,7 +104,6 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
 
     def load(self, path: str) -> None:
         self.params = eqx.tree_deserialise_leaves(path, self.params)
-        self.fc_net = self.params
 
     def forward(
         self, states: Float[Array, "batch obs"] | np.ndarray, actions: Float[Array, "batch act"] | np.ndarray
@@ -150,7 +145,6 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
             batch_size,
         )
         self.params = eqx.combine(diff, static)
-        self.fc_net = self.params
         self.cli.print(self.titlestr % ("k", "pre_objective", "post_objective")).line()
         pre_np, post_np = np.asarray(pre), np.asarray(post)
         for step in range(num_steps):
@@ -161,30 +155,6 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
         self, states: Float[Array, "batch obs"] | np.ndarray, actions: Float[Array, "batch act"] | np.ndarray
     ) -> Float[Array, "batch 1"]:
         return q_forward(self.params, normalize_mc(self.mc, states), _actions(actions, self.action_dim))
-
-    def q_val_multi(
-        self, states: Float[Array, "batch obs"] | np.ndarray, actions: Float[Array, "batch k ..."] | np.ndarray
-    ) -> Float[Array, "batch k"]:
-        """Evaluate K actions per state. Univariate actions may be ``[batch, k]``."""
-        obs = normalize_mc(self.mc, states)
-        act = jnp.asarray(actions, dtype=jnp.float32)
-        if act.ndim == 2:
-            act = act[:, :, None]
-        return q_values(self.params, obs, act)
-
-    def v_val(
-        self,
-        states: Float[Array, "batch obs"] | np.ndarray,
-        exp_actions: int = 10,
-        policy: Any = None,
-        key: PRNGKeyArray | None = None,
-    ) -> Float[Array, "batch 1"]:
-        """Average Q over actions sampled from ``policy`` (the target policy by default)."""
-        behaviour = self.mc.get("policy", True) if policy is None else policy
-        if key is None:
-            key = self.mc.rng.split()
-        values = estimate_v(self.params, behaviour.params, normalize_mc(self.mc, states), key, exp_actions)
-        return values[:, None]
 
 
 def _copy_leaf(value: object) -> object:

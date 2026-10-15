@@ -34,13 +34,6 @@ class SharedConf:
         """
         return self.__data[f"{key}"]
 
-    def get_namespace(self) -> str:
-        names = self.names
-        if len(names) > 0:
-            return f"{'_'.join(names)}"
-        else:
-            return ""
-
     def get(self, key: str, default: Any) -> Any:
         """
         Get item in configuration using correct prefix and key.

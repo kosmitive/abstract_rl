@@ -8,7 +8,6 @@ import pytest
 
 from abstract_rl.misc.flat_params import l2_norm, ravel_module, weight_spec
 from abstract_rl.policy.continuous.continuous_policy import (
-    STD_HEAD_INIT_SCALE,
     build_gaussian_params,
     refresh_sigma_floors,
 )
@@ -45,13 +44,13 @@ def test_scheduled_sigma_floor_is_linear_then_zero():
 def test_init_std_sets_the_diagonal_bias_and_scales_the_std_head(make_pendulum_mc):
     key = jax.random.PRNGKey(0)
     init_std = 0.7
-    base = _params(
+    other = _params(
         make_pendulum_mc,
         key,
         policy_cov_type="state",
         policy_mean_init_scale=1.0,
         policy_min_std=0.0,
-        policy_init_std=None,
+        policy_init_std=0.4,
     )
     tuned = _params(
         make_pendulum_mc,
@@ -61,14 +60,12 @@ def test_init_std_sets_the_diagonal_bias_and_scales_the_std_head(make_pendulum_m
         policy_init_std=init_std,
         policy_min_std=0.0,
     )
-    for left, right in zip(base.network.layers[:-1], tuned.network.layers[:-1], strict=True):
+    for left, right in zip(other.network.layers[:-1], tuned.network.layers[:-1], strict=True):
         np.testing.assert_array_equal(np.asarray(left.weight), np.asarray(right.weight))
         np.testing.assert_array_equal(np.asarray(left.bias), np.asarray(right.bias))
-    base_head, tuned_head = base.network.layers[-1], tuned.network.layers[-1]
-    np.testing.assert_array_equal(np.asarray(base_head.weight[:2]), np.asarray(tuned_head.weight[:2]))
-    np.testing.assert_allclose(
-        np.asarray(tuned_head.weight[2:]), STD_HEAD_INIT_SCALE * np.asarray(base_head.weight[2:])
-    )
+    other_head, tuned_head = other.network.layers[-1], tuned.network.layers[-1]
+    np.testing.assert_array_equal(np.asarray(other_head.weight), np.asarray(tuned_head.weight))
+    np.testing.assert_allclose(np.asarray(other_head.bias[2:]), softplus_inverse(0.4), rtol=0, atol=1e-6)
     np.testing.assert_allclose(np.asarray(tuned_head.bias[2:]), softplus_inverse(init_std), rtol=0, atol=1e-6)
     states = np.zeros((4, 4), dtype=np.float32)
     sigma = np.asarray(tuned.network.forward(states)[:, 2:])
@@ -82,11 +79,10 @@ def test_init_std_sets_the_diagonal_bias_and_scales_the_std_head(make_pendulum_m
 def test_init_std_on_a_cholesky_head_is_diagonal_and_near_constant(make_pendulum_mc):
     key = jax.random.PRNGKey(1)
     init_std = 0.5
-    base = _params(make_pendulum_mc, key, policy_cov_type="full", policy_mean_init_scale=1.0, policy_init_std=None)
+    other = _params(make_pendulum_mc, key, policy_cov_type="full", policy_mean_init_scale=1.0, policy_init_std=0.3)
     tuned = _params(make_pendulum_mc, key, policy_cov_type="full", policy_mean_init_scale=1.0, policy_init_std=init_std)
-    base_head, tuned_head = base.network.layers[-1], tuned.network.layers[-1]
-    expected = np.float32(STD_HEAD_INIT_SCALE) * np.asarray(base_head.weight[2:], dtype=np.float32)
-    np.testing.assert_allclose(np.asarray(tuned_head.weight[2:]), expected, rtol=1e-6, atol=0)
+    other_head, tuned_head = other.network.layers[-1], tuned.network.layers[-1]
+    np.testing.assert_array_equal(np.asarray(other_head.weight), np.asarray(tuned_head.weight))
     # Packed layout for two actions is [L00, L10, L11]. Only the diagonal bias is init_std.
     bias = np.asarray(tuned_head.bias)
     np.testing.assert_allclose(bias[[2, 4]], softplus_inverse(init_std), rtol=0, atol=1e-6)
@@ -109,13 +105,9 @@ def test_init_std_on_a_cholesky_head_is_diagonal_and_near_constant(make_pendulum
     assert np.max(np.abs(factors[:, 1, 0])) < 0.05
 
 
-def test_init_std_replaces_policy_sigma_for_a_state_independent_std(make_pendulum_mc):
-    untouched = _policy(
-        make_pendulum_mc, policy_cov_type="single", policy_sigma=2.0, policy_min_std=0.0, policy_init_std=None
-    )
-    replaced = _policy(
-        make_pendulum_mc, policy_cov_type="single", policy_sigma=2.0, policy_init_std=0.4, policy_min_std=0.0
-    )
+def test_init_std_sets_a_state_independent_std(make_pendulum_mc):
+    untouched = _policy(make_pendulum_mc, policy_cov_type="single", policy_init_std=2.0, policy_min_std=0.0)
+    replaced = _policy(make_pendulum_mc, policy_cov_type="single", policy_init_std=0.4, policy_min_std=0.0)
     states = np.zeros((2, 4), dtype=np.float32)
     np.testing.assert_allclose(np.asarray(untouched.forward(states)[:, 2:]), 2.0, rtol=0, atol=1e-6)
     np.testing.assert_allclose(np.asarray(replaced.forward(states)[:, 2:]), 0.4, rtol=0, atol=1e-6)
@@ -143,13 +135,9 @@ def test_min_std_floors_the_diagonal_and_is_not_a_weight(make_pendulum_mc):
     assert not np.asarray(weight_spec(policy.params).sigma_floor)
     np.testing.assert_allclose(np.asarray(policy.forward(states)[:, 2:]), 0.9, rtol=0, atol=1e-5)
 
-    wide = _policy(
-        make_pendulum_mc, policy_cov_type="fixed", policy_sigma=2.0, policy_min_std=0.3, policy_init_std=None
-    )
+    wide = _policy(make_pendulum_mc, policy_cov_type="fixed", policy_init_std=2.0, policy_min_std=0.3)
     np.testing.assert_allclose(np.asarray(wide.forward(states)[:, 2:]), 2.0, rtol=0, atol=1e-6)
-    narrow = _policy(
-        make_pendulum_mc, policy_cov_type="single", policy_sigma=0.05, policy_min_std=0.3, policy_init_std=None
-    )
+    narrow = _policy(make_pendulum_mc, policy_cov_type="single", policy_init_std=0.05, policy_min_std=0.3)
     np.testing.assert_allclose(np.asarray(narrow.forward(states)[:, 2:]), 0.3, rtol=0, atol=1e-6)
 
     annealed = _policy(
@@ -173,19 +161,20 @@ def test_min_std_floors_the_diagonal_and_is_not_a_weight(make_pendulum_mc):
 
 def test_mean_init_scale_multiplies_only_the_final_mean_rows(make_pendulum_mc):
     key = jax.random.PRNGKey(2)
-    plain = _params(make_pendulum_mc, key, policy_cov_type="state", policy_mean_init_scale=1.0, policy_init_std=None)
-    scaled = _params(make_pendulum_mc, key, policy_cov_type="state", policy_mean_init_scale=0.01, policy_init_std=None)
+    plain = _params(make_pendulum_mc, key, policy_cov_type="state", policy_mean_init_scale=1.0, policy_init_std=0.5)
+    scaled = _params(make_pendulum_mc, key, policy_cov_type="state", policy_mean_init_scale=0.01, policy_init_std=0.5)
     for left, right in zip(plain.network.layers[:-1], scaled.network.layers[:-1], strict=True):
         np.testing.assert_array_equal(np.asarray(left.weight), np.asarray(right.weight))
         np.testing.assert_array_equal(np.asarray(left.bias), np.asarray(right.bias))
     plain_head, scaled_head = plain.network.layers[-1], scaled.network.layers[-1]
     np.testing.assert_allclose(np.asarray(scaled_head.weight[:2]), 0.01 * np.asarray(plain_head.weight[:2]))
     np.testing.assert_array_equal(np.asarray(scaled_head.weight[2:]), np.asarray(plain_head.weight[2:]))
-    np.testing.assert_array_equal(np.asarray(scaled_head.bias), 0.0)
+    np.testing.assert_array_equal(np.asarray(scaled_head.bias[:2]), 0.0)
+    np.testing.assert_array_equal(np.asarray(scaled_head.bias[2:]), np.asarray(plain_head.bias[2:]))
 
-    single = _params(make_pendulum_mc, key, policy_cov_type="single", policy_mean_init_scale=0.01, policy_init_std=None)
+    single = _params(make_pendulum_mc, key, policy_cov_type="single", policy_mean_init_scale=0.01, policy_init_std=0.5)
     single_plain = _params(
-        make_pendulum_mc, key, policy_cov_type="single", policy_mean_init_scale=1.0, policy_init_std=None
+        make_pendulum_mc, key, policy_cov_type="single", policy_mean_init_scale=1.0, policy_init_std=0.5
     )
     np.testing.assert_allclose(
         np.asarray(single.network.layers[-1].weight),
@@ -209,10 +198,9 @@ def test_mean_init_scale_defaults_and_mountaincar_floor():
         assert mountain["policy_min_std_anneal_steps"] == 160000
         assert type(mountain["policy_min_std_anneal_steps"]) is int
         assert mountain["policy_init_std"] == 0.5
-        assert mountain["policy_sigma"] == 2.0
+        assert "policy_sigma" not in mountain
     mountain_mpo = make_config("mountaincar", "mpo")
     assert mountain_mpo["policy_cov_type"] == "fixed"
-    assert mountain_mpo["policy_type"] == "auto"
-    assert make_config("halfcheetah", "mpo")["policy_sigma"] == 0.5
+    assert "policy_type" not in mountain_mpo
     assert make_config("halfcheetah", "mpo")["policy_init_std"] == 0.5
     assert make_config("halfcheetah", "trpo")["policy_min_std"] == 0.0

@@ -11,12 +11,11 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request, training_epochs
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
 from abstract_rl.misc.obs_norm import absorb_observations
-from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
@@ -43,7 +42,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
 
     seed = run_conf["seed"]
     np.random.seed(seed)
-    num_epochs = run_conf["num_epochs"]
     max_steps = run_conf["max_steps"]
 
     # make default instance available
@@ -85,10 +83,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         q_network = FullyQNeuralNet(mc)
         mc.add_syncable("q_network", q_network, sync_steps)
 
-    with run_conf.ns("filter"):
-        filter = FilterOperator(mc)
-        mc.add_main("fil", filter)
-
     # push retrace
     with run_conf.ns("ret"):
         ret = RetraceOperator(mc)
@@ -119,16 +113,16 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
     # if reloaded load old values
     e = 0
 
-    # stop at the env-step budget (defaults to the environment `steps` field); the last epoch is shortened
-    budget_raw = run_conf.get("max_env_steps", None)
-    max_env_steps = None if budget_raw is None else int(budget_raw)
+    # Stop at env.steps. The last epoch is shortened when the budget is not a multiple of env_sample.
+    budget = int(run_conf["steps"])
     epoch_steps = num_new_steps
+    num_epochs = training_epochs(budget, int(epoch_steps))
     while e < num_epochs:
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
-        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), max_env_steps)
+        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), budget)
         if request is None:
             break
         num_new_steps = request
@@ -147,7 +141,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
                 policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
             )
             tc.merge(new_tc)
-            filter.transform_all(tc)
 
         with cli.header("store model & generate plots", 1):
             # make and store reward plot

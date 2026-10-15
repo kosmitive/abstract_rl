@@ -1,7 +1,5 @@
 # TRPO defaults (tuned on Pendulum-v1)
 name: trpo
-reload: false
-seed: 1
 env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
@@ -11,14 +9,12 @@ policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false
 policy_init: xavier_gaussian
 policy_sync_steps: 1
-policy_sigma: 1.0
-# null keeps log(policy_sigma) and an unscaled, zero-bias std head. A positive float sets
-# softplus(bias) = init_std (or log_sigma = log(init_std) for a state-independent std) and
-# multiplies the std/Cholesky final-layer weights by 0.01. A zero state then starts at
-# init_std + policy_min_std.
-policy_init_std: null
+# softplus(bias) = init_std on a state-dependent or Cholesky diagonal, and the std/Cholesky
+# final-layer weights are multiplied by 0.01. A state-independent or fixed std uses
+# log_sigma = log(init_std). A zero state then starts at init_std + policy_min_std.
+policy_init_std: 0.5
 # softplus(raw) + policy_min_std on a state-dependent or Cholesky diagonal. A state-independent
-# std uses max(exp(log_sigma), policy_min_std), so a configured sigma above the floor is unchanged.
+# std uses max(exp(log_sigma), policy_min_std), so a configured std above the floor is unchanged.
 policy_min_std: 0.0
 # Decay policy_min_std linearly to 0 over this many env steps. 0 keeps it constant.
 # Refreshed at the start of each epoch from the env-step count.
@@ -26,15 +22,15 @@ policy_min_std_anneal_steps: 0
 # 0.01 multiplies the final-layer mean weights so initial actions sit near 0. 1.0 would leave
 # that head on the default init. Hidden layers stay on the default init. Mean bias stays 0.
 policy_mean_init_scale: 0.01
+# single: one learned std. fixed: a constant std. state: a state-dependent diagonal.
+# full: state-dependent Cholesky. One-dimensional actions use the univariate policy
+# unless cov_type is full.
 policy_cov_type: single
 policy_squash: true
-filter_states: false
-filter_rewards: false
 # Running observation normalisation, applied when acting and when training. Off leaves results unchanged.
 #   alg.obs_norm=true alg.obs_clip=10
 obs_norm: false
 obs_clip: 10.0
-num_epochs: 200
 max_steps: 200
 # fully connected neural v function
 val_struct: [64, 64]
@@ -45,7 +41,9 @@ val_sync_steps: 1
 val_l2_reg: 0.001
 # advantage settings
 gae_lambda: 0.95
-policy_batch_size: 4000
+# Transitions collected each epoch, and the on-policy update batch. The epoch count is
+# ceil(env.steps / env_sample).
+env_sample: 4000
 # trpo
 trpo_cg_max_k: 10
 trpo_cg_res_tol: 1.0e-10

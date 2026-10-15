@@ -8,12 +8,11 @@ from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optim
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request, training_epochs
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
 from abstract_rl.misc.obs_norm import absorb_observations
-from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
 from abstract_rl.operator.td_operator import TemporalDifferenceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
@@ -38,7 +37,6 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
 
     seed = run_conf["seed"]
     np.random.seed(seed)
-    num_epochs = run_conf["num_epochs"]
     max_steps = run_conf["max_steps"]
 
     # make default instance available
@@ -48,6 +46,7 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     # create an environment wrapper
     with run_conf.ns("env"):
         render = run_conf["render"]
+        epoch_steps = int(run_conf["sample"])
         env = MCMCEnvWrapper(mc)
         mc.add_environment(env)
 
@@ -59,14 +58,9 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
 
     # policy neural_modules
     with run_conf.ns("policy"):
-        policy_batch_size = run_conf["batch_size"]
         sync_steps = run_conf["sync_steps"]
         policy = select_policy(mc)
         mc.add_syncable("policy", policy, sync_steps)
-
-    with run_conf.ns("filter"):
-        filter = FilterOperator(mc)
-        mc.add_main("fil", filter)
 
     # create algo
     with run_conf.ns("tdop"):
@@ -91,16 +85,15 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     # number of environment steps collected in each epoch (for plotting learning curves over samples)
     logger.create_field("steps", 1)
 
-    # stop at the env-step budget (defaults to the environment `steps` field); the last epoch is shortened
-    budget_raw = run_conf.get("max_env_steps", None)
-    max_env_steps = None if budget_raw is None else int(budget_raw)
-    epoch_steps = policy_batch_size
+    # Stop at env.steps. The last epoch is shortened when the budget is not a multiple of env_sample.
+    budget = int(run_conf["steps"])
+    num_epochs = training_epochs(budget, epoch_steps)
     for e in range(num_epochs):
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
-        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), max_env_steps)
+        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), budget)
         if request is None:
             break
         policy_batch_size = request
@@ -115,7 +108,6 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
             tc = env.execute_policy(
                 policy, max_steps, policy_batch_size, exploration=True, render=render, rew_field_name=stoch_reward
             )
-            filter.transform_all(tc)
 
         with cli.header("store model & generate plots", 1):
             # make and store reward plot

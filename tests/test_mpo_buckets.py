@@ -1,10 +1,9 @@
 """Full-allocation MPO kernels versus the power-of-two prefix.
 
-The E-step is not restricted to the M-step sample. The temperature dual averages Q over every
-stored state, so dropping rows would change η. These tests compare the prefix kernels with the
+The E-step is not restricted to the M-step sample. These tests compare the prefix kernels with the
 same full-allocation scan. Chunk ``i`` uses ``split(key, n_full)[i]`` in both, which is the key
 the full scan already used for that chunk. Retrace splits its key once per leading chunk in the
-same order. Resampling, η, target statistics and Retrace are bitwise on this state. Ranking is
+same order. Resampling, target statistics and Retrace are bitwise on this state. Ranking is
 the exception: batched ``log_softmax`` depends on the row count, so a shorter prefix differs by
 one float32 ulp, and that ulp is what the M-step tolerance covers.
 """
@@ -19,7 +18,6 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
     _mpo_scan,
     _target_stats_all,
 )
-from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
 from abstract_rl.misc import buckets
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.operator.np_rew_operator import _ranking_full
@@ -111,13 +109,10 @@ def test_prefix_kernels_match_the_full_allocation():
     assert np.all(np.asarray(pre_q[size:]) == 0)
     assert np.all(np.asarray(full_q[size:]) == 0)
 
-    eta_full = find_optimal_temperature(full_q, 0.1, eta0=1.0, max_steps=30, size=size)
     width = buckets.active_width(size, capacity)
-    eta_prefix = find_optimal_temperature(full_q[:width], 0.1, eta0=1.0, max_steps=30, size=size)
-    _match("eta", eta_prefix, eta_full)
-
-    rank_full = _ranking_full(full_q, jnp.int32(size), jnp.float32(eta_full[0]), capacity)
-    rank_prefix = _ranking_full(full_q, jnp.int32(size), jnp.float32(eta_prefix[0]), width)
+    eta = jnp.float32(1.0)
+    rank_full = _ranking_full(full_q, jnp.int32(size), eta, capacity)
+    rank_prefix = _ranking_full(full_q, jnp.int32(size), eta, width)
     # log_softmax on a shorter batch differs by one float32 ulp from the full-buffer kernel.
     _match("ranking", rank_prefix[:size], rank_full[:size], atol=5e-7)
 
@@ -174,36 +169,42 @@ def test_prefix_kernels_match_the_full_allocation():
     tx_inner = optax.adam(1e-2)
 
     def _m_args() -> tuple[object, ...]:
-        # The scan donates the policy leaves and both Adam states.
+        # The scan donates the policy leaves, both Adam states and the temperature state.
         diff, static = eqx.partition(policy, eqx.is_inexact_array)
         diff = jax.tree.map(jnp.array, diff)
-        multiplier = jnp.ones((), dtype=jnp.float32)
+        multiplier = jnp.ones((2,), dtype=jnp.float32)
+        eta_raw = jnp.zeros((), dtype=jnp.float32)
+        tx_eta = optax.adam(1e-3)
         return (
             diff,
             static,
             tx_outer.init(diff),
             multiplier,
             tx_inner.init(multiplier),
+            eta_raw,
+            tx_eta.init(eta_raw),
             tx_outer,
             tx_inner,
+            tx_eta,
             4,
             32,
-            jnp.float32(0.01),
+            jnp.asarray([0.1, 1.0e-4], dtype=jnp.float32),
             0.0,
+            0.1,
         )
 
     m_full = _mpo_scan(
-        (states, full_a, rank_full, stats_full, k_mstep, jnp.int32(size)),
+        (states, full_a, stats_full, full_q, k_mstep, jnp.int32(size)),
         *_m_args(),
     )
     m_prefix = _mpo_scan(
-        (states, pre_a, rank_prefix, stats_prefix, k_mstep, jnp.int32(size)),
+        (states, pre_a, stats_prefix, pre_q, k_mstep, jnp.int32(size)),
         *_m_args(),
     )
     flat_prefix = jax.flatten_util.ravel_pytree(m_prefix[0])[0]
     flat_full = jax.flatten_util.ravel_pytree(m_full[0])[0]
     _match("m-step params", flat_prefix, flat_full, atol=1e-6)
-    _match("m-step objective", m_prefix[4], m_full[4], atol=1e-6)
+    _match("m-step objective", m_prefix[6], m_full[6], atol=1e-6)
 
     tx = optax.adam(1e-3)
 

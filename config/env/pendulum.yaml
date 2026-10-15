@@ -7,4 +7,4 @@ steps: 800000
 overrides:
   all: {policy_init_std: 0.5}
   trpo: {env_discount: 0.95}
-  mpo: {num_epochs: 800, rnk_eps: 0.05}
+  mpo: {rnk_eps: 0.05}

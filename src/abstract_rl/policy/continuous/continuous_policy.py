@@ -56,7 +56,6 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
     cov_type = str(run_conf["cov_type"])
     action_dim = mc.env.action_dim
     init_std, min_std, mean_scale = _std_options(run_conf)
-    sigma_value = float(init_std) if init_std is not None else None
     squash = bool(run_conf.get("squash", False))
     low = np.asarray(mc.env.action_space.low, dtype=np.float64).reshape(-1)
     high = np.asarray(mc.env.action_space.high, dtype=np.float64).reshape(-1)
@@ -83,12 +82,10 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
         case "fixed":
             n_out = action_dim
             log_sigma = None
-            chosen = float(run_conf["sigma"]) if sigma_value is None else sigma_value
-            fixed_log_sigma = tuple(float(np.log(chosen)) for _ in range(action_dim))
+            fixed_log_sigma = tuple(float(np.log(init_std)) for _ in range(action_dim))
         case "single":
             n_out = action_dim
-            chosen = float(run_conf.get("sigma", 1.0)) if sigma_value is None else sigma_value
-            log_sigma = jnp.full((action_dim,), float(np.log(chosen)), dtype=jnp.float32)
+            log_sigma = jnp.full((action_dim,), float(np.log(init_std)), dtype=jnp.float32)
             fixed_log_sigma = None
         case "full":
             n_out = action_dim + action_dim * (action_dim + 1) // 2
@@ -127,11 +124,13 @@ def _ns_value(conf: Any, key: str, default: Any) -> Any:
     return conf.to_dict().get(f"{prefix}{key}", default)
 
 
-def _std_options(conf: Any) -> tuple[float | None, float, float]:
+def _std_options(conf: Any) -> tuple[float, float, float]:
     """``policy_init_std``, the epoch-0 floor, and ``policy_mean_init_scale``."""
     raw = _ns_value(conf, "init_std", None)
-    init_std = None if raw is None else float(raw)
-    if init_std is not None and not init_std > 0.0:
+    if raw is None:
+        raise ValueError("policy_init_std is required")
+    init_std = float(raw)
+    if not init_std > 0.0:
         raise ValueError(f"policy_init_std must be positive, got {init_std}")
     min_std = float(_ns_value(conf, "min_std", 0.0))
     anneal_steps = int(_ns_value(conf, "min_std_anneal_steps", 0))
@@ -145,22 +144,23 @@ def _scale_policy_head(
     network: MultilayerPerceptron,
     cov_type: str,
     action_dim: int,
-    init_std: float | None,
+    init_std: float,
     mean_scale: float,
 ) -> MultilayerPerceptron:
     """Scale the final layer only. Hidden layers keep the default initialisation.
 
     ``mean_scale == 1`` does not touch the mean head, so that path stays the default init.
-    Any other scale multiplies the mean rows and leaves their bias at zero. A set
+    Any other scale multiplies the mean rows and leaves their bias at zero.
     ``policy_init_std`` multiplies the std or Cholesky rows by ``STD_HEAD_INIT_SCALE`` and
     sets the diagonal bias so ``softplus(bias) = init_std``. Off-diagonal Cholesky bias stays
     zero, and the initial covariance at a zero state is ``(init_std + policy_min_std)^2 I``.
+    A state-independent or fixed std stores ``log(init_std)`` and has no std head to scale.
     """
     if mean_scale != 1.0:
         width = action_dim if cov_type in ("state", "full") else int(network.layers[-1].weight.shape[0])
         mean_rows = np.arange(width)
         network = _retune_last_layer(network, mean_rows, mean_scale, mean_rows, 0.0)
-    if init_std is None or cov_type in ("single", "fixed"):
+    if cov_type in ("single", "fixed"):
         return network
     bias = softplus_inverse(init_std)
     if cov_type == "state":

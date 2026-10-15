@@ -9,8 +9,8 @@ import numpy as np
 import optax
 
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import (
-    find_optimal_temperature,
-    fit_temperature_sgd,
+    descend_temperature,
+    positive_temperature,
     temperature_dual,
     temperature_raw,
 )
@@ -142,52 +142,39 @@ def _force_head(policy: FullCovarianceGaussianPolicy, mu: list[float], packed: l
     policy.network = eqx.tree_at(lambda net: net.layers, policy.network, tuple(layers))
 
 
-def test_eta_sgd_converges_to_the_newton_solution():
-    q_values = jax.random.normal(jax.random.PRNGKey(6), (64, 12), dtype=jnp.float64) * 3.0
+def test_eta_sgd_reaches_the_kl_bound():
+    q_values = jax.random.normal(jax.random.PRNGKey(6), (64, 12), dtype=jnp.float32) * 3.0
     eps = 0.1
-    newton = find_optimal_temperature(q_values, eps, eta0=1.0, max_steps=80)
-    raw = temperature_raw(4.0).astype(jnp.float64)
+    raw = temperature_raw(4.0)
     tx = optax.adam(0.05)
-    _raw, _state, eta = fit_temperature_sgd(q_values, raw, tx.init(raw), tx, eps, 600)
-    assert abs(float(eta) - float(newton[0])) < 1e-2
-    dual_sgd = float(temperature_dual(q_values, eta, eps))
-    dual_newton = float(temperature_dual(q_values, jnp.asarray(newton[0], dtype=jnp.float64), eps))
-    assert abs(dual_sgd - dual_newton) < 1e-3
+    state = tx.init(raw)
+    start = float(temperature_dual(q_values, positive_temperature(raw), eps))
+    eta = raw
+    for _ in range(600):
+        raw, state, eta = descend_temperature(q_values, raw, state, tx, eps)
+    assert float(temperature_dual(q_values, eta, eps)) < start
+    weights = jax.nn.softmax(q_values / eta, axis=1)
+    kl = float(jnp.mean(jnp.sum(weights * jnp.log(weights * q_values.shape[1] + 1e-12), axis=1)))
+    assert np.isclose(kl, eps, rtol=0.05, atol=0.01)
 
 
-def test_default_mpo_is_the_paper_update_and_the_joint_path_stays_selectable():
+def test_default_mpo_is_the_paper_update():
     default = make_config("pendulum", "mpo")
     assert default["alg"] == "mpo"
-    assert default["policy_type"] == "full"
     assert default["policy_cov_type"] == "full"
-    assert default["mpo_kl_mode"] == "decoupled"
     assert default["mpo_eps_mean"] == 0.1 and type(default["mpo_eps_mean"]) is float
     assert default["mpo_eps_cov"] == 1.0e-4 and type(default["mpo_eps_cov"]) is float
-    assert default["eta_solver"] == "sgd"
-    assert default["num_epochs"] == 800 and default["rnk_eps"] == 0.05
+    assert default["steps"] == 800_000 and default["env_sample"] == 1000 and default["rnk_eps"] == 0.05
     assert default["policy_mean_init_scale"] == 1.0
-    old = make_config(
-        "pendulum",
-        "mpo",
-        overrides=[
-            "alg.mpo_kl_mode=joint",
-            "alg.policy_type=auto",
-            "alg.policy_cov_type=single",
-            "alg.eta_solver=newton",
-        ],
-    )
-    assert old["mpo_kl_mode"] == "joint"
-    assert old["policy_type"] == "auto"
-    assert old["policy_cov_type"] == "single"
-    assert old["eta_solver"] == "newton"
-    assert old["num_epochs"] == 800 and old["rnk_eps"] == 0.05
+    for removed in ("policy_type", "mpo_kl_mode", "eta_solver", "num_epochs", "policy_sigma", "mpo_trust_regions"):
+        assert removed not in default
 
 
 def _tiny(conf: dict) -> dict:
     updated = copy.deepcopy(conf)
     updated.update(
         {
-            "num_epochs": 1,
+            "steps": 80,
             "env_sample": 80,
             "max_steps": 40,
             "val_opt_steps": 1,
@@ -195,7 +182,6 @@ def _tiny(conf: dict) -> dict:
             "policy_batch_size": 16,
             "val_batch_size": 16,
             "res_add_acts": 4,
-            "ret_add_acts": 4,
         }
     )
     return updated
@@ -208,19 +194,13 @@ def _finite(returns: np.ndarray) -> None:
 
 def test_decoupled_kl_smoke(mpo_conf):
     conf = _tiny(mpo_conf)
-    conf.update({"mpo_kl_mode": "decoupled", "mpo_eps_mean": 0.1, "mpo_eps_cov": 1.0e-4})
+    conf.update({"mpo_eps_mean": 0.1, "mpo_eps_cov": 1.0e-4})
     _finite(run_mpo_non_parametric(conf))
 
 
 def test_full_covariance_policy_smoke(mpo_conf):
     conf = _tiny(mpo_conf)
-    conf.update({"env_name": "TestPointMass-v0", "max_steps": 20, "policy_type": "full", "policy_cov_type": "full"})
-    _finite(run_mpo_non_parametric(conf))
-
-
-def test_eta_sgd_smoke(mpo_conf):
-    conf = _tiny(mpo_conf)
-    conf.update({"eta_solver": "sgd"})
+    conf.update({"env_name": "TestPointMass-v0", "max_steps": 20, "policy_cov_type": "full"})
     _finite(run_mpo_non_parametric(conf))
 
 
@@ -228,7 +208,6 @@ def test_default_mpo_smoke(mpo_conf, tmp_path):
     conf = _tiny(make_config("pendulum", "mpo"))
     conf["data_root"] = str(tmp_path)
     conf["seed"] = mpo_conf["seed"]
-    assert conf["mpo_kl_mode"] == "decoupled"
     assert conf["policy_cov_type"] == "full"
-    assert conf["eta_solver"] == "sgd"
+    assert conf["mpo_eps_mean"] == 0.1 and conf["mpo_eps_cov"] == 1.0e-4
     _finite(run_mpo_non_parametric(conf))

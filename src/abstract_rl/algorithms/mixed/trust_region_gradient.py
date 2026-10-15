@@ -1,5 +1,6 @@
 """Natural gradient step with a KL line search (TRPO)."""
 
+from collections.abc import Callable
 from typing import Any
 
 import equinox as eqx
@@ -14,15 +15,27 @@ from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import ravel_module
 from abstract_rl.misc.obs_norm import normalize_obs
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
-from abstract_rl.policy.continuous.gaussian_math import GaussianParams, kl_divergence, likelihood_ratio
+from abstract_rl.policy.continuous.gaussian_math import GaussianParams
+
+Objective = Callable[
+    [
+        GaussianParams,
+        Float[Array, "batch obs"],
+        Float[Array, "batch act"],
+        Float[Array, " batch"],
+        Float[Array, " batch"],
+    ],
+    Float[Array, ""],
+]
+Distance = Callable[[GaussianParams, GaussianParams, Float[Array, "batch obs"]], Float[Array, ""]]
 
 
 class TrustRegionGradient:
     """Conjugate-gradient natural gradient and a backtracking line search.
 
-    Subclasses implement ``tr_obj`` and ``tr_distance``. The Fisher product differentiates
-    those same expressions through a flat parameter vector: a live module is not a JAX pytree,
-    so the gradient cannot be taken with ``autograd.grad`` on ``self``.
+    Subclasses implement ``tr_objective`` and ``tr_divergence``. The Fisher product and the line
+    search call those functions, so the surrogate and the KL are written once. A live module is
+    not a JAX pytree, which is why the functions take a parameter tree.
     """
 
     def __init__(
@@ -74,6 +87,8 @@ class TrustRegionGradient:
         # One compiled program for the gradient, the Fisher products and the conjugate gradient.
         # Building those closures inside this method compiled them again on every epoch.
         flat, full_step, expected = _trpo_natural_step(
+            self.tr_objective,
+            self.tr_divergence,
             policy.params,
             target,
             states,
@@ -98,7 +113,7 @@ class TrustRegionGradient:
         accept_ratio: float = 0.1,
         max_kl_ratio: float = 1.5,
     ) -> tuple[bool, int, float, float]:
-        """Backtracking line search on ``tr_obj``.
+        """Backtracking line search on ``tr_objective``.
 
         Candidate parameters are written into the module before each probe, matching the
         historical search. The accepted vector is left in place.
@@ -121,14 +136,16 @@ class TrustRegionGradient:
             titlestr % ("step", "old_obj", "obj", "lr", "ratio", "act_improv", "exp_improv", "distance")
         ).line()
 
-        # The probes are the same surrogate and KL as ``tr_obj`` / ``tr_distance``. They run in one
-        # ``while_loop`` so a rejected step does not sync the host, then the log is printed once.
+        # The probes are ``tr_objective`` and ``tr_divergence``. They run in one ``while_loop`` so a
+        # rejected step does not sync the host, then the log is printed once.
         states = normalize_obs(self._model.observation_norm(), jnp.asarray(batch.states, dtype=jnp.float32))
         actions = jnp.asarray(batch.actions, dtype=jnp.float32)
         old_log_prob = jnp.asarray(batch.log_likelihoods, dtype=jnp.float32)
         advantages = jnp.asarray(batch["a"], dtype=jnp.float32)
         target = self._model.mc.get("policy", True).params
         accepted, step, lr, new_obj, old_obj, chosen, log = _backtrack(
+            self.tr_objective,
+            self.tr_divergence,
             self._model.params,
             target,
             x,
@@ -178,9 +195,33 @@ class TrustRegionGradient:
         del batch
         raise NotImplementedError
 
+    @staticmethod
+    def tr_objective(
+        params: GaussianParams,
+        states: Float[Array, "batch obs"],
+        actions: Float[Array, "batch act"],
+        old_log_prob: Float[Array, " batch"],
+        advantages: Float[Array, " batch"],
+    ) -> Float[Array, ""]:
+        """Surrogate at ``params``. The natural step and ``tr_obj`` both call this."""
+        del params, states, actions, old_log_prob, advantages
+        raise NotImplementedError
+
+    @staticmethod
+    def tr_divergence(
+        params: GaussianParams,
+        target: GaussianParams,
+        states: Float[Array, "batch obs"],
+    ) -> Float[Array, ""]:
+        """Trust-region distance at ``params``. The natural step and ``tr_distance`` both call this."""
+        del params, target, states
+        raise NotImplementedError
+
 
 @eqx.filter_jit
 def _trpo_natural_step(
+    objective: Objective,
+    divergence: Distance,
     params: GaussianParams,
     target: GaussianParams,
     states: Float[Array, "batch obs"],
@@ -195,20 +236,18 @@ def _trpo_natural_step(
 ) -> tuple[Float[Array, " params"], Float[Array, " params"], Float[Array, ""]]:
     """Flat parameters, the full natural step, and its expected improvement.
 
-    The surrogate and the mean KL are the same expressions as ``tr_obj`` and ``tr_distance``.
+    ``objective`` and ``divergence`` are the subclass hooks. They are static.
     """
     flat, unravel = ravel_module(params)
 
     def mean_kl(vector: Float[Array, " params"]) -> Float[Array, ""]:
-        return kl_divergence(unravel(vector), target, tr_states, mode_name="m-projection", est="mean")
+        return divergence(unravel(vector), target, tr_states)
 
     def hvp(direction: Float[Array, " params"]) -> Float[Array, " params"]:
         _value, product = jax.jvp(jax.grad(mean_kl), (flat,), (direction,))
         return product + damping * direction
 
-    gradient = jax.grad(lambda vector: likelihood_ratio(unravel(vector), states, actions, old_log_prob, advantages))(
-        flat
-    )
+    gradient = jax.grad(lambda vector: objective(unravel(vector), states, actions, old_log_prob, advantages))(flat)
     step = cg_solve(hvp, -gradient, max_k, tol)
     quadratic = 0.5 * jnp.dot(step, hvp(step))
     lagrange = jnp.sqrt(quadratic / tr_eps)
@@ -217,6 +256,8 @@ def _trpo_natural_step(
 
 @eqx.filter_jit
 def _backtrack(
+    objective: Objective,
+    divergence: Distance,
     params: GaussianParams,
     target: GaussianParams,
     x: Float[Array, " params"],
@@ -241,12 +282,11 @@ def _backtrack(
 ]:
     """Backtracking search. Stops at the first step that satisfies the TRPO acceptance rule.
 
-    Each probe minimises the same surrogate as ``tr_obj`` and measures the same mean KL as
-    ``tr_distance``. The log columns are objective, learning rate, ratio, actual improvement,
-    expected improvement and distance.
+    Each probe calls ``objective`` and ``divergence``. The log columns are objective, learning
+    rate, ratio, actual improvement, expected improvement and distance.
     """
     _flat, unravel = ravel_module(params)
-    old_obj = likelihood_ratio(unravel(x), states, actions, old_log_prob, advantages)
+    old_obj = objective(unravel(x), states, actions, old_log_prob, advantages)
     blank = jnp.zeros((max_steps, 6), dtype=jnp.float32)
 
     def cond(state: tuple[Any, ...]) -> Array:
@@ -256,19 +296,19 @@ def _backtrack(
     def body(state: tuple[Any, ...]) -> tuple[Any, ...]:
         step, _accepted, lr, current, new_obj, log = state
         trial = x + lr * fullstep
-        objective = likelihood_ratio(unravel(trial), states, actions, old_log_prob, advantages)
-        distance = kl_divergence(unravel(trial), target, states, mode_name="m-projection", est="mean")
-        actual = old_obj - objective
+        value = objective(unravel(trial), states, actions, old_log_prob, advantages)
+        distance = divergence(unravel(trial), target, states)
+        actual = old_obj - value
         expected = lr * rate
         ratio = jnp.where(expected != 0.0, actual / expected, 0.0)
         ok = (ratio > accept_ratio) & (actual > 0.0) & (distance <= max_kl_ratio * tr_eps)
-        row = jnp.stack([objective, lr, ratio, actual, expected, distance]).astype(jnp.float32)
+        row = jnp.stack([value, lr, ratio, actual, expected, distance]).astype(jnp.float32)
         return (
             jnp.where(ok, step, step + jnp.int32(1)),
             ok,
             jnp.where(ok, lr, lr / 2.0),
             jnp.where(ok, trial, current),
-            jnp.where(ok, objective, new_obj),
+            jnp.where(ok, value, new_obj),
             log.at[step].set(row),
         )
 

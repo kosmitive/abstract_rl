@@ -7,24 +7,23 @@ from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateG
 def select_policy(
     mc: ModelConfiguration,
 ) -> UnivariateGaussianPolicy | DiagonalGaussianPolicy | FullCovarianceGaussianPolicy:
-    """
-    Creates the gaussian policy configured in the current namespace of the model configuration.
+    """Create the Gaussian configured in the current namespace of the model configuration.
 
-    The config key ``type`` (``policy_type`` on the top level) is ``univariate``, ``diagonal``,
-    ``full`` or ``auto`` (default): auto uses the univariate policy for one dimensional and the
-    diagonal policy for multi dimensional actions. ``cov_type: full`` selects the Cholesky policy.
-    :param mc: The model configuration with the environment already registered.
-    :return: The new policy.
+    ``cov_type`` (``policy_cov_type`` on the top level) is ``full``, ``single``, ``fixed`` or
+    ``state``. ``full`` is the state-dependent Cholesky policy. The other three use the
+    univariate policy when the action is one dimensional and the diagonal policy otherwise.
+
+    Args:
+        mc: The model configuration with the environment already registered.
+
+    Returns:
+        The new policy.
     """
-    kind = mc["conf"].get("type", "auto")
-    if kind == "full":
-        mc["conf"]["cov_type"] = "full"
-    if str(mc["conf"]["cov_type"]) == "full":
+    cov_type = str(mc["conf"]["cov_type"])
+    if cov_type == "full":
         return FullCovarianceGaussianPolicy(mc)
-    if kind == "auto":
-        kind = "univariate" if mc.env.action_dim == 1 else "diagonal"
-    if kind == "univariate":
+    if cov_type not in ("single", "fixed", "state"):
+        raise NotImplementedError(f"unknown covariance type {cov_type}")
+    if mc.env.action_dim == 1:
         return UnivariateGaussianPolicy(mc)
-    if kind == "diagonal":
-        return DiagonalGaussianPolicy(mc)
-    raise NotImplementedError(f"unknown policy type {kind}")
+    return DiagonalGaussianPolicy(mc)

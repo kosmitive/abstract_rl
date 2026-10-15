@@ -12,6 +12,7 @@ from abstract_rl.policy.continuous.diagonal_gaussian_policy import (
     head_activations,
     sigma_is_softplus,
 )
+from abstract_rl.policy.continuous.full_covariance_gaussian_policy import FullCovarianceGaussianPolicy
 from abstract_rl.policy.continuous.gaussian_math import kl_divergence
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
@@ -47,7 +48,12 @@ def _normal_log_prob(x, mu, sigma):
 def test_select_policy_uses_the_diagonal_policy_for_multi_dimensional_actions(make_pendulum_mc):
     assert isinstance(_policy(make_pendulum_mc, cls=select_policy), DiagonalGaussianPolicy)
     assert isinstance(_policy(make_pendulum_mc, "Pendulum-v1", select_policy), UnivariateGaussianPolicy)
-    assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_type="diagonal"), DiagonalGaussianPolicy)
+    assert isinstance(
+        _policy(make_pendulum_mc, "Pendulum-v1", select_policy, policy_cov_type="fixed"), UnivariateGaussianPolicy
+    )
+    assert isinstance(
+        _policy(make_pendulum_mc, cls=select_policy, policy_cov_type="full"), FullCovarianceGaussianPolicy
+    )
 
 
 def test_shapes(make_pendulum_mc):
@@ -112,7 +118,7 @@ def test_mean_is_not_activated_twice(make_pendulum_mc):
 
 
 def test_squashed_samples_lie_in_the_per_dimension_bounds(make_pendulum_mc):
-    policy = _policy(make_pendulum_mc, policy_squash=True, policy_sigma=5.0)
+    policy = _policy(make_pendulum_mc, policy_squash=True, policy_init_std=5.0)
     _force_head(policy, [3.0, -3.0], [])
     actions = policy.sample_actions(states=np.zeros((4, 4), dtype=np.float32), num_actions=2000)
     actions = np.asarray(actions)
@@ -124,7 +130,7 @@ def test_squashed_samples_lie_in_the_per_dimension_bounds(make_pendulum_mc):
 
 @pytest.mark.parametrize("squash", [False, True])
 def test_log_prob_is_a_density(make_pendulum_mc, squash):
-    policy = _policy(make_pendulum_mc, policy_squash=squash, policy_cov_type="single", policy_sigma=0.5)
+    policy = _policy(make_pendulum_mc, policy_squash=squash, policy_cov_type="single", policy_init_std=0.5)
     stats = np.array([[0.3, -0.2, 0.5, 0.5]], dtype=np.float32)
     if squash:
         lo, hi, n = LOW + 1e-4, HIGH - 1e-4, 801
@@ -216,9 +222,7 @@ def test_one_dimensional_diagonal_policy_equals_the_univariate_policy(make_pendu
 
 
 def test_entropy_of_the_unsquashed_policy_and_refusal_for_squashed(make_pendulum_mc):
-    policy = _policy(
-        make_pendulum_mc, policy_squash=False, policy_cov_type="single", policy_sigma=0.7, policy_init_std=None
-    )
+    policy = _policy(make_pendulum_mc, policy_squash=False, policy_cov_type="single", policy_init_std=0.7)
     expected = 2 * 0.5 * math.log(2 * math.pi * math.e * 0.7**2)
     assert float(policy.entropy(_Batch(np.zeros((3, 4), np.float32)))) == pytest.approx(expected, abs=1e-5)
     with pytest.raises(NotImplementedError):

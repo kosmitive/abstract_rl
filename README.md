@@ -14,11 +14,11 @@ with one- and multi-dimensional actions and is benchmarked against Stable-Baseli
 - **MPO**: Maximum A Posteriori Policy Optimization ([Abdolmaleki et al., 2018](https://arxiv.org/abs/1806.06920),
   and [1812.02256](https://arxiv.org/abs/1812.02256)) with a non-parametric E-step, a decoupled mean/covariance KL
   in the M-step (ε_μ = 0.1, ε_Σ = 1e-4), a state-dependent Cholesky Gaussian, an Adam dual for the temperature,
-  and a [Retrace](https://arxiv.org/abs/1606.02647) critic. The previous joint KL, diagonal or univariate Gaussian,
-  and Newton temperature solve stay available:
-  `alg.mpo_kl_mode=joint alg.policy_type=auto alg.policy_cov_type=single alg.eta_solver=newton`.
-- Gaussian policies, optionally tanh-squashed into the action bounds: univariate, diagonal, and a state-dependent
-  full-covariance Cholesky policy (the MPO default).
+  and a [Retrace](https://arxiv.org/abs/1606.02647) critic. TRPO keeps a state-independent std
+  (`policy_cov_type: single`).
+- Gaussian policies, optionally tanh-squashed into the action bounds. `policy_cov_type` is `full` (state-dependent
+  Cholesky, the MPO default), `single` (one learned std), `fixed` (a constant std) or `state` (a state-dependent
+  diagonal). One-dimensional actions use the univariate policy unless the covariance is `full`.
 
 ## Install
 
@@ -51,7 +51,7 @@ conf = make_config(
     "pendulum",
     "trpo",
     seed=1,
-    overrides=["alg.num_epochs=1", "alg.policy_batch_size=400", "data_root=data"],
+    overrides=["env.steps=400", "alg.env_sample=400", "data_root=data"],
 )
 returns = run_trpo(conf)  # shape (epochs, 2): mean and std of the raw episodic return
 ```
@@ -98,20 +98,20 @@ A seed counts as solved on its own greedy return, so the five-seed mean can sit 
   Pendulum E-step epsilon `rnk_eps` 0.05. Every environment sets `policy_init_std: 0.5` (a placeholder).
   MountainCar is the only environment with `policy_min_std` (0.3, annealed over the first 160000 steps). A learned
   std that shrinks to about 0 before the sparse goal is found made 2/5 seeds fail before. MountainCar MPO keeps a
-  fixed covariance (`policy_type: auto`, `policy_cov_type: fixed`). With `policy_init_std` set, that std is 0.5;
-  `policy_sigma: 2.0` is used only when `policy_init_std` is null. `max_env_steps` defaults to each environment's `steps` budget.
+  fixed covariance (`policy_cov_type: fixed`), which is the univariate policy because the action is one dimensional.
+  That std is `policy_init_std` 0.5. The training budget is each environment's `steps` field.
 - **Pendulum balance check** (`abstract_rl.scripts.eval_balance`, |θ| < 0.1 rad in the last 100 of 200 steps). The command is in [Usage](#usage).
 - **SB3 baselines**: library defaults, except MountainCarContinuous-v0, which uses the
   [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) hyper-parameters (`--zoo`, gSDE exploration) at
   the same 400k budget; with defaults both SB3 algorithms score 0 there. On Pendulum-v1 the zoo settings were worse
   than the defaults (TRPO -136, PPO -226), so the defaults are shown.
 - **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** use the overrides in `config/env` and are not separately re-tuned. Solved counts for the JAX runs are in the table.
-- **Humanoid-v5** is in the environment list and has no 5-seed result yet. The budget is 3,000,000 steps, which is shorter than the 5–10 million steps usually used for this task. Gymnasium sets no reward threshold. `healthy_reward` is 5 per step, so 5000 is only standing for the full 1000-step episode. The solved line is 8000, which requires forward reward and so a real walk. The observation is 348 and the action is 17 torques in [-0.4, 0.4]. A fall (torso height outside [1, 2]) terminates the episode. TRPO uses a [256, 256] policy and value net and a batch of 15,000 (200 epochs). MPO uses a [256, 256] policy, the existing [256, 256] critic, `env_sample` 1000 (3000 epochs) and initial std `policy_init_std` 0.5. The M-step constraints are the decoupled bounds 0.1 and 1e-4. `mpo_trust_regions: [0.02]` is the joint-KL epsilon, used when `mpo_kl_mode=joint`. `abstract-rl env=humanoid alg=trpo seed=1` needs the `mujoco` extra. On this 4-CPU machine, after the compile epoch, TRPO takes 6.66 s/epoch (rollout about 3100 env steps/s), so 200 epochs is about 22 minutes. MPO takes 3.29 s/epoch while the replay still holds a few thousand rows (rollout about 3000 env steps/s, the critic is most of the epoch). At that rate 3000 epochs is about 2.7 hours; a full replay adds the resample and Retrace work on top.
+- **Humanoid-v5** is in the environment list and has no 5-seed result yet. The budget is 3,000,000 steps, which is shorter than the 5–10 million steps usually used for this task. Gymnasium sets no reward threshold. `healthy_reward` is 5 per step, so 5000 is only standing for the full 1000-step episode. The solved line is 8000, which requires forward reward and so a real walk. The observation is 348 and the action is 17 torques in [-0.4, 0.4]. A fall (torso height outside [1, 2]) terminates the episode. TRPO uses a [256, 256] policy and value net and `env_sample` 15,000 (200 epochs). MPO uses a [256, 256] policy, the existing [256, 256] critic, `env_sample` 1000 (3000 epochs) and initial std `policy_init_std` 0.5. The M-step constraints are the decoupled bounds 0.1 and 1e-4. `abstract-rl env=humanoid alg=trpo seed=1` needs the `mujoco` extra. On this 4-CPU machine, after the compile epoch, TRPO takes 6.66 s/epoch (rollout about 3100 env steps/s), so 200 epochs is about 22 minutes. MPO takes 3.29 s/epoch while the replay still holds a few thousand rows (rollout about 3000 env steps/s, the critic is most of the epoch). At that rate 3000 epochs is about 2.7 hours; a full replay adds the resample and Retrace work on top.
 
 ## Usage
 
 ```bash
-abstract-rl env=halfcheetah alg=mpo seed=1 alg.num_epochs=100            # Hydra overrides; needs the mujoco extra
+abstract-rl env=halfcheetah alg=mpo seed=1 env.steps=100000             # shorter budget; needs the mujoco extra
 abstract-rl -m env=mountaincar alg=mpo data_root=results seed=1,2,3,4,5  # Hydra sweep; -m has to come first
 abstract-rl env=pendulum alg=trpo --cfg job                              # print the config
 abstract-rl-eval data/HalfCheetah-v5/mpo/<run> --save                    # greedy evaluation
@@ -125,20 +125,20 @@ python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run>         # repla
 from abstract_rl import make_config, run_mpo_non_parametric, run_trpo
 
 # The YAML defaults are the benchmark budgets. These overrides are a one-epoch smoke run.
-run_trpo(make_config("pendulum", "trpo", seed=1, overrides=["alg.num_epochs=1", "alg.policy_batch_size=400"]))
-run_mpo_non_parametric(
-    make_config("mountaincar", "mpo", seed=1, overrides=["alg.num_epochs=1", "alg.env_sample=200"])
-)
+run_trpo(make_config("pendulum", "trpo", seed=1, overrides=["env.steps=400", "alg.env_sample=400"]))
+run_mpo_non_parametric(make_config("mountaincar", "mpo", seed=1, overrides=["env.steps=200", "alg.env_sample=200"]))
 ```
 
-Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`; null uses the environment `steps` budget),
+Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`),
 `config/alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults) and `config/env/<env>.yaml` (Gymnasium `id`, `success`
 threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo`/`mpo`). Environments: `pendulum`,
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`, `humanoid`. `alg.<key>=...` overrides beat the
 environment table. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
-`alg=mpo` is the paper M-step: decoupled KL, Cholesky policy, SGD temperature. TRPO keeps a state-independent std.
-`select_policy` uses the univariate or the diagonal Gaussian when the covariance is not `full`.
+`alg=mpo` is the paper M-step: decoupled KL, Cholesky policy, SGD temperature. TRPO keeps a state-independent std
+(`policy_cov_type: single`). `select_policy` uses the univariate or the diagonal Gaussian when the covariance is not `full`.
+Both algorithms collect `env_sample` transitions per epoch. The epoch count is `ceil(steps / env_sample)`. MPO's
+`policy_batch_size` is the M-step minibatch.
 
 ## Training environments
 
@@ -151,7 +151,7 @@ environment table. The training loops get a flat dictionary with prefixes (`env_
 | HalfCheetah-v5 | Gymnasium (MuJoCo) | Gymnasium |
 | Humanoid-v5 | Gymnasium (MuJoCo) | Gymnasium |
 
-Each collection stores exactly the transitions the epoch asked for, including when several environments step together. `max_env_steps` defaults to the environment `steps` field, and both training loops stop once that many transitions are stored.
+Each collection stores exactly the transitions the epoch asked for, including when several environments step together. Both training loops stop once `steps` transitions are stored.
 
 The classic-control steps copy the Gymnasium formulas. gymnax Pendulum-v1 matches those formulas. gymnax MountainCarContinuous-v0 does not: it zeros velocity at the goal when velocity is negative, and it folds the time limit into `done`. This step zeros velocity only on the left wall (`position == -1.2` and velocity negative), and a time limit is not a done. Reset ranges match; the generator is JAX, so a seeded Gymnasium reset is not the same sequence.
 
@@ -211,7 +211,7 @@ Each training method keeps its name and its maths. The inner iteration is a JAX 
 | Retrace chunks, host pad, Python loop | `operator/retrace_operator.py` `apply` | one `filter_jit`; `lax.cond` skips empty chunks; device scatter-add; donated `q` and `tq` | included in the Retrace timing above |
 | Resample chunks and a `.at.set` per chunk | `operator/resample_actions_operator.py` `apply` | `lax.scan` over a fixed chunk count; donated `add_act`, `add_q`, `add_pi` | flat 0.47s Pendulum / 0.57s HalfCheetah. The previous path started near 0.24s and rose with the buffer |
 | Ranking on `add_q[:size]` | `operator/np_rew_operator.py` | `filter_jit` on a power-of-two prefix, traced fill | 0.07–0.10s → under 0.005s on the full buffer. A new width compiles once |
-| Temperature L-BFGS-B with `float()` each iteration | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | `lax.while_loop` damped Newton on the same dual; traced `size` | (20000, 20) float64: 1.031s → 0.052s (19.7×). On a (256, 20) draw the optimum has KL 0.1000 against ε 0.1 |
+| Temperature L-BFGS-B with `float()` each iteration | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | one Adam step on the dual inside the M-step scan. An intermediate port measured damped Newton; that solve is not in the training loop | Newton, (20000, 20) float64: 1.031s → 0.052s (19.7×). On a (256, 20) draw that optimum had KL 0.1000 against ε 0.1 |
 | TRPO gradient, Fisher, and Python conjugate gradient, with a new jit every epoch | `trust_region_gradient.py`, `conjugate_gradient.py` | one `filter_jit`; `cg_solve` is `lax.while_loop` | Pendulum TRPO step 0.644s → 0.016s (40×); HalfCheetah 1.232s → 0.050s (25×) |
 | Line search `while` with `float(tr_obj)` per probe | `trust_region_gradient.py` `line_search` | `_backtrack` `lax.while_loop`; one log copy; one parameter write | 10 probes on a 4000-step batch: 0.0036s → 0.0033s (1.10×) |
 | Value fit, SciPy L-BFGS-B, host `float()` each iteration | `value_functions/fc_v_networks.py` `perform_sgd` | `optax.lbfgs` zoom line search inside one `lax.scan` (`_fit_v`) | Same 25 steps on a 64-64 value net: Pendulum-sized batch 0.067s → 0.022s, loss 1.02018 → 1.02031; HalfCheetah-sized 0.138s → 0.048s, loss 0.95017 → 0.94989. In the epoch: 0.081s → 0.026s and 0.151s → 0.059s |
@@ -223,7 +223,7 @@ Each training method keeps its name and its maths. The inner iteration is a JAX 
 | Replay `.at[start:end].set` with Python bounds | `replay_buffer.py` | one host pack, then `_insert_transitions` / `_shift_transitions` (`jnp.where`, traced start and length, donated buffers) | device sync stays under 0.01s, and steady MPO epochs compile 0 times |
 | Q evaluation over the K sampled actions | `fc_q_networks.py` `q_values` | one matmul with the action axis folded into the batch | counted inside resample and Retrace |
 
-Host `if` statements remain on concrete values: empty buffers, filter flags, `n_envs == 1`, and which environment has a JAX step. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. The value fit no longer calls SciPy. `jax` and `jaxlib` still install SciPy themselves; the library does not import it and does not list it. Optax zoom L-BFGS was faster than Optax backtracking and than optimistix BFGS/L-BFGS on the value loss, and it matches the SciPy loss. jaxopt L-BFGS is comparable and is not a dependency. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`. MuJoCo acting is still the NumPy policy; Pendulum and MountainCarContinuous sample with `gaussian_math` inside the scan.
+Host `if` statements remain on concrete values: empty buffers, `n_envs == 1`, and which environment has a JAX step. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. The value fit no longer calls SciPy. `jax` and `jaxlib` still install SciPy themselves; the library does not import it and does not list it. Optax zoom L-BFGS was faster than Optax backtracking and than optimistix BFGS/L-BFGS on the value loss, and it matches the SciPy loss. jaxopt L-BFGS is comparable and is not a dependency. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`. MuJoCo acting is still the NumPy policy; Pendulum and MountainCarContinuous sample with `gaussian_math` inside the scan.
 
 ## Architecture
 
@@ -237,18 +237,18 @@ src/abstract_rl/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryCollection, on-device ReplayBuffer, Batch
 ├── env/                              MCMCEnvWrapper; JAX steps for Pendulum and MountainCar, Gymnasium otherwise
-├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
-├── policy/                           univariate, diagonal and Cholesky Gaussian policies (Equinox), non-parametric policy
+├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting
+├── policy/                           univariate, diagonal and Cholesky Gaussian policies (Equinox), E-step temperature
 ├── value_functions/                  fully connected V (L-BFGS) and Q (Adam) networks
 ├── neural_modules/                   Equinox MLP building block
 ├── run/                              training loops (run_trpo, run_mpo_non_parametric), policy replay
 ├── scripts/                          Hydra entry point (run.py, hydra_conf.py), evaluate / baselines / compare
-└── misc/ and plots/                  CLI printer, data logger, running filters, plots
+└── misc/ and plots/                  CLI printer, data logger, observation normalisation, plots
 ```
 
 A training loop is a sequence of operator applications on trajectory collections:
 
-- **TRPO** per epoch: collect `policy_batch_size` steps → `TD` operator (returns, bootstrapped at time limits) →
+- **TRPO** per epoch: collect `env_sample` steps → `TD` operator (returns, bootstrapped at time limits) →
   `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
 - **MPO** per epoch: collect `env_sample` steps into the trajectory collection → `Resample` operator (actions from the
   target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric

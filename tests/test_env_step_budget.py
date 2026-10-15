@@ -1,9 +1,11 @@
 """Each benchmark run stores at most the environment step budget, plus at most one parallel round.
 
-``max_env_steps`` defaults to the environment ``steps`` field. One round is ``n_envs * max_steps``:
-the transitions a full wave of parallel episodes can add. The collector stores exactly the request,
-so the projected run lands on the budget and the round is only the allowed slack.
+The budget is the environment ``steps`` field. One round is ``n_envs * max_steps``: the transitions
+a full wave of parallel episodes can add. The collector stores exactly the request, so the
+projected run lands on the budget and the round is only the allowed slack.
 """
+
+import math
 
 import gymnasium as gym
 import pytest
@@ -14,6 +16,23 @@ from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.scripts import hydra_conf
 
 PAIRS = [(env, alg) for env in hydra_conf.environments() for alg in ("trpo", "mpo")]
+
+# ceil(steps / env_sample). MountainCar MPO used to list 1000 epochs; the 400000-step budget
+# already stopped that run at 400.
+EXPECTED_EPOCHS = {
+    ("Pendulum-v1", "trpo"): 200,
+    ("Pendulum-v1", "mpo"): 800,
+    ("MountainCarContinuous-v0", "trpo"): 100,
+    ("MountainCarContinuous-v0", "mpo"): 400,
+    ("InvertedPendulum-v5", "trpo"): 75,
+    ("InvertedPendulum-v5", "mpo"): 150,
+    ("InvertedDoublePendulum-v5", "trpo"): 75,
+    ("InvertedDoublePendulum-v5", "mpo"): 600,
+    ("HalfCheetah-v5", "trpo"): 150,
+    ("HalfCheetah-v5", "mpo"): 1200,
+    ("Humanoid-v5", "trpo"): 200,
+    ("Humanoid-v5", "mpo"): 3000,
+}
 
 
 def _project(num_epochs: int, epoch_steps: int, budget: int, slack: int) -> int:
@@ -38,10 +57,11 @@ def test_stored_env_steps_stay_within_one_round_of_the_budget(env_id, alg, tmp_p
     conf = hydra_conf.make_config(env_id, alg, 1, [f"data_root={tmp_path}"])
     conf["alg"] = alg
     budget = hydra_conf.steps()[env_id]
-    assert conf["max_env_steps"] == budget
-    epoch_steps = int(conf["env_sample"] if alg == "mpo" else conf["policy_batch_size"])
+    assert conf["steps"] == budget
+    epoch_steps = int(conf["env_sample"])
     max_steps = int(conf["max_steps"])
-    num_epochs = int(conf["num_epochs"])
+    num_epochs = math.ceil(budget / epoch_steps)
+    assert num_epochs == EXPECTED_EPOCHS[(env_id, alg)]
 
     mc = ModelConfiguration(conf)
     with mc["conf"].ns("env"):

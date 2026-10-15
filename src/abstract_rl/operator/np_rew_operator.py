@@ -24,7 +24,6 @@ class VariationalRankingOperator(TrajectoryOperator):
         self.conf = mc["conf"]
         self.mc = mc
         self.policy = mc.get("policy", True)
-        self.num_add_actions = self.conf.get_root("res_add_acts")
         self.b = NonParametricVariationalPolicyBuilder(self.mc)
 
     def __repr__(self) -> str:

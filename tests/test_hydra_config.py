@@ -14,9 +14,8 @@ def test_hydra_configs_equal_legacy_tables(key):
     env, alg, seed = key.split("|")
     conf = hydra_conf.make_config(env, alg, int(seed))
     assert conf.pop("data_root") == "data"
-    assert conf.pop("max_env_steps") == hydra_conf.steps()[env]
+    assert conf["steps"] == hydra_conf.steps()[env]
     expected = dict(LEGACY["cfg"][key])
-    expected.pop("max_env_steps", None)
     assert set(conf) == set(expected)
     for k, v in expected.items():
         assert conf[k] == v and type(conf[k]) is type(v), k
@@ -30,10 +29,10 @@ def test_tables():
 
 
 def test_command_line_overrides_beat_environment_table():
-    conf = hydra_conf.make_config("mountaincar", "mpo", 3, ["alg.policy_sigma=1.5", "data_root=/tmp/x"])
-    assert conf["policy_sigma"] == 1.5 and conf["policy_cov_type"] == "fixed"
-    assert conf["seed"] == 3 and conf["data_root"] == "/tmp/x" and conf["max_env_steps"] == 400_000
-    assert hydra_conf.make_config("Pendulum-v1", "trpo")["max_env_steps"] == 800_000
-    assert hydra_conf.make_config("Pendulum-v1", "mpo")["max_env_steps"] == 800_000
-    overridden = hydra_conf.make_config("Pendulum-v1", "trpo", overrides=["max_env_steps=1234"])
-    assert overridden["max_env_steps"] == 1234 and type(overridden["max_env_steps"]) is int
+    conf = hydra_conf.make_config("mountaincar", "mpo", 3, ["alg.policy_init_std=1.5", "data_root=/tmp/x"])
+    assert conf["policy_init_std"] == 1.5 and conf["policy_cov_type"] == "fixed"
+    assert conf["seed"] == 3 and conf["data_root"] == "/tmp/x" and conf["steps"] == 400_000
+    assert hydra_conf.make_config("Pendulum-v1", "trpo")["steps"] == 800_000
+    assert hydra_conf.make_config("Pendulum-v1", "mpo")["steps"] == 800_000
+    overridden = hydra_conf.make_config("Pendulum-v1", "trpo", overrides=["env.steps=1234"])
+    assert overridden["steps"] == 1234 and type(overridden["steps"]) is int

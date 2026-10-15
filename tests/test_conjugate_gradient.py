@@ -1,13 +1,13 @@
 import jax
 import jax.numpy as jnp
 
-from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
+from abstract_rl.algorithms.mixed.conjugate_gradient import cg_solve
 
 jax.config.update("jax_enable_x64", True)
 
 
 def _solve(a, b, max_k=20, tol=1e-10):
-    x = conjugate_gradient(lambda v: a @ v, b, max_k, tol)
+    x = cg_solve(lambda v: a @ v, b, jnp.int32(max_k), jnp.asarray(tol, dtype=b.dtype))
     return x, jnp.linalg.norm(a @ x - b)
 
 
