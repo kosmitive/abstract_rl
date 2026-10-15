@@ -5,6 +5,6 @@ success: -150.0
 steps: 800000
 # overrides of the algorithm defaults: "all" applies to both algorithms
 overrides:
-  all: {}
+  all: {policy_init_std: 0.5}
   trpo: {env_discount: 0.95}
   mpo: {num_epochs: 800, rnk_eps: 0.05}

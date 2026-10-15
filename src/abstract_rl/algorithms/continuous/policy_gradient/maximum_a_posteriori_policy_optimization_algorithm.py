@@ -46,10 +46,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
     See https://arxiv.org/abs/1806.06920. Retrace lives outside this class. One Adam step updates
     the policy (max step) and one Adam step updates the positive Lagrange multiplier (min step).
 
-    ``mpo_kl_mode: decoupled`` splits that constraint into a mean bound and a covariance bound
-    (Abdolmaleki et al., appendix, and arXiv 1812.02256). Each bound has its own multiplier, and
-    the constraint weight is the exponential of the multiplier, so the weight stays positive.
-    ``eta_solver: sgd`` trains the E-step temperature on the same minibatches.
+    The benchmark config sets ``mpo_kl_mode: decoupled``, which splits that constraint into a mean
+    bound and a covariance bound (Abdolmaleki et al., appendix, and arXiv 1812.02256). Each bound
+    has its own multiplier, and the constraint weight is the exponential of the multiplier, so the
+    weight stays positive. A missing ``mpo_kl_mode`` is still the joint KL. ``eta_solver: sgd``
+    trains the E-step temperature on the same minibatches; a missing key keeps the Newton solve.
     """
 
     def __repr__(self) -> str:

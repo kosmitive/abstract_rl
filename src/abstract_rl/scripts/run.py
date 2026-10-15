@@ -3,7 +3,7 @@
 Usage::
 
     uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
-    uv run python -m abstract_rl.scripts.run env=pendulum alg=mpo_paper seed=1
+    uv run python -m abstract_rl.scripts.run env=pendulum alg=mpo seed=1
     uv run --extra mujoco python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=50
     uv run python -m abstract_rl.scripts.run --cfg job env=mountaincar alg=mpo   # print the composed config
 

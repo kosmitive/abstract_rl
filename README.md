@@ -11,9 +11,14 @@ with one- and multi-dimensional actions and is benchmarked against Stable-Baseli
 
 - **TRPO**: Trust Region Policy Optimization ([Schulman et al., 2015](https://arxiv.org/abs/1502.05477)) with
   [GAE](https://arxiv.org/abs/1506.02438), conjugate gradient natural gradient step and a KL line search.
-- **MPO**: Maximum A Posteriori Policy Optimization ([Abdolmaleki et al., 2018](https://arxiv.org/abs/1806.06920)) with
-  a non-parametric E-step, a KL constrained M-step and a [Retrace](https://arxiv.org/abs/1606.02647) critic.
-- Univariate and diagonal (multi-dimensional) Gaussian policies, optionally tanh-squashed into the action bounds.
+- **MPO**: Maximum A Posteriori Policy Optimization ([Abdolmaleki et al., 2018](https://arxiv.org/abs/1806.06920),
+  and [1812.02256](https://arxiv.org/abs/1812.02256)) with a non-parametric E-step, a decoupled mean/covariance KL
+  in the M-step (ε_μ = 0.1, ε_Σ = 1e-4), a state-dependent Cholesky Gaussian, an Adam dual for the temperature,
+  and a [Retrace](https://arxiv.org/abs/1606.02647) critic. The previous joint KL, diagonal or univariate Gaussian,
+  and Newton temperature solve stay available:
+  `alg.mpo_kl_mode=joint alg.policy_type=auto alg.policy_cov_type=single alg.eta_solver=newton`.
+- Gaussian policies, optionally tanh-squashed into the action bounds: univariate, diagonal, and a state-dependent
+  full-covariance Cholesky policy (the MPO default).
 
 ## Install
 
@@ -90,15 +95,18 @@ A seed counts as solved on its own greedy return, so the five-seed mean can sit 
 `docs/benchmark.png` is the learning-curve figure from the earlier PyTorch abstract_rl runs plotted against these same SB3 baselines. The greedy numbers above are the JAX runs at the default budgets.
 
 - **Tuned for Pendulum-v1 and MountainCarContinuous-v0** (one setting each): TRPO Pendulum discount 0.95, MPO
-  Pendulum E-step epsilon `rnk_eps` 0.05, MPO MountainCar fixed exploration std 2.0. A learned std
-  shrinks to about 0 before the sparse goal is found, which made 2/5 seeds fail before. `max_env_steps` defaults to each environment's `steps` budget.
+  Pendulum E-step epsilon `rnk_eps` 0.05. Every environment sets `policy_init_std: 0.5` (a placeholder).
+  MountainCar is the only environment with `policy_min_std` (0.3, annealed over the first 160000 steps). A learned
+  std that shrinks to about 0 before the sparse goal is found made 2/5 seeds fail before. MountainCar MPO keeps a
+  fixed covariance (`policy_type: auto`, `policy_cov_type: fixed`). With `policy_init_std` set, that std is 0.5;
+  `policy_sigma: 2.0` is used only when `policy_init_std` is null. `max_env_steps` defaults to each environment's `steps` budget.
 - **Pendulum balance check** (`abstract_rl.scripts.eval_balance`, |θ| < 0.1 rad in the last 100 of 200 steps). The command is in [Usage](#usage).
 - **SB3 baselines**: library defaults, except MountainCarContinuous-v0, which uses the
   [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) hyper-parameters (`--zoo`, gSDE exploration) at
   the same 400k budget; with defaults both SB3 algorithms score 0 there. On Pendulum-v1 the zoo settings were worse
   than the defaults (TRPO -136, PPO -226), so the defaults are shown.
 - **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** use the overrides in `config/env` and are not separately re-tuned. Solved counts for the JAX runs are in the table.
-- **Humanoid-v5** is in the environment list and has no 5-seed result yet. The budget is 3,000,000 steps, which is shorter than the 5–10 million steps usually used for this task. Gymnasium sets no reward threshold. `healthy_reward` is 5 per step, so 5000 is only standing for the full 1000-step episode. The solved line is 8000, which requires forward reward and so a real walk. The observation is 348 and the action is 17 torques in [-0.4, 0.4]. A fall (torso height outside [1, 2]) terminates the episode. TRPO uses a [256, 256] policy and value net and a batch of 15,000 (200 epochs). MPO uses a [256, 256] policy, the existing [256, 256] critic, `env_sample` 1000 (3000 epochs), exploration std 0.5 and trust region 0.02. `abstract-rl env=humanoid alg=trpo seed=1` needs the `mujoco` extra. On this 4-CPU machine, after the compile epoch, TRPO takes 6.66 s/epoch (rollout about 3100 env steps/s), so 200 epochs is about 22 minutes. MPO takes 3.29 s/epoch while the replay still holds a few thousand rows (rollout about 3000 env steps/s, the critic is most of the epoch). At that rate 3000 epochs is about 2.7 hours; a full replay adds the resample and Retrace work on top.
+- **Humanoid-v5** is in the environment list and has no 5-seed result yet. The budget is 3,000,000 steps, which is shorter than the 5–10 million steps usually used for this task. Gymnasium sets no reward threshold. `healthy_reward` is 5 per step, so 5000 is only standing for the full 1000-step episode. The solved line is 8000, which requires forward reward and so a real walk. The observation is 348 and the action is 17 torques in [-0.4, 0.4]. A fall (torso height outside [1, 2]) terminates the episode. TRPO uses a [256, 256] policy and value net and a batch of 15,000 (200 epochs). MPO uses a [256, 256] policy, the existing [256, 256] critic, `env_sample` 1000 (3000 epochs) and initial std `policy_init_std` 0.5. The M-step constraints are the decoupled bounds 0.1 and 1e-4. `mpo_trust_regions: [0.02]` is the joint-KL epsilon, used when `mpo_kl_mode=joint`. `abstract-rl env=humanoid alg=trpo seed=1` needs the `mujoco` extra. On this 4-CPU machine, after the compile epoch, TRPO takes 6.66 s/epoch (rollout about 3100 env steps/s), so 200 epochs is about 22 minutes. MPO takes 3.29 s/epoch while the replay still holds a few thousand rows (rollout about 3000 env steps/s, the critic is most of the epoch). At that rate 3000 epochs is about 2.7 hours; a full replay adds the resample and Retrace work on top.
 
 ## Usage
 
@@ -129,8 +137,8 @@ threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`, `humanoid`. `alg.<key>=...` overrides beat the
 environment table. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
-Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
-diagonal Gaussian policy from the action space.
+`alg=mpo` is the paper M-step: decoupled KL, Cholesky policy, SGD temperature. TRPO keeps a state-independent std.
+`select_policy` uses the univariate or the diagonal Gaussian when the covariance is not `full`.
 
 ## Training environments
 
@@ -230,7 +238,7 @@ src/abstract_rl/
 │   └── temporal_difference_data/     Trajectory, TrajectoryCollection, on-device ReplayBuffer, Batch
 ├── env/                              MCMCEnvWrapper; JAX steps for Pendulum and MountainCar, Gymnasium otherwise
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
-├── policy/                           univariate and diagonal Gaussian policy (Equinox), non-parametric policy
+├── policy/                           univariate, diagonal and Cholesky Gaussian policies (Equinox), non-parametric policy
 ├── value_functions/                  fully connected V (L-BFGS) and Q (Adam) networks
 ├── neural_modules/                   Equinox MLP building block
 ├── run/                              training loops (run_trpo, run_mpo_non_parametric), policy replay

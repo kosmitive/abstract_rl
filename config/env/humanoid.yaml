@@ -9,7 +9,7 @@ id: Humanoid-v5
 success: 8000.0
 steps: 3000000
 overrides:
-  all: {max_steps: 1000}
+  all: {max_steps: 1000, policy_init_std: 0.5}
   trpo:
     num_epochs: 200
     policy_batch_size: 15000

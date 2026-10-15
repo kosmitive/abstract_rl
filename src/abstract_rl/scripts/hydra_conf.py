@@ -42,10 +42,8 @@ def run_config(cfg: DictConfig, overrides: list[str] | None = None) -> dict[str,
     """Flat run configuration of a composed config; ``overrides`` are the command line overrides of ``cfg``."""
     alg: dict[str, Any] = OmegaConf.to_container(cfg.alg, resolve=True)  # type: ignore[assignment]
     name = str(alg.pop("name"))
-    # mpo_paper is the paper preset of MPO, so it inherits that environment's MPO overrides.
-    env_key = "mpo" if name == "mpo_paper" else name
     spec: dict[str, Any] = OmegaConf.to_container(cfg.env.overrides, resolve=True)  # type: ignore[assignment]
-    conf: dict[str, Any] = {**alg, **(spec.get("all") or {}), **(spec.get(env_key) or {})}
+    conf: dict[str, Any] = {**alg, **(spec.get("all") or {}), **(spec.get(name) or {})}
     # explicit alg.<key>=value overrides of the command line take precedence over the environment table
     for item in overrides or []:
         key = item.lstrip("+~").partition("=")[0]

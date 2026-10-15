@@ -155,21 +155,32 @@ def test_eta_sgd_converges_to_the_newton_solution():
     assert abs(dual_sgd - dual_newton) < 1e-3
 
 
-def test_mpo_paper_preset_keeps_the_mpo_defaults_and_turns_on_the_three_options():
-    preset = make_config("pendulum", "mpo_paper")
+def test_default_mpo_is_the_paper_update_and_the_joint_path_stays_selectable():
     default = make_config("pendulum", "mpo")
-    assert preset["alg"] == "mpo"
-    assert preset["policy_type"] == "full"
-    assert preset["policy_cov_type"] == "full"
-    assert preset["mpo_kl_mode"] == "decoupled"
-    assert preset["mpo_eps_mean"] == 0.1 and type(preset["mpo_eps_mean"]) is float
-    assert preset["mpo_eps_cov"] == 1.0e-4 and type(preset["mpo_eps_cov"]) is float
-    assert preset["eta_solver"] == "sgd"
-    assert preset["num_epochs"] == 800 and preset["rnk_eps"] == 0.05
-    assert "mpo_kl_mode" not in default
-    assert "eta_solver" not in default
-    assert "policy_type" not in default
-    assert default["policy_cov_type"] == "single"
+    assert default["alg"] == "mpo"
+    assert default["policy_type"] == "full"
+    assert default["policy_cov_type"] == "full"
+    assert default["mpo_kl_mode"] == "decoupled"
+    assert default["mpo_eps_mean"] == 0.1 and type(default["mpo_eps_mean"]) is float
+    assert default["mpo_eps_cov"] == 1.0e-4 and type(default["mpo_eps_cov"]) is float
+    assert default["eta_solver"] == "sgd"
+    assert default["num_epochs"] == 800 and default["rnk_eps"] == 0.05
+    assert default["policy_mean_init_scale"] == 1.0
+    old = make_config(
+        "pendulum",
+        "mpo",
+        overrides=[
+            "alg.mpo_kl_mode=joint",
+            "alg.policy_type=auto",
+            "alg.policy_cov_type=single",
+            "alg.eta_solver=newton",
+        ],
+    )
+    assert old["mpo_kl_mode"] == "joint"
+    assert old["policy_type"] == "auto"
+    assert old["policy_cov_type"] == "single"
+    assert old["eta_solver"] == "newton"
+    assert old["num_epochs"] == 800 and old["rnk_eps"] == 0.05
 
 
 def _tiny(conf: dict) -> dict:
@@ -213,8 +224,11 @@ def test_eta_sgd_smoke(mpo_conf):
     _finite(run_mpo_non_parametric(conf))
 
 
-def test_mpo_paper_preset_smoke(mpo_conf, tmp_path):
-    conf = _tiny(make_config("pendulum", "mpo_paper"))
+def test_default_mpo_smoke(mpo_conf, tmp_path):
+    conf = _tiny(make_config("pendulum", "mpo"))
     conf["data_root"] = str(tmp_path)
     conf["seed"] = mpo_conf["seed"]
+    assert conf["mpo_kl_mode"] == "decoupled"
+    assert conf["policy_cov_type"] == "full"
+    assert conf["eta_solver"] == "sgd"
     _finite(run_mpo_non_parametric(conf))

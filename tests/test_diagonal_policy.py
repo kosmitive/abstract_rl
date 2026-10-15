@@ -216,7 +216,9 @@ def test_one_dimensional_diagonal_policy_equals_the_univariate_policy(make_pendu
 
 
 def test_entropy_of_the_unsquashed_policy_and_refusal_for_squashed(make_pendulum_mc):
-    policy = _policy(make_pendulum_mc, policy_squash=False, policy_cov_type="single", policy_sigma=0.7)
+    policy = _policy(
+        make_pendulum_mc, policy_squash=False, policy_cov_type="single", policy_sigma=0.7, policy_init_std=None
+    )
     expected = 2 * 0.5 * math.log(2 * math.pi * math.e * 0.7**2)
     assert float(policy.entropy(_Batch(np.zeros((3, 4), np.float32)))) == pytest.approx(expected, abs=1e-5)
     with pytest.raises(NotImplementedError):
