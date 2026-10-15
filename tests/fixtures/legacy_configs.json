@@ -1,7 +1,8 @@
 {
  "ALG": [
   "trpo",
-  "mpo"
+  "mpo",
+  "mpo_paper"
  ],
  "ENV": [
   "Pendulum-v1",

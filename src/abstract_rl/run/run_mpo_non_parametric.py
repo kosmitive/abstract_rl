@@ -104,7 +104,7 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         mc.add_main("rnk", rnk)
 
     # fixed on-device arrays behind the trajectory collection, read by the jitted updates
-    tc.attach_device(int(run_conf.get_root("res_add_acts")), int(max_steps))
+    tc.attach_device(int(run_conf.get_root("res_add_acts")), int(max_steps), policy.get_suff_stats_dim())
 
     # names for rewards
     stoch_reward = "sreward"

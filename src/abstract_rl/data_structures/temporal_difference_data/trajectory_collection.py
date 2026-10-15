@@ -104,17 +104,18 @@ class TrajectoryCollection:
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
         self._sync_device()
 
-    def attach_device(self, n_actions: int, time_limit: int) -> None:
+    def attach_device(self, n_actions: int, time_limit: int, stats_dim: int | None = None) -> None:
         """Allocate the fixed on-device arrays the jitted MPO updates sample from.
 
         Args:
             n_actions: Extra actions stored per state by the E-step.
             time_limit: Longest episode the Retrace kernel pads to.
+            stats_dim: Width of the cached policy statistics. ``None`` stores a diagonal Gaussian.
         """
         from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 
         capacity = int(self.max_l) if self.max_l is not None else max(self.__num_data_points, 1)
-        self.device = ReplayBuffer(self._sd, self._ad, capacity, n_actions, time_limit)
+        self.device = ReplayBuffer(self._sd, self._ad, capacity, n_actions, time_limit, stats_dim)
         self._sync_device()
 
     def _sync_device(self) -> None:

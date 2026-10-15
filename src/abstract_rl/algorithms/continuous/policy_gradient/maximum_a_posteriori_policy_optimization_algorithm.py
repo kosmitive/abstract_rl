@@ -15,6 +15,10 @@ import optax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
+from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import (
+    descend_temperature,
+    positive_temperature,
+)
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
@@ -24,7 +28,14 @@ from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import l2_norm
 from abstract_rl.misc.obs_norm import normalize_obs
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
-from abstract_rl.policy.continuous.gaussian_math import GaussianParams, forward, kl_divergence, kl_normal, log_prob
+from abstract_rl.policy.continuous.gaussian_math import (
+    GaussianParams,
+    forward,
+    kl_divergence,
+    kl_normal,
+    kl_parts,
+    log_prob,
+)
 
 _STATS_CHUNK = 1024
 
@@ -34,6 +45,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
     See https://arxiv.org/abs/1806.06920. Retrace lives outside this class. One Adam step updates
     the policy (max step) and one Adam step updates the positive Lagrange multiplier (min step).
+
+    ``mpo_kl_mode: decoupled`` splits that constraint into a mean bound and a covariance bound
+    (Abdolmaleki et al., appendix, and arXiv 1812.02256). Each bound has its own multiplier, and
+    the constraint weight is the exponential of the multiplier, so the weight stays positive.
+    ``eta_solver: sgd`` trains the E-step temperature on the same minibatches.
     """
 
     def __repr__(self) -> str:
@@ -56,12 +72,25 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.l2_reg = float(self.conf.get("l2_reg", 0.0))
         self.cli = CliPrinter().instance
         self._check_mode()
+        root = self.conf.to_dict()
+        self.kl_mode = str(root.get("mpo_kl_mode", "joint"))
+        if self.kl_mode not in ("joint", "decoupled"):
+            raise ValueError(f"unknown mpo_kl_mode {self.kl_mode}")
+        self.decoupled = self.kl_mode == "decoupled"
+        if self.decoupled:
+            if self.split_constraint or self.split_objective:
+                raise ValueError("decoupled KL uses two constraints and does not combine with coordinate ascent")
+            self.trust_regions = [float(root.get("mpo_eps_mean", 0.1)), float(root.get("mpo_eps_cov", 1.0e-4))]
 
-        match self.split_constraint:
+        match self.decoupled:
             case True:
-                self.num_params = policy.get_suff_stats_dim()
+                self.num_params = 2
             case False:
-                self.num_params = 1
+                match self.split_constraint:
+                    case True:
+                        self.num_params = policy.get_suff_stats_dim()
+                    case False:
+                        self.num_params = 1
         match self.num_params:
             case 1:
                 self.lm = jnp.ones((), dtype=jnp.float32)
@@ -149,6 +178,15 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         Returns:
             One slack per Lagrange multiplier.
         """
+        if self.decoupled:
+            states = jnp.asarray(batch.states, dtype=jnp.float32)
+            current = self.policy.forward(states)
+            target = jax.lax.stop_gradient(self.mc.get("policy", True).forward(states))
+            kl_mu, kl_sigma = kl_parts(current, target, self.policy.cov_type, self.policy.mc.env.action_dim)
+            return [
+                jnp.asarray(self.v[0], dtype=jnp.float32) - kl_mu.mean(),
+                jnp.asarray(self.v[1], dtype=jnp.float32) - kl_sigma.mean(),
+            ]
         match self.mode:
             case "parametric":
                 projection = "i-projection"
@@ -199,7 +237,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         if num_steps <= 0:
             return
         self.sample_v()
-        labels = tuple(f"lm_{index} x constr_{index}" for index in range(self.num_params))
+        labels: tuple[str, ...]
+        if self.decoupled:
+            labels = ("alpha_mu x KL_mu", "alpha_sigma x KL_sigma")
+        else:
+            labels = tuple(f"lm_{index} x constr_{index}" for index in range(self.num_params))
         self.cli.empty().print(self.titlestr % ("k", "objective", *labels))
         device = tc.device
         match (self.mode, self.split_objective, self.split_constraint, device is not None and device.size > 0):
@@ -269,6 +311,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
                 advantages,
                 add_act,
                 ranking,
+                self.decoupled,
             )
             return -total
 
@@ -302,6 +345,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
                 advantages,
                 add_act,
                 ranking,
+                self.decoupled,
             )
             return total
 
@@ -318,6 +362,9 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         states = normalize_obs(self.policy.observation_norm(), replay.states)
         _fill_target_stats(replay, self.mc.get("policy", target=True).params, states)
         diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
+        if self.decoupled or str(self.conf.to_dict().get("eta_solver", "newton")) == "sgd":
+            self._scan_options(replay, states, num_steps, batch_size, diff, static)
+            return
         diff, self.opt_outer, self.lm, self.opt_inner, main, multipliers, constraints = _mpo_scan(
             (
                 states,
@@ -346,6 +393,87 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         for step in range(num_steps):
             if step % 10 == 0:
                 self.cli.print(self.fmtstr % (step, main_np[step], lm_np[step], constraint_np[step]))
+
+    def _scan_options(
+        self,
+        replay: ReplayBuffer,
+        states: Float[Array, "cap obs"],
+        num_steps: int,
+        batch_size: int,
+        diff: Any,
+        static: Any,
+    ) -> None:
+        """M-step with a decoupled KL, a learned temperature, or both.
+
+        The joint Newton path stays in ``_mpo_scan``. This scan is the one that carries two
+        multipliers or an Adam state for η.
+        """
+        builder = self.mc.get("rnk").b
+        eta_sgd = builder.eta_solver == "sgd"
+        if eta_sgd:
+            eta_raw = builder.eta_raw
+            eta_opt = builder.eta_opt
+            tx_eta = builder.tx_eta
+            eta_eps = float(builder.non_parametric_variational_eps)
+        else:
+            eta_raw = jnp.zeros((), dtype=jnp.float32)
+            tx_eta = optax.adam(1.0)
+            eta_opt = tx_eta.init(eta_raw)
+            eta_eps = 1.0
+        epsilon = jnp.asarray(self.v, dtype=jnp.float32) if self.decoupled else jnp.float32(self.v[0])
+        diff, self.opt_outer, self.lm, self.opt_inner, eta_raw, eta_opt, main, multipliers, constraints = (
+            _mpo_scan_options(
+                (
+                    states,
+                    replay.add_act,
+                    replay.ranking,
+                    replay.target_stats,
+                    replay.add_q,
+                    self.mc.rng.split(),
+                    jnp.int32(replay.size),
+                ),
+                diff,
+                static,
+                self.opt_outer,
+                self.lm,
+                self.opt_inner,
+                eta_raw,
+                eta_opt,
+                self.tx_outer,
+                self.tx_inner,
+                tx_eta,
+                num_steps,
+                batch_size,
+                epsilon,
+                self.l2_reg,
+                eta_eps,
+                self.decoupled,
+                eta_sgd,
+            )
+        )
+        self.policy.params = eqx.combine(diff, static)
+        if eta_sgd:
+            builder.eta_raw = eta_raw
+            builder.eta_opt = eta_opt
+            builder.eta = np.asarray([float(positive_temperature(eta_raw))], dtype=np.float32)
+        main_np = np.asarray(main)
+        lm_np = np.asarray(multipliers)
+        constraint_np = np.asarray(constraints)
+        for step in range(num_steps):
+            if step % 10 != 0:
+                continue
+            if lm_np.ndim == 1:
+                columns: tuple[float, ...] = (float(lm_np[step]), float(constraint_np[step]))
+            else:
+                columns = ()
+                for index in range(lm_np.shape[1]):
+                    # The stored multiplier is unconstrained. The constraint weight is its exponential.
+                    columns = (
+                        *columns,
+                        float(np.exp(lm_np[step, index])),
+                        float(constraint_np[step, index]),
+                    )
+            self.cli.print(self.fmtstr % (step, float(main_np[step]), *columns))
 
 
 def _mixed_stats(
@@ -439,6 +567,7 @@ def _full_lagrangian(
     advantages: Float[Array, "..."],
     add_act: Float[Array, "..."],
     ranking: Float[Array, "..."],
+    decoupled: bool = False,
 ) -> tuple[Float[Array, ""], Float[Array, ""], list[Float[Array, ""]]]:
     """Lagrangian used by the Python M-step, including coordinate ascent.
 
@@ -446,7 +575,20 @@ def _full_lagrangian(
         The full Lagrangian, the main objective printed in the log, and each constraint slack.
     """
     current = forward(params, states)
-    mixed = _mixed_stats(current, forward(target, states))
+    target_stats = forward(target, states)
+    if decoupled:
+        main = _weighted(params, current, mode, l2_reg, actions, advantages, add_act, ranking)
+        kl_mu, kl_sigma = kl_parts(
+            current,
+            jax.lax.stop_gradient(target_stats),
+            params.cov_type,
+            len(params.action_center),
+        )
+        dual_slacks = [epsilon[0] - kl_mu.mean(), epsilon[1] - kl_sigma.mean()]
+        multipliers = jnp.reshape(multiplier, (-1,))
+        total = main + jnp.exp(multipliers[0]) * dual_slacks[0] + jnp.exp(multipliers[1]) * dual_slacks[1]
+        return total, main, dual_slacks
+    mixed = _mixed_stats(current, target_stats)
     width = current.shape[1]
     match split_objective:
         case True:
@@ -553,13 +695,53 @@ def _lagrangian(
         actions,
         log_weights,
     )
-    act = current.shape[-1] // 2
-    mu, sigma = current[:, :act], current[:, act:]
-    old_mu, old_sigma = target_stats[:, :act], target_stats[:, act:]
-    # non-parametric M-step uses the forward KL, i.e. the m-projection onto the variational q
-    distance = kl_normal(old_mu, old_sigma, mu, sigma).mean()
+    if params.cov_type == "full":
+        # Same m-projection as the diagonal path: KL(target || current), summed over the two parts.
+        kl_mu, kl_sigma = kl_parts(target_stats, current, "full", len(params.action_center))
+        distance = (kl_mu + kl_sigma).mean()
+    else:
+        act = current.shape[-1] // 2
+        mu, sigma = current[:, :act], current[:, act:]
+        old_mu, old_sigma = target_stats[:, :act], target_stats[:, act:]
+        # non-parametric M-step uses the forward KL, i.e. the m-projection onto the variational q
+        distance = kl_normal(old_mu, old_sigma, mu, sigma).mean()
     constraint = epsilon - distance
     return main + jnp.exp(multiplier) * constraint, main, constraint
+
+
+def _option_lagrangian(
+    params: GaussianParams,
+    multiplier: Float[Array, "..."],
+    states: Float[Array, "batch obs"],
+    actions: Float[Array, "batch k act"],
+    log_weights: Float[Array, "batch k"],
+    target_stats: Float[Array, "batch stats"],
+    epsilon: Float[Array, "..."],
+    l2_reg: float,
+    decoupled: bool,
+) -> tuple[Float[Array, ""], Float[Array, ""], Float[Array, "..."]]:
+    """Joint Lagrangian, or the paper's mean and covariance constraints.
+
+    Decoupled mode evaluates ``KL(current || target)`` with the covariance fixed at the target
+    and again with the mean fixed at the target. Each slack keeps its own multiplier.
+    """
+    if not decoupled:
+        return _lagrangian(params, multiplier, states, actions, log_weights, target_stats, epsilon, l2_reg)
+    current = forward(params, states)
+    main = _weighted(
+        params,
+        current,
+        "non-parametric",
+        l2_reg,
+        actions,
+        log_weights,
+        actions,
+        log_weights,
+    )
+    kl_mu, kl_sigma = kl_parts(current, target_stats, params.cov_type, len(params.action_center))
+    slack = epsilon - jnp.stack([kl_mu.mean(), kl_sigma.mean()])
+    total = main + jnp.sum(jnp.exp(multiplier) * slack)
+    return total, main, slack
 
 
 @eqx.filter_jit(donate="all-except-first")
@@ -631,3 +813,105 @@ def _mpo_scan(
         body, (diff, opt_outer, multiplier, opt_inner, key), jnp.arange(num_steps)
     )
     return diff, opt_outer, multiplier, opt_inner, main, multipliers, constraints
+
+
+@eqx.filter_jit(donate="all-except-first")
+def _mpo_scan_options(
+    data: tuple[
+        Float[Array, "cap obs"],
+        Float[Array, "cap k act"],
+        Float[Array, "cap k"],
+        Float[Array, "cap stats"],
+        Float[Array, "cap k"],
+        PRNGKeyArray,
+        Array,
+    ],
+    diff: Any,
+    static: Any,
+    opt_outer: Any,
+    multiplier: Float[Array, "..."],
+    opt_inner: Any,
+    eta_raw: Float[Array, ""],
+    eta_opt: Any,
+    tx_outer: Any,
+    tx_inner: Any,
+    tx_eta: Any,
+    num_steps: int,
+    batch_size: int,
+    epsilon: Float[Array, "..."],
+    l2_reg: float,
+    eta_eps: float,
+    decoupled: bool,
+    eta_sgd: bool,
+) -> tuple[
+    Any,
+    Any,
+    Float[Array, "..."],
+    Any,
+    Float[Array, ""],
+    Any,
+    Float[Array, " steps"],
+    Float[Array, "steps ..."],
+    Float[Array, "steps ..."],
+]:
+    """M-step scan with an optional split KL and an optional Adam step on η.
+
+    ``decoupled`` and ``eta_sgd`` are static. When ``eta_sgd`` is set, each minibatch takes one
+    Adam step on the temperature dual and the policy term uses ``log softmax(Q / η)`` at the
+    updated temperature. The joint single-KL path is ``_mpo_scan``.
+    """
+    states, actions, log_weights, target_stats, q_values, key, size = data
+
+    def body(
+        carry: tuple[Any, Any, Float[Array, "..."], Any, Float[Array, ""], Any, PRNGKeyArray],
+        _step: Array,
+    ) -> tuple[
+        tuple[Any, Any, Float[Array, "..."], Any, Float[Array, ""], Any, PRNGKeyArray],
+        tuple[Array, Array, Array],
+    ]:
+        weights, policy_state, lm, dual_state, raw, eta_state, key_ = carry
+        key_, sample_key = jax.random.split(key_)
+        index = jax.random.randint(sample_key, (batch_size,), 0, size)
+        batch_states = states[index]
+        batch_actions = actions[index]
+        batch_target = jax.lax.stop_gradient(target_stats[index])
+        if eta_sgd:
+            raw, eta_state, eta = descend_temperature(q_values[index], raw, eta_state, tx_eta, eta_eps)
+            batch_weights = jax.nn.log_softmax(q_values[index] / eta, axis=-1)
+        else:
+            batch_weights = log_weights[index]
+
+        def full(weights_: Any, lm_: Float[Array, "..."]) -> Float[Array, ""]:
+            params = eqx.combine(weights_, static)
+            value, _main, _constraint = _option_lagrangian(
+                params, lm_, batch_states, batch_actions, batch_weights, batch_target, epsilon, l2_reg, decoupled
+            )
+            return value
+
+        _loss, grads = eqx.filter_value_and_grad(lambda weights_: -full(weights_, jax.lax.stop_gradient(lm)))(weights)
+        updates, policy_state = tx_outer.update(grads, policy_state, weights)
+        weights = eqx.apply_updates(weights, updates)
+
+        _dual, dual_grads = jax.value_and_grad(lambda lm_: full(weights, lm_))(lm)
+        dual_updates, dual_state = tx_inner.update(dual_grads, dual_state, lm)
+        lm = eqx.apply_updates(lm, dual_updates)
+
+        _value, main, constraint = _option_lagrangian(
+            eqx.combine(weights, static),
+            lm,
+            batch_states,
+            batch_actions,
+            batch_weights,
+            batch_target,
+            epsilon,
+            l2_reg,
+            decoupled,
+        )
+        return (weights, policy_state, lm, dual_state, raw, eta_state, key_), (main, lm, constraint)
+
+    (diff, opt_outer, multiplier, opt_inner, eta_raw, eta_opt, _key), (main, multipliers, constraints) = jax.lax.scan(
+        body,
+        (diff, opt_outer, multiplier, opt_inner, eta_raw, eta_opt, key),
+        jnp.arange(num_steps),
+    )
+    return diff, opt_outer, multiplier, opt_inner, eta_raw, eta_opt, main, multipliers, constraints

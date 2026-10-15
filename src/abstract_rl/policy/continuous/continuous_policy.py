@@ -17,6 +17,7 @@ from abstract_rl.misc.obs_norm import ObsNorm, normalize_obs, obs_norm_path
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.gaussian_math import (
     GaussianParams,
+    entropy_from_cholesky,
     entropy_from_sigma,
     forward,
     head_activations,
@@ -26,6 +27,7 @@ from abstract_rl.policy.continuous.gaussian_math import (
     mode,
     sample,
     sigma_is_softplus,
+    unpack_lower,
 )
 from abstract_rl.policy.continuous.numpy_act import NumpyPolicy, act_numpy, extract_numpy_policy, seed_generator
 from abstract_rl.policy.policy import Policy
@@ -79,10 +81,14 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
             init = float(np.log(run_conf.get("sigma", 1.0)))
             log_sigma = jnp.full((action_dim,), init, dtype=jnp.float32)
             fixed_log_sigma = None
+        case "full":
+            n_out = action_dim + action_dim * (action_dim + 1) // 2
+            log_sigma = None
+            fixed_log_sigma = None
         case _:
             raise NotImplementedError(f"unknown covariance type {cov_type}")
 
-    act_fn, sigma_acts = head_activations(run_conf["act_fn"], action_dim)
+    act_fn, sigma_acts = _policy_activations(run_conf["act_fn"], action_dim, cov_type)
     structure: Sequence[int] = [mc.env.observation_dim, *list(run_conf["structure"]), n_out]
     network = MultilayerPerceptron(
         key,
@@ -101,6 +107,19 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
         action_scale=scale,
         fixed_log_sigma=fixed_log_sigma,
     )
+
+
+def _policy_activations(act_fn: Any, action_dim: int, cov_type: str) -> tuple[list[Any], list[Any]]:
+    """Head activations. A full covariance keeps one name per layer and softplus-es ``diag L`` itself."""
+    if cov_type == "full":
+        layers = list(act_fn)
+        last = layers[-1]
+        if isinstance(last, list | tuple):
+            raise ValueError(
+                "the full-covariance head uses one activation name; softplus is applied to the Cholesky diagonal"
+            )
+        return layers, [last]
+    return head_activations(act_fn, action_dim)
 
 
 class ContinuousPolicy(Policy, Syncable):
@@ -333,6 +352,9 @@ class ContinuousPolicy(Policy, Syncable):
         if self.squash:
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
         stats = forward(self.params, self._network_obs(batch.states))
+        if self.params.cov_type == "full":
+            action_dim = len(self.params.action_center)
+            return entropy_from_cholesky(unpack_lower(stats[:, action_dim:], action_dim))
         act = stats.shape[-1] // 2
         return entropy_from_sigma(stats[:, act:])
 

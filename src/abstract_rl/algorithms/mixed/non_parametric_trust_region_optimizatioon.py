@@ -1,8 +1,12 @@
 """Dual of the non-parametric MPO E-step."""
 
+from typing import Any
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 from jaxtyping import Array, Float
 
 from abstract_rl.misc.cli_printer import CliPrinter
@@ -151,3 +155,77 @@ def find_optimal_temperature(
     with cli.indent():
         cli.empty().print(f"eta* = {float(eta):.6f} (dual = {float(dual):.6f}, iterations = {int(iters)})")
     return jnp.asarray([eta], dtype=jnp.float32)
+
+
+def positive_temperature(raw: Float[Array, ""]) -> Float[Array, ""]:
+    """Temperature ``softplus(raw)``, clipped to the range of the Newton solve."""
+    return jnp.clip(jax.nn.softplus(raw), 1e-6, 1e6)
+
+
+def temperature_raw(eta: float) -> Float[Array, ""]:
+    """Raw parameter whose softplus equals ``eta``."""
+    value = float(np.clip(eta, 1e-4, 1e5))
+    return jnp.asarray(np.log(np.expm1(value)), dtype=jnp.float32)
+
+
+def descend_temperature(
+    q_values: Float[Array, "batch k"],
+    raw: Float[Array, ""],
+    opt_state: Any,
+    tx: optax.GradientTransformation,
+    eps: float,
+) -> tuple[Float[Array, ""], Any, Float[Array, ""]]:
+    """One Adam step of the dual in the softplus parameter of η.
+
+    Args:
+        q_values: Q samples of one minibatch, shape ``[batch, k]``.
+        raw: Unconstrained parameter, ``η = softplus(raw)``.
+        opt_state: Adam state for ``raw``.
+        tx: Adam transform. Its learning rate is the temperature step size.
+        eps: KL bound of the E-step.
+
+    Returns:
+        Updated raw parameter, updated Adam state, and the positive temperature.
+    """
+
+    def loss(raw_: Float[Array, ""]) -> Float[Array, ""]:
+        return temperature_dual(q_values, positive_temperature(raw_), eps)
+
+    _value, grad = jax.value_and_grad(loss)(raw)
+    updates, opt_state = tx.update(grad, opt_state, raw)
+    raw = eqx.apply_updates(raw, updates)
+    return raw, opt_state, positive_temperature(raw)
+
+
+@eqx.filter_jit
+def fit_temperature_sgd(
+    q_values: Float[Array, "batch k"],
+    raw: Float[Array, ""],
+    opt_state: Any,
+    tx: optax.GradientTransformation,
+    eps: float,
+    steps: int,
+) -> tuple[Float[Array, ""], Any, Float[Array, ""]]:
+    """Adam on the dual of one fixed batch. The minimum matches the Newton solve.
+
+    Args:
+        q_values: Q samples, shape ``[batch, k]``.
+        raw: Initial unconstrained temperature.
+        opt_state: Adam state for ``raw``.
+        tx: Adam transform.
+        eps: KL bound of the E-step.
+        steps: Number of updates. Static.
+
+    Returns:
+        Final raw parameter, Adam state, and the positive temperature.
+    """
+
+    def body(
+        carry: tuple[Float[Array, ""], Any], _step: Array
+    ) -> tuple[tuple[Float[Array, ""], Any], Float[Array, ""]]:
+        raw_, state = carry
+        raw_, state, eta = descend_temperature(q_values, raw_, state, tx, eps)
+        return (raw_, state), eta
+
+    (raw, opt_state), etas = jax.lax.scan(body, (raw, opt_state), jnp.arange(steps))
+    return raw, opt_state, etas[-1]

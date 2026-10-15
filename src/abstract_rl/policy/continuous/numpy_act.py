@@ -19,6 +19,7 @@ from abstract_rl.policy.continuous.gaussian_math import (
     SQUASH_BOUND,
     SQUASH_U_MAX,
     GaussianParams,
+    tril_diag_index,
 )
 
 
@@ -56,7 +57,7 @@ def extract_numpy_policy(params: GaussianParams) -> NumpyPolicy:
         case "fixed":
             assert params.fixed_log_sigma is not None
             log_sigma = np.asarray(params.fixed_log_sigma, dtype=np.float32)
-        case "state":
+        case "state" | "full":
             log_sigma = None
         case _:
             raise NotImplementedError(params.cov_type)
@@ -91,6 +92,8 @@ def act_numpy(spec: NumpyPolicy, states: np.ndarray, noise: np.ndarray | None) -
     Returns:
         Actions ``[batch, act]`` and log densities ``[batch]``, both float32.
     """
+    if spec.cov_type == "full":
+        return _act_full(spec, states, noise)
     mu, sigma = _mu_sigma(spec, states)
     if noise is None:
         actions = spec.center + spec.scale * np.tanh(mu) if spec.squash else mu
@@ -172,6 +175,50 @@ def _mu_sigma(spec: NumpyPolicy, states: np.ndarray) -> tuple[np.ndarray, np.nda
         case _:
             raise NotImplementedError(spec.cov_type)
     return mu.astype(np.float32), sigma.astype(np.float32)
+
+
+def _cholesky(spec: NumpyPolicy, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mean and lower-triangular factor. The diagonal matches ``with_positive_diagonal``."""
+    out = _mlp(spec, states)
+    action_dim = int(spec.center.shape[0])
+    mu = out[:, :action_dim]
+    packed = np.array(out[:, action_dim:], dtype=np.float32, copy=True)
+    diagonal = _positive_sigma(packed[:, tril_diag_index(action_dim)], spec.sigma_softplus)
+    packed[:, tril_diag_index(action_dim)] = diagonal
+    factor = np.zeros((states.shape[0], action_dim, action_dim), dtype=np.float32)
+    rows, cols = np.tril_indices(action_dim)
+    factor[:, rows, cols] = packed
+    return mu.astype(np.float32), factor
+
+
+def _act_full(spec: NumpyPolicy, states: np.ndarray, noise: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+    """Sample ``u = mu + L z`` and score it, with the same squash as the diagonal rollout."""
+    mu, factor = _cholesky(spec, states)
+    if noise is None:
+        raw = mu
+    else:
+        raw = mu + np.einsum("bij,bj->bi", factor, noise)
+        if spec.squash:
+            raw = np.clip(raw, -SQUASH_U_MAX, SQUASH_U_MAX)
+    actions = spec.center + spec.scale * np.tanh(raw) if spec.squash else raw
+    actions = np.asarray(actions, dtype=np.float32)
+    return actions, _cholesky_log_prob(spec, actions, mu, factor)
+
+
+def _cholesky_log_prob(spec: NumpyPolicy, actions: np.ndarray, mu: np.ndarray, factor: np.ndarray) -> np.ndarray:
+    """NumPy log density of ``N(mu, L L^T)``, including the squash Jacobian when it is on."""
+    if spec.squash:
+        y = np.clip((actions - spec.center) / spec.scale, -SQUASH_BOUND, SQUASH_BOUND)
+        preimage = np.arctanh(y).astype(np.float32)
+        log_jac = np.log(spec.scale * (1.0 - np.square(y))).sum(axis=-1)
+    else:
+        preimage = actions
+        log_jac = np.float32(0.0)
+    solved = np.linalg.solve(factor, (preimage - mu)[..., None])[..., 0]
+    log_diag = np.log(np.diagonal(factor, axis1=-2, axis2=-1)).sum(axis=-1)
+    action_dim = mu.shape[-1]
+    density = -0.5 * np.sum(np.square(solved), axis=-1) - log_diag - 0.5 * action_dim * _LOG_2PI
+    return np.asarray(density - log_jac, dtype=np.float32)
 
 
 def _log_prob(spec: NumpyPolicy, actions: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:

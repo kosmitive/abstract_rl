@@ -19,7 +19,15 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory import Traj
 class ReplayBuffer:
     """Circular-free replay: drop oldest episodes from the front when the buffer is full."""
 
-    def __init__(self, obs_dim: int, act_dim: int, capacity: int, n_actions: int, time_limit: int) -> None:
+    def __init__(
+        self,
+        obs_dim: int,
+        act_dim: int,
+        capacity: int,
+        n_actions: int,
+        time_limit: int,
+        stats_dim: int | None = None,
+    ) -> None:
         """Allocate the buffer.
 
         Args:
@@ -28,6 +36,7 @@ class ReplayBuffer:
             capacity: Maximum number of transitions.
             n_actions: Extra actions stored per state by the E-step.
             time_limit: Episode length used to pad Retrace batches.
+            stats_dim: Width of the cached policy statistics. The default is a diagonal Gaussian.
         """
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -51,7 +60,8 @@ class ReplayBuffer:
         self.ranking: Float[Array, "cap k"] = jnp.zeros((self.capacity, self.n_actions), dtype=jnp.float32)
         self.q: Float[Array, " cap"] = jnp.zeros((self.capacity,), dtype=jnp.float32)
         self.tq: Float[Array, " cap"] = jnp.zeros((self.capacity,), dtype=jnp.float32)
-        self.target_stats: Float[Array, "cap stats"] = jnp.zeros((self.capacity, 2 * act_dim), dtype=jnp.float32)
+        width = 2 * act_dim if stats_dim is None else int(stats_dim)
+        self.target_stats: Float[Array, "cap stats"] = jnp.zeros((self.capacity, width), dtype=jnp.float32)
 
     def clear(self) -> None:
         """Drop every stored transition. The allocated arrays stay in place."""

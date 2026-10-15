@@ -3,6 +3,7 @@
 Usage::
 
     uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
+    uv run python -m abstract_rl.scripts.run env=pendulum alg=mpo_paper seed=1
     uv run --extra mujoco python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=50
     uv run python -m abstract_rl.scripts.run --cfg job env=mountaincar alg=mpo   # print the composed config
 
@@ -22,7 +23,7 @@ from abstract_rl.scripts.hydra_conf import CONFIG_DIR, run_config
 
 def train(alg: str, conf: dict[str, Any]) -> Any:
     """Run one training. Returns the logged ``[mean, std]`` return of every epoch."""
-    if alg == "mpo":
+    if str(alg).startswith("mpo"):
         from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 
         return run_mpo_non_parametric(conf)
