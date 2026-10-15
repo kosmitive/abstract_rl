@@ -1,5 +1,7 @@
 """Temporal-difference returns and errors, bootstrapping through time-limit truncations."""
 
+from typing import Any
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -9,6 +11,7 @@ from jaxtyping import Array, Float
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc.obs_norm import normalize_mc
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
@@ -37,6 +40,7 @@ class TemporalDifferenceOperator(TrajectoryOperator):
             self.v_net.params,
             trajectories,
             float(self.env.discount()),
+            self.v_net.mc,
         )
         for trajectory, row_tv, row_td in zip(trajectories, np.asarray(tv), np.asarray(td)):
             length = len(trajectory)
@@ -48,6 +52,7 @@ def temporal_difference(
     v_net: MultilayerPerceptron,
     trajectories: list[Trajectory],
     discount: float,
+    mc: Any,
 ) -> tuple[Float[Array, "episodes time"], Float[Array, "episodes time"]]:
     """Vectorised TD returns and errors for a list of episodes.
 
@@ -55,6 +60,7 @@ def temporal_difference(
         v_net: Value network. Evaluated once on every stored state.
         trajectories: Episodes. Shorter ones are padded; padding does not affect real prefixes.
         discount: Discount factor.
+        mc: Model configuration. The live policy's observation statistics normalise the states.
 
     Returns:
         Returns and TD errors, each ``[episodes, max_length]``.
@@ -72,7 +78,7 @@ def temporal_difference(
         dones[index, :length] = np.asarray(trajectory.dones, dtype=np.float32).reshape(-1)
     return _td_jit(
         v_net,
-        jnp.asarray(all_states),
+        normalize_mc(mc, all_states),
         jnp.asarray(rewards),
         jnp.asarray(dones),
         jnp.asarray(lengths),

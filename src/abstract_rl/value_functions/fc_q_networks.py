@@ -14,6 +14,7 @@ from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
 from abstract_rl.misc.flat_params import copy_module
+from abstract_rl.misc.obs_norm import normalize_mc
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, sample
 
@@ -121,7 +122,9 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
 
     def objective_on(self, params: MultilayerPerceptron, batch: Batch) -> Float[Array, ""]:
         """Critic loss at an explicit parameter tree. Same expression as ``tr_obj``."""
-        prediction = q_forward(params, _f32(batch.states), _actions(batch.actions, self.action_dim)).reshape(-1)
+        prediction = q_forward(
+            params, normalize_mc(self.mc, batch.states), _actions(batch.actions, self.action_dim)
+        ).reshape(-1)
         target = _f32(batch["tq"]).reshape(-1)
         return jnp.mean(jnp.square(prediction - target))
 
@@ -130,8 +133,15 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
         if replay.size == 0:
             return
         diff, static = eqx.partition(self.params, eqx.is_inexact_array)
+        # The replay keeps raw observations. This scan reads them through the frozen statistics.
         diff, self.opt_state, pre, post = _critic_scan(
-            (replay.states, replay.actions, replay.tq, self.mc.rng.split(), jnp.int32(replay.size)),
+            (
+                normalize_mc(self.mc, replay.states),
+                replay.actions,
+                replay.tq,
+                self.mc.rng.split(),
+                jnp.int32(replay.size),
+            ),
             diff,
             static,
             self.opt_state,
@@ -150,13 +160,13 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
     def q_val(
         self, states: Float[Array, "batch obs"] | np.ndarray, actions: Float[Array, "batch act"] | np.ndarray
     ) -> Float[Array, "batch 1"]:
-        return q_forward(self.params, _f32(states), _actions(actions, self.action_dim))
+        return q_forward(self.params, normalize_mc(self.mc, states), _actions(actions, self.action_dim))
 
     def q_val_multi(
         self, states: Float[Array, "batch obs"] | np.ndarray, actions: Float[Array, "batch k ..."] | np.ndarray
     ) -> Float[Array, "batch k"]:
         """Evaluate K actions per state. Univariate actions may be ``[batch, k]``."""
-        obs = _f32(states)
+        obs = normalize_mc(self.mc, states)
         act = jnp.asarray(actions, dtype=jnp.float32)
         if act.ndim == 2:
             act = act[:, :, None]
@@ -173,7 +183,7 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
         behaviour = self.mc.get("policy", True) if policy is None else policy
         if key is None:
             key = self.mc.rng.split()
-        values = estimate_v(self.params, behaviour.params, _f32(states), key, exp_actions)
+        values = estimate_v(self.params, behaviour.params, normalize_mc(self.mc, states), key, exp_actions)
         return values[:, None]
 
 

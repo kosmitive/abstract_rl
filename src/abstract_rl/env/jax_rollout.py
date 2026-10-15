@@ -79,6 +79,11 @@ def _episode(
     reward_offset: Float[Array, ""],
     env_name: str,
     limit: Array,
+    norm_on: bool,
+    obs_mean: Float[Array, " obs"],
+    obs_inv_std: Float[Array, " obs"],
+    obs_clip: Float[Array, ""],
+    obs_ready: Float[Array, ""],
 ) -> _Round:
     match env_name:
         case _ if env_name == PENDULUM:
@@ -91,24 +96,31 @@ def _episode(
     key, reset_key = jax.random.split(key)
     physics = reset(reset_key)
 
-    def preprocess(obs: Float[Array, " obs"]) -> Float[Array, " obs"]:
+    def preprocess(obs: Float[Array, " obs"]) -> tuple[Float[Array, " obs"], Float[Array, " obs"]]:
+        """Scaled observation for storage, and the observation the policy acts on."""
         match normalize:
             case True:
-                return obs / obs_scale
+                scaled = obs / obs_scale
             case False:
-                return obs
+                scaled = obs
+        match norm_on:
+            case False:
+                return scaled, scaled
+            case True:
+                clipped = jnp.clip((scaled - obs_mean) * obs_inv_std, -obs_clip, obs_clip)
+                return scaled, jnp.where(obs_ready > 0, clipped, scaled)
 
     def one(
         carry: tuple[Array, Array, Array, Array, Array], _: None
     ) -> tuple[tuple[Array, Array, Array, Array, Array], tuple[Array, Array, Array, Array, Array]]:
         phys, t, alive, step_key, raw_sum = carry
         step_key, action_key = jax.random.split(step_key)
-        proc = preprocess(observe(phys))
+        proc, acted = preprocess(observe(phys))
         match deterministic:
             case True:
-                action, logp = act_deterministic(params, proc[None, :])
+                action, logp = act_deterministic(params, acted[None, :])
             case False:
-                action, logp = act_stochastic(params, proc[None, :], action_key)
+                action, logp = act_stochastic(params, acted[None, :], action_key)
         action = action[0]
         logp = logp[0]
         nxt, reward, terminated = step(phys, action)
@@ -131,7 +143,8 @@ def _episode(
     final, traced = jax.lax.scan(one, init, None, length=max_steps)
     phys, length, _alive, _key, raw_sum = final
     proc, action, shaped, logp, done = traced
-    return _Round(proc, action, shaped, logp, done, length, raw_sum, preprocess(observe(phys)))
+    bootstrap, _acted = preprocess(observe(phys))
+    return _Round(proc, action, shaped, logp, done, length, raw_sum, bootstrap)
 
 
 @eqx.filter_jit
@@ -147,6 +160,11 @@ def collect_classic(
     n_envs: int,
     deterministic: bool,
     normalize: bool,
+    norm_on: bool,
+    obs_mean: Float[Array, " obs"],
+    obs_inv_std: Float[Array, " obs"],
+    obs_clip: Float[Array, ""],
+    obs_ready: Float[Array, ""],
 ) -> _Buf:
     """Collect exactly ``batch_size`` transitions. ``max_steps``, ``batch_size`` and ``n_envs`` are static."""
     obs_dim = obs_scale.shape[0]
@@ -189,6 +207,11 @@ def collect_classic(
                 reward_offset,
                 env_name,
                 episode_limit,
+                norm_on,
+                obs_mean,
+                obs_inv_std,
+                obs_clip,
+                obs_ready,
             )
         )(keys[1:], limits)
 

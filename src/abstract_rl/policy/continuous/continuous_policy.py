@@ -1,5 +1,6 @@
 """Shared behaviour of the squashed Gaussian policies."""
 
+import os
 from collections.abc import Sequence
 from typing import Any
 
@@ -12,6 +13,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.flat_params import copy_module
+from abstract_rl.misc.obs_norm import ObsNorm, normalize_obs, obs_norm_path
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.gaussian_math import (
     GaussianParams,
@@ -111,9 +113,17 @@ class ContinuousPolicy(Policy, Syncable):
         super().__init__(mc)
         self.flat_actions = flat_actions
         self.params = build_gaussian_params(mc, mc.rng.split(), univariate=flat_actions)
+        root = mc.get("conf").to_dict()
+        self.obs_norm = ObsNorm.create(
+            mc.env.observation_dim,
+            bool(root.get("obs_norm", False)),
+            float(root.get("obs_clip", 10.0)),
+        )
         self._act_cache_id = -1
         self._act_cache: NumpyPolicy | None = None
         self._act_rng: np.random.Generator | None = None
+        self._affine_id = -1
+        self._affine_np: tuple[np.ndarray, np.ndarray, float] | None = None
 
     @property
     def network(self) -> MultilayerPerceptron:
@@ -134,9 +144,33 @@ class ContinuousPolicy(Policy, Syncable):
     def get_suff_stats_dim(self) -> int:
         return 2 * self.mc.env.action_dim
 
+    def observation_norm(self) -> ObsNorm:
+        """Moments used to normalise observations. The live policy owns them; the target reads those."""
+        try:
+            live = self.mc.get("policy", False)
+        except KeyError:
+            return self.obs_norm
+        norm = getattr(live, "obs_norm", None)
+        if not isinstance(norm, ObsNorm):
+            return self.obs_norm
+        return norm
+
+    def _network_obs(self, states: Float[Array, "... obs"] | np.ndarray) -> Float[Array, "... obs"]:
+        """Observation the network sees. Disabled normalisation returns the float32 array unchanged."""
+        return normalize_obs(self.observation_norm(), _f32(states))
+
+    def _numpy_affine(self) -> tuple[np.ndarray, np.ndarray, float] | None:
+        """Cached host affine. Rebuilt when the moment object is replaced at the end of an epoch."""
+        norm = self.observation_norm()
+        if self._affine_id == id(norm):
+            return self._affine_np
+        self._affine_id = id(norm)
+        self._affine_np = norm.numpy_affine()
+        return self._affine_np
+
     def forward(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch stats"]:
         """Sufficient statistics ``[mu, sigma]``."""
-        return forward(self.params, _f32(states))
+        return forward(self.params, self._network_obs(states))
 
     def log_prob(
         self,
@@ -152,7 +186,7 @@ class ContinuousPolicy(Policy, Syncable):
         return log_prob(
             self.params,
             _f32(actions),
-            None if states is None else _f32(states),
+            None if states is None else self._network_obs(states),
             None if suff_stats is None else _f32(suff_stats),
         )
 
@@ -164,7 +198,7 @@ class ContinuousPolicy(Policy, Syncable):
         """Most likely action, shape ``[batch, act]``."""
         acted = mode(
             self.params,
-            None if states is None else _f32(states),
+            None if states is None else self._network_obs(states),
             None if suff_stats is None else _f32(suff_stats),
         )
         if self.flat_actions:
@@ -188,7 +222,7 @@ class ContinuousPolicy(Policy, Syncable):
             self.params,
             key,
             num_actions,
-            None if states is None else _f32(states),
+            None if states is None else self._network_obs(states),
             None if suff_stats is None else _f32(suff_stats),
         )
         if self.flat_actions:
@@ -212,6 +246,10 @@ class ContinuousPolicy(Policy, Syncable):
         obs = np.asarray(states, dtype=np.float32)
         if obs.ndim == 1:
             obs = obs.reshape(1, -1)
+        affine = self._numpy_affine()
+        if affine is not None:
+            mean, inverse, clip = affine
+            obs = np.clip((obs - mean) * inverse, -np.float32(clip), np.float32(clip)).astype(np.float32)
         spec = self._numpy_policy()
         if deterministic:
             actions, log_density = act_numpy(spec, obs, None)
@@ -239,22 +277,34 @@ class ContinuousPolicy(Policy, Syncable):
         other.mc = self.mc
         other.flat_actions = self.flat_actions
         other.params = copy_module(self.params)
+        other.obs_norm = self.obs_norm
         other._act_cache_id = -1
         other._act_cache = None
         other._act_rng = None
+        other._affine_id = -1
+        other._affine_np = None
         return other
 
     def sync(self, v: Any) -> Any:
         v.params = self.params
+        v.obs_norm = self.obs_norm
+        v._affine_id = -1
+        v._affine_np = None
         return v
 
     def save(self, path: str) -> None:
-        """Write the parameter tree to ``path``."""
+        """Write the parameter tree to ``path`` and the observation moments beside it."""
         eqx.tree_serialise_leaves(path, self.params)
+        eqx.tree_serialise_leaves(obs_norm_path(path), self.observation_norm())
 
     def load(self, path: str) -> None:
-        """Load a parameter tree previously written by ``save``."""
+        """Load a parameter tree previously written by ``save``, and the moments if they were stored."""
         self.params = eqx.tree_deserialise_leaves(path, self.params)
+        sidecar = obs_norm_path(path)
+        if os.path.exists(sidecar):
+            self.obs_norm = eqx.tree_deserialise_leaves(sidecar, self.obs_norm)
+        self._affine_id = -1
+        self._affine_np = None
 
     def kl_divergence(
         self,
@@ -266,13 +316,13 @@ class ContinuousPolicy(Policy, Syncable):
         """Analytic KL against the target policy registered in the model configuration."""
         target = self.mc.get("policy", True).params
         stats = None if suff_stats is None else _f32(suff_stats)
-        return _KL(self.params, target, _f32(batch.states), stats, mode, est)
+        return _KL(self.params, target, self._network_obs(batch.states), stats, mode, est)
 
     def likelihood_ratio(self, batch: Batch) -> Float[Array, ""]:
         """Negative standardised likelihood-ratio surrogate of ``batch``."""
         return _LIKELIHOOD(
             self.params,
-            _f32(batch.states),
+            self._network_obs(batch.states),
             _f32(batch.actions),
             _f32(batch.log_likelihoods),
             _f32(batch["a"]),
@@ -282,7 +332,7 @@ class ContinuousPolicy(Policy, Syncable):
         """Closed-form Gaussian entropy. Squashed policies have none."""
         if self.squash:
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
-        stats = forward(self.params, _f32(batch.states))
+        stats = forward(self.params, self._network_obs(batch.states))
         act = stats.shape[-1] // 2
         return entropy_from_sigma(stats[:, act:])
 

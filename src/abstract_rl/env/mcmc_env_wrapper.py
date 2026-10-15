@@ -98,7 +98,6 @@ class MCMCEnvWrapper:
         self._reward_scale = float(conf.get("reward_scale", 1.0))
         self._reward_offset = float(conf.get("reward_offset", 0.0))
 
-        self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
 
     def discount(self) -> float:
@@ -238,7 +237,6 @@ class MCMCEnvWrapper:
         """
         env = self.env
         state = self.reset()
-        self.state_filter.register(state)
         builder = self._new_builder(state)
         steps = 0
         raw_return = 0.0
@@ -249,7 +247,6 @@ class MCMCEnvWrapper:
             log_prob = float(np.asarray(log_density).reshape(-1)[0])
             state, reward, terminated, truncated, _info = env.step(action_np)
             state = self._preprocess(state)
-            self.state_filter.register(state)
             raw_return += float(reward)
             shaped = self._reward_scale * float(reward) + self._reward_offset
             self.reward_filter.register(np.asarray([shaped], dtype=np.float64))
@@ -274,6 +271,8 @@ class MCMCEnvWrapper:
     ) -> list[Trajectory]:
         """Jitted classic-control collection. The returned trajectories match the Gymnasium path."""
         n_envs = self._resolve_n_envs(batch_size, max_steps, render=False)
+        obs_norm = policy.observation_norm()
+        obs_mean, obs_inv_std, obs_clip, obs_ready = obs_norm.rollout_params()
         buf = collect_classic(
             policy.params,
             self.mc.rng.split(),
@@ -286,13 +285,17 @@ class MCMCEnvWrapper:
             int(n_envs),
             not exploration,
             bool(self._normalize),
+            obs_norm.enabled,
+            obs_mean,
+            obs_inv_std,
+            obs_clip,
+            obs_ready,
         )
         trajectories = trajectories_from_buffer(self, buf)
         for trajectory in trajectories:
             with self.thread_lock:
                 trajectory.traj_id = self.created_trajectories
                 self.created_trajectories += 1
-            self.state_filter.register(trajectory.all_states)
             self.reward_filter.register(trajectory.rewards)
             self.max_traj_len = max(self.max_traj_len, len(trajectory))
         return trajectories
@@ -322,8 +325,6 @@ class MCMCEnvWrapper:
         steps = np.zeros(n_envs, dtype=np.int32)
         raw = np.zeros(n_envs, dtype=np.float64)
         builders = [self._new_builder(obs[i]) for i in range(n_envs)]
-        for row in obs:
-            self.state_filter.register(row)
 
         trajectories: list[Trajectory] = []
         collected = 0
@@ -352,7 +353,6 @@ class MCMCEnvWrapper:
                     recording[i] = False
                     reset_mask[i] = True
                     continue
-                self.state_filter.register(next_obs[i])
                 reward = float(rewards[i])
                 raw[i] += reward
                 shaped = self._reward_scale * reward + self._reward_offset
@@ -382,7 +382,6 @@ class MCMCEnvWrapper:
                         continue
                     obs[i] = reset_obs[i]
                     if recording[i]:
-                        self.state_filter.register(obs[i])
                         builders[i] = self._new_builder(obs[i])
                         raw[i] = 0.0
                         steps[i] = 0

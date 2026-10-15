@@ -13,6 +13,7 @@ from abstract_rl.data_structures.temporal_difference_data.replay_buffer import R
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc import buckets
+from abstract_rl.misc.obs_norm import normalize_mc
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, log_prob, sample
@@ -37,7 +38,7 @@ class ResampleOperator(TrajectoryOperator):
 
     def transform(self, trajectory: Trajectory) -> None:
         """Sample extra actions for one trajectory and store them on it."""
-        states = jnp.asarray(trajectory.states, dtype=jnp.float32)
+        states = normalize_mc(self.mc, trajectory.states)
         pieces_a: list[np.ndarray] = []
         pieces_q: list[np.ndarray] = []
         pieces_p: list[np.ndarray] = []
@@ -84,7 +85,14 @@ class ResampleOperator(TrajectoryOperator):
             return
         n_chunks = buckets.chunk_count(replay.size, replay.capacity, _CHUNK)
         actions, q_hat, log_density = resample_buffer(
-            (self.policy.params, self.q_net.params, replay.states, key, self.add_act, jnp.int32(replay.size)),
+            (
+                self.policy.params,
+                self.q_net.params,
+                normalize_mc(self.mc, replay.states),
+                key,
+                self.add_act,
+                jnp.int32(replay.size),
+            ),
             replay.add_act,
             replay.add_q,
             replay.add_pi,

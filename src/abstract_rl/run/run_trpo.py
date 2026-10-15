@@ -12,6 +12,7 @@ from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
+from abstract_rl.misc.obs_norm import absorb_observations
 from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
 from abstract_rl.operator.td_operator import TemporalDifferenceOperator
@@ -138,6 +139,9 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
         with cli.header("v-step", True):
             batch = tc.to_batch(["tv"])
             v_network.perform_sgd(0, batch)
+
+        # The update above used the statistics the rollout acted with. Fold this batch in afterwards.
+        policy.obs_norm = absorb_observations(policy.obs_norm, tc.trajectories())
 
         # copy target_networks
         mc.sync()

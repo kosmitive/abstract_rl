@@ -22,6 +22,7 @@ from abstract_rl.data_structures.temporal_difference_data.replay_buffer import R
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc import buckets
+from abstract_rl.misc.obs_norm import normalize_mc
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, log_prob
@@ -104,14 +105,15 @@ class RetraceOperator(TrajectoryOperator):
                 starts[index] = int(episode_start)
                 lengths[index] = min(int(length), pad)
             key, sub = jax.random.split(key)
+            # States and next states stay raw in the replay. Retrace reads the frozen normalisation.
             q, tq = _retrace_slots(
                 (
                     self.q_network.params,
                     self.policy.params,
-                    replay.states,
+                    normalize_mc(self.mc, replay.states),
                     replay.actions,
                     replay.rewards,
-                    replay.next_states,
+                    normalize_mc(self.mc, replay.next_states),
                     replay.dones,
                     replay.log_probs,
                     jnp.asarray(starts),

@@ -16,6 +16,10 @@ policy_cov_type: single
 policy_squash: true
 filter_states: false
 filter_rewards: false
+# Running observation normalisation, applied when acting and when training. Off leaves results unchanged.
+#   alg.obs_norm=true alg.obs_clip=10
+obs_norm: false
+obs_clip: 10.0
 num_epochs: 150
 max_steps: 200
 alg: mpo

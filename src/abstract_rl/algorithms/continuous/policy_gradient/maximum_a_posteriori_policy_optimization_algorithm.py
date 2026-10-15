@@ -22,6 +22,7 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.misc import buckets
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import l2_norm
+from abstract_rl.misc.obs_norm import normalize_obs
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, forward, kl_divergence, kl_normal, log_prob
 
@@ -309,12 +310,17 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.lm = eqx.apply_updates(self.lm, updates)
 
     def _scan_default(self, replay: ReplayBuffer, num_steps: int, batch_size: int) -> None:
-        """Jitted non-parametric M-step. Logs the main objective, the raw multiplier and the slack."""
-        _fill_target_stats(replay, self.mc.get("policy", target=True).params)
+        """Jitted non-parametric M-step. Logs the main objective, the raw multiplier and the slack.
+
+        Replay states stay raw. The scan and the cached target statistics read a normalised copy
+        of those rows, using the statistics frozen for this update.
+        """
+        states = normalize_obs(self.policy.observation_norm(), replay.states)
+        _fill_target_stats(replay, self.mc.get("policy", target=True).params, states)
         diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
         diff, self.opt_outer, self.lm, self.opt_inner, main, multipliers, constraints = _mpo_scan(
             (
-                replay.states,
+                states,
                 replay.add_act,
                 replay.ranking,
                 replay.target_stats,
@@ -472,16 +478,17 @@ def _full_lagrangian(
     return total, main, slacks
 
 
-def _fill_target_stats(replay: ReplayBuffer, target: GaussianParams) -> None:
+def _fill_target_stats(replay: ReplayBuffer, target: GaussianParams, states: Float[Array, "cap obs"]) -> None:
     """Cache the target policy's sufficient statistics for the KL constraint.
 
-    The scan covers a power-of-two prefix of the allocation (the whole allocation once the buffer
-    is full). There is no randomness, so those rows match a full scan. ``n_chunks`` is static.
+    ``states`` is the normalised view of the raw replay. The scan covers a power-of-two prefix of
+    the allocation (the whole allocation once the buffer is full). There is no randomness, so those
+    rows match a full scan. ``n_chunks`` is static.
     """
     if replay.size == 0:
         return
     n_chunks = buckets.chunk_count(replay.size, replay.capacity, _STATS_CHUNK)
-    replay.target_stats = _target_stats_all(target, replay.states, jnp.int32(replay.size), n_chunks)
+    replay.target_stats = _target_stats_all(target, states, jnp.int32(replay.size), n_chunks)
 
 
 @eqx.filter_jit

@@ -15,6 +15,7 @@ from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
+from abstract_rl.misc.obs_norm import absorb_observations
 from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
@@ -170,6 +171,9 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         with cli.header("v-step", 1):
             ret.transform_all(tc)
             q_network.perform_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
+
+        # Replay rows stay raw. The next epoch samples them with statistics that include this batch.
+        policy.obs_norm = absorb_observations(policy.obs_norm, new_tc.trajectories())
 
         # copy target_networks
         mc.sync()

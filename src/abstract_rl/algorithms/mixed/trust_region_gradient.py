@@ -12,6 +12,7 @@ from abstract_rl.algorithms.mixed.conjugate_gradient import cg_solve
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import ravel_module
+from abstract_rl.misc.obs_norm import normalize_obs
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.gaussian_math import GaussianParams, kl_divergence, likelihood_ratio
 
@@ -63,11 +64,12 @@ class TrustRegionGradient:
         """
         del curst
         policy = self._model
-        states = jnp.asarray(batch.states, dtype=jnp.float32)
+        norm = policy.observation_norm()
+        states = normalize_obs(norm, jnp.asarray(batch.states, dtype=jnp.float32))
         actions = jnp.asarray(batch.actions, dtype=jnp.float32)
         old_log_prob = jnp.asarray(batch.log_likelihoods, dtype=jnp.float32)
         advantages = jnp.asarray(batch["a"], dtype=jnp.float32)
-        tr_states = jnp.asarray(tr_batch.states, dtype=jnp.float32)
+        tr_states = normalize_obs(norm, jnp.asarray(tr_batch.states, dtype=jnp.float32))
         target = policy.mc.get("policy", True).params
         # One compiled program for the gradient, the Fisher products and the conjugate gradient.
         # Building those closures inside this method compiled them again on every epoch.
@@ -121,7 +123,7 @@ class TrustRegionGradient:
 
         # The probes are the same surrogate and KL as ``tr_obj`` / ``tr_distance``. They run in one
         # ``while_loop`` so a rejected step does not sync the host, then the log is printed once.
-        states = jnp.asarray(batch.states, dtype=jnp.float32)
+        states = normalize_obs(self._model.observation_norm(), jnp.asarray(batch.states, dtype=jnp.float32))
         actions = jnp.asarray(batch.actions, dtype=jnp.float32)
         old_log_prob = jnp.asarray(batch.log_likelihoods, dtype=jnp.float32)
         advantages = jnp.asarray(batch["a"], dtype=jnp.float32)

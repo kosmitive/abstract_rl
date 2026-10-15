@@ -12,6 +12,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.flat_params import copy_module, ravel_module
+from abstract_rl.misc.obs_norm import normalize_mc
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
@@ -68,7 +69,7 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
 
     def forward(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch 1"]:
         """Value of each state, shape ``[batch, 1]``."""
-        return self.params.forward(_f32(states))
+        return self.params.forward(normalize_mc(self.mc, states))
 
     def v_val(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch 1"]:
         return self.forward(states)
@@ -79,7 +80,7 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
 
     def objective_on(self, params: MultilayerPerceptron, batch: Batch) -> Float[Array, ""]:
         """Value loss at an explicit parameter tree. Same expression as ``tr_obj``."""
-        return _v_loss(params, _f32(batch.states), _f32(batch["tv"]).reshape(-1), self.l2)
+        return _v_loss(params, normalize_mc(self.mc, batch.states), _f32(batch["tv"]).reshape(-1), self.l2)
 
     def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
         """L-BFGS on this batch.
@@ -87,7 +88,7 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
         The whole fit is one jitted scan. States and targets are arguments, so a new epoch with the
         same shapes does not compile again.
         """
-        states = _f32(batch.states)
+        states = normalize_mc(self.mc, batch.states)
         targets = _f32(batch["tv"]).reshape(-1)
         flat0, unravel = ravel_module(self.params)
         updated, old, new = _fit_v(self.params, states, targets, flat0, jnp.float32(self.l2), int(maxiter))
