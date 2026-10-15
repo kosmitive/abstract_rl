@@ -78,7 +78,7 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
             bool(conf.get("layer_norm", False)),
             str(conf.get("init", "orthogonal")),
         )
-        VanillaGradient.__init__(self, str(conf.get("optimizer", "adam")), float(conf.get("lr", 1e-3)))
+        VanillaGradient.__init__(self, float(conf["lr"]))
 
     def clone(self) -> "FullyQNeuralNet":
         other = FullyQNeuralNet.__new__(FullyQNeuralNet)
@@ -89,7 +89,6 @@ class FullyQNeuralNet(Syncable, VanillaGradient):
         other.lr = self.lr
         other.tx = self.tx
         other.opt_state = None if self.opt_state is None else jax.tree.map(_copy_leaf, self.opt_state)
-        other.optimizer = self.optimizer
         other.cli = self.cli
         other.fmtstr = self.fmtstr
         other.titlestr = self.titlestr

@@ -178,7 +178,7 @@ Wall-clock seconds per epoch on one 4-CPU Linux machine, Hydra defaults, `seed=1
 | TRPO HalfCheetah-v5 | 3.103 | 1.070 | 0.953 | epochs 1–3 |
 | MPO HalfCheetah-v5 | 3.270 | 1.475 | 1.489 | epochs 1–5 |
 
-On the same windows, the TRPO Pendulum rollout is 0.041s, the trust-region step 0.013s and the value fit 0.026s (Optax L-BFGS). TRPO HalfCheetah rollout stays on Gymnasium at 0.801s, the trust-region step is 0.049s and the value fit 0.059s. MPO Pendulum rollout is 0.018s. MPO HalfCheetah rollout is 0.084s. The MPO epoch is still the resample, Retrace and critic. The shipped critic scan unrolls 8 Adam steps. A later measurement of that 1000 × 256 fit on a 4-CPU machine is 503 ms, against 690 ms for the same scan unrolled one step at a time.
+On the same windows, the TRPO Pendulum rollout is 0.041s, the trust-region step 0.013s and the value fit 0.026s. TRPO HalfCheetah rollout stays on Gymnasium at 0.801s, the trust-region step is 0.049s and the value fit 0.059s. Those value-fit seconds are the Optax L-BFGS fit. The fit in this tree is minibatch Adam: 10 passes over the rollout, minibatches of 64, step size 3e-4 (`val_epochs`, `val_batch_size`, `val_lr`). MPO Pendulum rollout is 0.018s. MPO HalfCheetah rollout is 0.084s. The MPO epoch is still the resample, Retrace and critic. The shipped critic scan unrolls 8 Adam steps. A later measurement of that 1000 × 256 fit on a 4-CPU machine is 503 ms, against 690 ms for the same scan unrolled one step at a time.
 
 Phases of the earlier loop pass, in seconds (mean before that pass, then mean after). The epoch table above is the later measurement.
 
@@ -214,7 +214,7 @@ Each training method keeps its name and its maths. The inner iteration is a JAX 
 | Temperature L-BFGS-B with `float()` each iteration | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | one Adam step on the dual inside the M-step scan. An intermediate port measured damped Newton; that solve is not in the training loop | Newton, (20000, 20) float64: 1.031s → 0.052s (19.7×). On a (256, 20) draw that optimum had KL 0.1000 against ε 0.1 |
 | TRPO gradient, Fisher, and Python conjugate gradient, with a new jit every epoch | `trust_region_gradient.py`, `conjugate_gradient.py` | one `filter_jit`; `cg_solve` is `lax.while_loop` | Pendulum TRPO step 0.644s → 0.016s (40×); HalfCheetah 1.232s → 0.050s (25×) |
 | Line search `while` with `float(tr_obj)` per probe | `trust_region_gradient.py` `line_search` | `_backtrack` `lax.while_loop`; one log copy; one parameter write | 10 probes on a 4000-step batch: 0.0036s → 0.0033s (1.10×) |
-| Value fit, SciPy L-BFGS-B, host `float()` each iteration | `value_functions/fc_v_networks.py` `perform_sgd` | `optax.lbfgs` zoom line search inside one `lax.scan` (`_fit_v`) | Same 25 steps on a 64-64 value net: Pendulum-sized batch 0.067s → 0.022s, loss 1.02018 → 1.02031; HalfCheetah-sized 0.138s → 0.048s, loss 0.95017 → 0.94989. In the epoch: 0.081s → 0.026s and 0.151s → 0.059s |
+| Value fit, SciPy L-BFGS-B, host `float()` each iteration | `value_functions/fc_v_networks.py` `perform_sgd` | minibatch Adam inside one `lax.scan` (`_fit_v`): 10 epochs, batch 64, step size 3e-4 | L-BFGS measurement, same 25 steps on a 64-64 value net: Pendulum-sized batch 0.067s → 0.022s, loss 1.02018 → 1.02031; HalfCheetah-sized 0.138s → 0.048s, loss 0.95017 → 0.94989. In the epoch: 0.081s → 0.026s and 0.151s → 0.059s |
 | Critic Adam Python loop | `value_functions/fc_q_networks.py` | `lax.scan` unrolled 8 steps, donated weights and Adam state | loop pass 0.69s; shipped 1000 × 256 scan 503 ms (690 ms unrolled once) |
 | M-step Python loop on the default path | `maximum_a_posteriori_policy_optimization_algorithm.py` `_mpo_scan` | `lax.scan`, with donated weights, both Adam states, and the multiplier | Pendulum 0.124s → 0.036s (3.4×); HalfCheetah 0.172s → 0.065s (2.6×) |
 | GAE and TD reverse loops | `gae_operator.py`, `td_operator.py` | `lax.scan` | a few hundredths of a second after epoch 0 |
@@ -223,7 +223,7 @@ Each training method keeps its name and its maths. The inner iteration is a JAX 
 | Replay `.at[start:end].set` with Python bounds | `replay_buffer.py` | one host pack, then `_insert_transitions` / `_shift_transitions` (`jnp.where`, traced start and length, donated buffers) | device sync stays under 0.01s, and steady MPO epochs compile 0 times |
 | Q evaluation over the K sampled actions | `fc_q_networks.py` `q_values` | one matmul with the action axis folded into the batch | counted inside resample and Retrace |
 
-Host `if` statements remain on concrete values: empty buffers, `n_envs == 1`, and which environment has a JAX step. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. The value fit no longer calls SciPy. `jax` and `jaxlib` still install SciPy themselves; the library does not import it and does not list it. Optax zoom L-BFGS was faster than Optax backtracking and than optimistix BFGS/L-BFGS on the value loss, and it matches the SciPy loss. jaxopt L-BFGS is comparable and is not a dependency. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`. MuJoCo acting is still the NumPy policy; Pendulum and MountainCarContinuous sample with `gaussian_math` inside the scan.
+Host `if` statements remain on concrete values: empty buffers, `n_envs == 1`, and which environment has a JAX step. Traced branches inside the jitted updates are `lax.cond` or `jnp.where`. The value fit is minibatch Adam (`val_lr` 3e-4, `val_epochs` 10, `val_batch_size` 64). An earlier Optax zoom L-BFGS fit was faster than Optax backtracking and than optimistix BFGS/L-BFGS on the value loss, and it matched the SciPy loss. `jax` and `jaxlib` still install SciPy themselves; the library does not import it and does not list it. jaxopt L-BFGS is comparable and is not a dependency. The single-trajectory resample path still chunks in Python. Training uses the device scan. Equinox takes `donate="all-except-first"` rather than `donate_argnums`. MuJoCo acting is still the NumPy policy; Pendulum and MountainCarContinuous sample with `gaussian_math` inside the scan.
 
 ## Architecture
 
@@ -232,14 +232,14 @@ src/abstract_rl/
 ├── algorithms/
 │   ├── continuous/policy_gradient/   TRPO and MPO (policy update rules)
 │   └── mixed/                        conjugate gradient, trust region gradient (natural gradient + line search),
-│                                     vanilla gradient (L-BFGS / Adam), non-parametric temperature dual
+│                                     vanilla gradient (Adam), non-parametric temperature dual
 ├── data_structures/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryCollection, on-device ReplayBuffer, Batch
 ├── env/                              MCMCEnvWrapper; JAX steps for Pendulum and MountainCar, Gymnasium otherwise
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting
 ├── policy/                           univariate, diagonal and Cholesky Gaussian policies (Equinox), E-step temperature
-├── value_functions/                  fully connected V (L-BFGS) and Q (Adam) networks
+├── value_functions/                  fully connected V (minibatch Adam) and Q (Adam) networks
 ├── neural_modules/                   Equinox MLP building block
 ├── run/                              training loops (run_trpo, run_mpo_non_parametric), policy replay
 ├── scripts/                          Hydra entry point (run.py, hydra_conf.py), evaluate / baselines / compare
@@ -249,7 +249,7 @@ src/abstract_rl/
 A training loop is a sequence of operator applications on trajectory collections:
 
 - **TRPO** per epoch: collect `env_sample` steps → `TD` operator (returns, bootstrapped at time limits) →
-  `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
+  `GAE` operator → natural gradient step with KL trust region → V function fit (minibatch Adam).
 - **MPO** per epoch: collect `env_sample` steps into the trajectory collection → `Resample` operator (actions from the
   target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric
   E-step) → KL constrained weighted maximum likelihood (M-step) → `Retrace` operator → Q function fit (Adam).

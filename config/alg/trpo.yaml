@@ -39,6 +39,11 @@ val_act_fn: [tanh, tanh, none]
 val_init: xavier_gaussian
 val_sync_steps: 1
 val_l2_reg: 0.001
+# Minibatch Adam on the value loss, in the style of a PPO value fit: 10 passes
+# over the rollout, minibatches of 64, step size 3e-4.
+val_lr: 3.0e-4
+val_epochs: 10
+val_batch_size: 64
 # advantage settings
 gae_lambda: 0.95
 # Transitions collected each epoch, and the on-policy update batch. The epoch count is

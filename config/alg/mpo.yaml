@@ -48,7 +48,6 @@ rnk_lr: 0.0003
 rnk_init_eta: 1.0
 # fully connected neural q function
 val_struct: [256, 256]
-val_optimizer: adam
 val_lr: 0.001
 val_opt_steps: 1000
 val_batch_size: 256
