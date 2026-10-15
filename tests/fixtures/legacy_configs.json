@@ -227,13 +227,13 @@
    "filter_states": false,
    "gae_lambda": 0.95,
    "max_steps": 1000,
-   "num_epochs": 150,
+   "num_epochs": 75,
    "policy_act_fn": [
     "tanh",
     "tanh",
     "none"
    ],
-   "policy_batch_size": 4000,
+   "policy_batch_size": 8000,
    "policy_cov_type": "single",
    "policy_init": "xavier_gaussian",
    "policy_layer_norm": false,
@@ -256,7 +256,7 @@
     "none"
    ],
    "val_init": "xavier_gaussian",
-   "val_l2_reg": 0.001,
+   "val_l2_reg": 0.0,
    "val_layer_norm": false,
    "val_struct": [
     64,
@@ -365,7 +365,7 @@
    "trpo_cg_max_k": 10,
    "trpo_cg_res_tol": 1e-10,
    "trpo_dvp_damping": 0.1,
-   "trpo_tr_eps": 0.02,
+   "trpo_tr_eps": 0.01,
    "val_act_fn": [
     "tanh",
     "tanh",

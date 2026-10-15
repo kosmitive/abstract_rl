@@ -3,5 +3,5 @@ success: 950.0
 steps: 150000
 overrides:
   all: {max_steps: 1000}
-  trpo: {num_epochs: 75, policy_batch_size: 2000, trpo_tr_eps: 0.02}
+  trpo: {num_epochs: 75, policy_batch_size: 2000, trpo_tr_eps: 0.01}
   mpo: {num_epochs: 150}
