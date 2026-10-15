@@ -10,9 +10,9 @@ class FullCovarianceGaussianPolicy(ContinuousPolicy):
     """Gaussian policy with a state-dependent covariance ``L(s) L(s)^T``.
 
     The network outputs ``μ(s)`` and the lower-triangular Cholesky factor ``L(s)``, packed in
-    row-major order. The diagonal of ``L`` passes through a softplus and is shifted by
-    ``SIGMA_MIN``. Off-diagonal entries stay linear. Samples are ``u = μ + L z`` with
-    ``z ~ N(0, I)``. Log probabilities and the KL are evaluated with triangular solves.
+    row-major order. The diagonal of ``L`` is ``softplus(raw) + policy_min_std``. Off-diagonal
+    entries stay linear. Samples are ``u = μ + L z`` with ``z ~ N(0, I)``. Log probabilities
+    and the KL are evaluated with triangular solves.
 
     Squashing is the same componentwise map as the diagonal policy,
     ``a = center + scale * tanh(u)``. The log density subtracts

@@ -21,6 +21,7 @@ from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.policy.continuous.continuous_policy import refresh_sigma_floors
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
@@ -131,6 +132,8 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         if request is None:
             break
         num_new_steps = request
+        # This epoch acts and updates with the floor scheduled for the steps collected so far.
+        refresh_sigma_floors(policy, int(getattr(env, "total_steps", 0)))
 
         # --------------------------------
         # test policy

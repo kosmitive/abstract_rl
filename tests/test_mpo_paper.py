@@ -16,7 +16,6 @@ from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon impo
 )
 from abstract_rl.policy.continuous.full_covariance_gaussian_policy import FullCovarianceGaussianPolicy
 from abstract_rl.policy.continuous.gaussian_math import (
-    SIGMA_MIN,
     cholesky_log_prob,
     kl_mean_covariance,
     kl_mean_covariance_cholesky,
@@ -113,7 +112,7 @@ def test_full_policy_log_prob_matches_numpy_with_and_without_squash(make_pendulu
         stats = np.asarray(policy.forward(states))
         mu = stats[:, :2]
         factor = np.asarray(unpack_lower(jnp.asarray(stats[:, 2:]), 2))
-        diagonal = jax.nn.softplus(jnp.asarray([0.0, -0.3], dtype=jnp.float32)) + SIGMA_MIN
+        diagonal = jax.nn.softplus(jnp.asarray([0.0, -0.3], dtype=jnp.float32))
         np.testing.assert_allclose(factor[0].diagonal(), np.asarray(diagonal), rtol=1e-5, atol=1e-5)
         np.testing.assert_allclose(factor[0, 1, 0], 0.5, atol=1e-6)
         actions = np.array([[[0.1, -0.2], [0.0, 0.3]], [[-0.4, 0.2], [0.2, -0.1]], [[0.3, 0.1], [-0.2, 0.0]]])

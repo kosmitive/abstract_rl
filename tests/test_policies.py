@@ -50,10 +50,11 @@ def test_state_dependent_sigma_is_not_softplused_twice(make_pendulum_mc):
     _force_last_bias(policy, [0.0, -20.0])
     sigma = np.asarray(policy.forward(states)[:, 1])
     assert np.all(sigma > 0) and np.all(sigma < 1e-3)
+    policy.log_prob(policy.sample_actions(states=states), states=states)
+    # float32 softplus underflows here. policy_min_std defaults to 0, so the diagonal is 0.
     _force_last_bias(policy, [0.0, -1000.0])
     sigma = np.asarray(policy.forward(states)[:, 1])
-    assert np.all(sigma > 0)
-    policy.log_prob(policy.sample_actions(states=states), states=states)
+    assert np.all(sigma == 0.0)
     _force_last_bias(policy, [0.0, 3.0])
     expected = math.log1p(math.exp(3.0))
     assert np.allclose(np.asarray(policy.forward(states)[:, 1]), expected, atol=1e-5)

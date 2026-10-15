@@ -15,7 +15,6 @@ from jaxtyping import PRNGKeyArray
 
 from abstract_rl.policy.continuous.gaussian_math import (
     _LOG_2PI,
-    SIGMA_MIN,
     SQUASH_BOUND,
     SQUASH_U_MAX,
     GaussianParams,
@@ -37,6 +36,7 @@ class NumpyPolicy:
     center: np.ndarray
     scale: np.ndarray
     log_sigma: np.ndarray | None
+    sigma_floor: float
 
 
 def extract_numpy_policy(params: GaussianParams) -> NumpyPolicy:
@@ -72,6 +72,7 @@ def extract_numpy_policy(params: GaussianParams) -> NumpyPolicy:
         center=np.asarray(params.action_center, dtype=np.float32),
         scale=np.asarray(params.action_scale, dtype=np.float32),
         log_sigma=log_sigma,
+        sigma_floor=float(np.asarray(params.sigma_floor)),
     )
 
 
@@ -155,10 +156,12 @@ def _mlp(spec: NumpyPolicy, states: np.ndarray) -> np.ndarray:
     return hidden.astype(np.float32)
 
 
-def _positive_sigma(raw: np.ndarray, already_softplus: bool) -> np.ndarray:
+def _positive_sigma(raw: np.ndarray, already_softplus: bool, floor: float) -> np.ndarray:
+    """``softplus(raw) + floor``, or ``raw + floor`` when the network already applied softplus."""
+    shift = np.float32(floor)
     if already_softplus:
-        return np.maximum(raw, np.float32(SIGMA_MIN))
-    return _softplus(raw) + np.float32(SIGMA_MIN)
+        return raw + shift
+    return _softplus(raw) + shift
 
 
 def _mu_sigma(spec: NumpyPolicy, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -167,11 +170,12 @@ def _mu_sigma(spec: NumpyPolicy, states: np.ndarray) -> tuple[np.ndarray, np.nda
             out = _mlp(spec, states)
             act = out.shape[-1] // 2
             mu = out[:, :act]
-            sigma = _positive_sigma(out[:, act:], spec.sigma_softplus)
+            sigma = _positive_sigma(out[:, act:], spec.sigma_softplus, spec.sigma_floor)
         case "single" | "fixed":
             mu = _mlp(spec, states)
             assert spec.log_sigma is not None
-            sigma = np.exp(spec.log_sigma).astype(np.float32) + np.zeros_like(mu)
+            sigma = np.maximum(np.exp(spec.log_sigma), np.float32(spec.sigma_floor)).astype(np.float32)
+            sigma = sigma + np.zeros_like(mu)
         case _:
             raise NotImplementedError(spec.cov_type)
     return mu.astype(np.float32), sigma.astype(np.float32)
@@ -183,7 +187,7 @@ def _cholesky(spec: NumpyPolicy, states: np.ndarray) -> tuple[np.ndarray, np.nda
     action_dim = int(spec.center.shape[0])
     mu = out[:, :action_dim]
     packed = np.array(out[:, action_dim:], dtype=np.float32, copy=True)
-    diagonal = _positive_sigma(packed[:, tril_diag_index(action_dim)], spec.sigma_softplus)
+    diagonal = _positive_sigma(packed[:, tril_diag_index(action_dim)], spec.sigma_softplus, spec.sigma_floor)
     packed[:, tril_diag_index(action_dim)] = diagonal
     factor = np.zeros((states.shape[0], action_dim, action_dim), dtype=np.float32)
     rows, cols = np.tril_indices(action_dim)

@@ -2,6 +2,7 @@ id: MountainCarContinuous-v0
 success: 90.0
 steps: 400000
 overrides:
-  all: {max_steps: 999}
+  # 0.3 for the first 40% of the 400000-step budget, then linearly down to 0.
+  all: {max_steps: 999, policy_min_std: 0.3, policy_min_std_anneal_steps: 160000}
   trpo: {num_epochs: 100, policy_sigma: 2.0, env_discount: 0.999}
   mpo: {num_epochs: 1000, max_env_steps: 400000, policy_sigma: 2.0, policy_cov_type: fixed}

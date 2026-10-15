@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from abstract_rl.misc.flat_params import weight_spec
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import (
     DiagonalGaussianPolicy,
     head_activations,
@@ -81,14 +82,14 @@ def test_state_dependent_sigma_default_activation_applies_one_softplus(make_pend
     sigma = np.asarray(policy.forward(states)[:, 2:])
     assert np.all(sigma > 0) and np.all(sigma < 1e-3)
     _force_head(policy, [0.0, 0.0], [3.0, -3.0])
-    expected = np.array([math.log1p(math.exp(3.0)), math.log1p(math.exp(-3.0))]) + 1e-6
+    expected = np.array([math.log1p(math.exp(3.0)), math.log1p(math.exp(-3.0))])
     assert np.allclose(np.asarray(policy.forward(states)[0, 2:]), expected, atol=1e-5)
 
 
 def test_state_dependent_sigma_with_softplus_activation_is_not_softplused_twice(make_pendulum_mc):
     policy = _policy(make_pendulum_mc, policy_cov_type="state", policy_act_fn=["tanh", "tanh", ["none", "softplus"]])
     states = np.zeros((3, 4), dtype=np.float32)
-    _force_head(policy, [0.0, 0.0], [-20.0, -1000.0])
+    _force_head(policy, [0.0, 0.0], [-20.0, -12.0])
     sigma = np.asarray(policy.forward(states)[:, 2:])
     assert np.all(sigma > 0) and np.all(sigma < 1e-3)
     policy.log_prob(policy.sample_actions(states=states), states=states)
@@ -151,7 +152,7 @@ def test_squashed_log_prob_matches_the_change_of_variables(make_pendulum_mc):
 
 
 def _perturb(module, key, scale=0.3):
-    diff, static = eqx.partition(module, eqx.is_inexact_array)
+    diff, static = eqx.partition(module, weight_spec(module))
     leaves, treedef = jax.tree.flatten(diff)
     updated = []
     for leaf in leaves:

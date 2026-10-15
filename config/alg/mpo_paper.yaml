@@ -13,3 +13,5 @@ mpo_kl_mode: decoupled
 mpo_eps_mean: 0.1
 mpo_eps_cov: 1.0e-4
 eta_solver: sgd
+# MPO does not scale the mean head. 1.0 is the default initialisation.
+policy_mean_init_scale: 1.0

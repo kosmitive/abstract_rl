@@ -26,7 +26,10 @@ from abstract_rl.policy.continuous.gaussian_math import (
     log_prob,
     mode,
     sample,
+    scheduled_sigma_floor,
     sigma_is_softplus,
+    softplus_inverse,
+    tril_diag_index,
     unpack_lower,
 )
 from abstract_rl.policy.continuous.numpy_act import NumpyPolicy, act_numpy, extract_numpy_policy, seed_generator
@@ -34,6 +37,9 @@ from abstract_rl.policy.policy import Policy
 
 _LIKELIHOOD = eqx.filter_jit(likelihood_ratio)
 _KL = eqx.filter_jit(kl_divergence)
+# Final-layer scale of the std/Cholesky head when ``policy_init_std`` is set. The mean head uses
+# ``policy_mean_init_scale`` instead, and 1.0 leaves that head on the default initialisation.
+STD_HEAD_INIT_SCALE = 0.01
 
 
 def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate: bool) -> GaussianParams:
@@ -49,6 +55,8 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
     run_conf = mc.get("conf")
     cov_type = str(run_conf["cov_type"])
     action_dim = mc.env.action_dim
+    init_std, min_std, mean_scale = _std_options(run_conf)
+    sigma_value = float(init_std) if init_std is not None else None
     squash = bool(run_conf.get("squash", False))
     low = np.asarray(mc.env.action_space.low, dtype=np.float64).reshape(-1)
     high = np.asarray(mc.env.action_space.high, dtype=np.float64).reshape(-1)
@@ -75,11 +83,12 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
         case "fixed":
             n_out = action_dim
             log_sigma = None
-            fixed_log_sigma = tuple(float(np.log(run_conf["sigma"])) for _ in range(action_dim))
+            chosen = float(run_conf["sigma"]) if sigma_value is None else sigma_value
+            fixed_log_sigma = tuple(float(np.log(chosen)) for _ in range(action_dim))
         case "single":
             n_out = action_dim
-            init = float(np.log(run_conf.get("sigma", 1.0)))
-            log_sigma = jnp.full((action_dim,), init, dtype=jnp.float32)
+            chosen = float(run_conf.get("sigma", 1.0)) if sigma_value is None else sigma_value
+            log_sigma = jnp.full((action_dim,), float(np.log(chosen)), dtype=jnp.float32)
             fixed_log_sigma = None
         case "full":
             n_out = action_dim + action_dim * (action_dim + 1) // 2
@@ -97,6 +106,7 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
         bool(run_conf["layer_norm"]),
         str(run_conf["init"]),
     )
+    network = _scale_policy_head(network, cov_type, action_dim, init_std, mean_scale)
     return GaussianParams(
         network=network,
         log_sigma=log_sigma,
@@ -106,7 +116,81 @@ def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate:
         action_center=center,
         action_scale=scale,
         fixed_log_sigma=fixed_log_sigma,
+        sigma_floor=jnp.asarray(min_std, dtype=jnp.float32),
     )
+
+
+def _ns_value(conf: Any, key: str, default: Any) -> Any:
+    """Read a namespaced key. Missing keys keep ``default`` and are not inserted into the config."""
+    names = list(getattr(conf, "names", []))
+    prefix = f"{'_'.join(names)}_" if names else ""
+    return conf.to_dict().get(f"{prefix}{key}", default)
+
+
+def _std_options(conf: Any) -> tuple[float | None, float, float]:
+    """``policy_init_std``, the epoch-0 floor, and ``policy_mean_init_scale``."""
+    raw = _ns_value(conf, "init_std", None)
+    init_std = None if raw is None else float(raw)
+    if init_std is not None and not init_std > 0.0:
+        raise ValueError(f"policy_init_std must be positive, got {init_std}")
+    min_std = float(_ns_value(conf, "min_std", 0.0))
+    anneal_steps = int(_ns_value(conf, "min_std_anneal_steps", 0))
+    # The object stored on the policy is the floor at step 0, which is ``min_std`` itself.
+    floor = scheduled_sigma_floor(min_std, anneal_steps, 0)
+    mean_scale = float(_ns_value(conf, "mean_init_scale", 1.0))
+    return init_std, floor, mean_scale
+
+
+def _scale_policy_head(
+    network: MultilayerPerceptron,
+    cov_type: str,
+    action_dim: int,
+    init_std: float | None,
+    mean_scale: float,
+) -> MultilayerPerceptron:
+    """Scale the final layer only. Hidden layers keep the default initialisation.
+
+    ``mean_scale == 1`` does not touch the mean head, so that path stays the default init.
+    Any other scale multiplies the mean rows and leaves their bias at zero. A set
+    ``policy_init_std`` multiplies the std or Cholesky rows by ``STD_HEAD_INIT_SCALE`` and
+    sets the diagonal bias so ``softplus(bias) = init_std``. Off-diagonal Cholesky bias stays
+    zero, and the initial covariance at a zero state is ``(init_std + policy_min_std)^2 I``.
+    """
+    if mean_scale != 1.0:
+        width = action_dim if cov_type in ("state", "full") else int(network.layers[-1].weight.shape[0])
+        mean_rows = np.arange(width)
+        network = _retune_last_layer(network, mean_rows, mean_scale, mean_rows, 0.0)
+    if init_std is None or cov_type in ("single", "fixed"):
+        return network
+    bias = softplus_inverse(init_std)
+    if cov_type == "state":
+        rows = np.arange(action_dim, 2 * action_dim)
+        return _retune_last_layer(network, rows, STD_HEAD_INIT_SCALE, rows, bias)
+    packed = action_dim * (action_dim + 1) // 2
+    rows = np.arange(action_dim, action_dim + packed)
+    diagonal = action_dim + tril_diag_index(action_dim)
+    return _retune_last_layer(network, rows, STD_HEAD_INIT_SCALE, diagonal, bias)
+
+
+def _retune_last_layer(
+    network: MultilayerPerceptron,
+    rows: np.ndarray,
+    scale: float,
+    bias_rows: np.ndarray,
+    bias_value: float,
+) -> MultilayerPerceptron:
+    """Multiply ``rows`` of the last weight and set ``bias_rows`` to ``bias_value``."""
+    layers = list(network.layers)
+    layer = layers[-1]
+    if layer.bias is None:
+        raise ValueError("the policy head is initialised with a bias")
+    index = jnp.asarray(rows, dtype=jnp.int32)
+    weight = layer.weight.at[index].mul(jnp.asarray(scale, dtype=layer.weight.dtype))
+    bias_index = jnp.asarray(bias_rows, dtype=jnp.int32)
+    bias = layer.bias.at[bias_index].set(jnp.asarray(bias_value, dtype=layer.bias.dtype))
+    layer = eqx.tree_at(lambda lin: (lin.weight, lin.bias), layer, (weight, bias))
+    layers[-1] = layer
+    return eqx.tree_at(lambda net: net.layers, network, tuple(layers))
 
 
 def _policy_activations(act_fn: Any, action_dim: int, cov_type: str) -> tuple[list[Any], list[Any]]:
@@ -132,6 +216,10 @@ class ContinuousPolicy(Policy, Syncable):
         super().__init__(mc)
         self.flat_actions = flat_actions
         self.params = build_gaussian_params(mc, mc.rng.split(), univariate=flat_actions)
+        # The anneal is a Python schedule. The value on ``params.sigma_floor`` is what the jitted
+        # forward reads, and it is refreshed once per epoch.
+        self._min_std = float(_ns_value(mc.get("conf"), "min_std", 0.0))
+        self._min_std_anneal_steps = int(_ns_value(mc.get("conf"), "min_std_anneal_steps", 0))
         root = mc.get("conf").to_dict()
         self.obs_norm = ObsNorm.create(
             mc.env.observation_dim,
@@ -291,12 +379,23 @@ class ContinuousPolicy(Policy, Syncable):
             self._act_rng = seed_generator(self.mc.rng.split())
         return self._act_rng
 
+    def refresh_sigma_floor(self, env_steps: int) -> None:
+        """Set the std floor from the env-step schedule. Held constant until the next epoch."""
+        floor = scheduled_sigma_floor(self._min_std, self._min_std_anneal_steps, int(env_steps))
+        self.params = eqx.tree_at(
+            lambda params: params.sigma_floor,
+            self.params,
+            jnp.asarray(floor, dtype=jnp.float32),
+        )
+
     def clone(self) -> "ContinuousPolicy":
         other = self.__class__.__new__(self.__class__)
         other.mc = self.mc
         other.flat_actions = self.flat_actions
         other.params = copy_module(self.params)
         other.obs_norm = self.obs_norm
+        other._min_std = self._min_std
+        other._min_std_anneal_steps = self._min_std_anneal_steps
         other._act_cache_id = -1
         other._act_cache = None
         other._act_rng = None
@@ -357,6 +456,14 @@ class ContinuousPolicy(Policy, Syncable):
             return entropy_from_cholesky(unpack_lower(stats[:, action_dim:], action_dim))
         act = stats.shape[-1] // 2
         return entropy_from_sigma(stats[:, act:])
+
+
+def refresh_sigma_floors(policy: ContinuousPolicy, env_steps: int) -> None:
+    """Refresh the live policy and its target so both use this epoch's floor."""
+    policy.refresh_sigma_floor(env_steps)
+    target = policy.mc.get("policy", True)
+    if target is not policy:
+        target.refresh_sigma_floor(env_steps)
 
 
 def _f32(value: Float[Array, "..."] | np.ndarray) -> Float[Array, "..."]:

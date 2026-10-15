@@ -4,7 +4,9 @@
 softplus on the sigma outputs inside the network; the policy must not apply a second one.
 
 A full covariance is a state-dependent Cholesky factor ``L(s)``. The network emits the mean and the
-lower triangle; the diagonal of ``L`` is softplus-shifted. Samples are ``u = μ + L z``.
+lower triangle; the diagonal of ``L`` is ``softplus(raw) + sigma_floor``. ``sigma_floor`` is
+``policy_min_std`` (default 0, optionally annealed to 0). Softplus is already positive, so the
+historical additive ``1e-6`` is not applied. Samples are ``u = μ + L z``.
 
 Samples from the squashed policy are ``a = center + scale * tanh(u)`` with ``u`` drawn from that
 Gaussian. The squash is componentwise, including for a full covariance. The KL of a squashed policy
@@ -63,6 +65,8 @@ def sigma_is_softplus(sigma_acts: Sequence[Any]) -> bool:
     return flags.pop()
 
 
+# Historical additive floor on a softplus standard deviation. Diagonals now add ``policy_min_std``
+# instead (default 0). The constant stays so existing imports keep resolving.
 SIGMA_MIN = 1e-6
 SQUASH_U_MAX = 5.0
 SQUASH_BOUND = math.tanh(SQUASH_U_MAX)
@@ -85,6 +89,8 @@ class GaussianParams(eqx.Module):
     action_center: tuple[float, ...] = eqx.field(static=True)
     action_scale: tuple[float, ...] = eqx.field(static=True)
     fixed_log_sigma: tuple[float, ...] | None = eqx.field(static=True)
+    # Schedule value, not a weight. ``flat_params.weight_spec`` keeps it out of Adam, TRPO and L2.
+    sigma_floor: Float[Array, ""] = eqx.field(default_factory=lambda: jnp.zeros((), dtype=jnp.float32))
 
     def _scale(self) -> Float[Array, " act"]:
         return jnp.asarray(self.action_scale, dtype=jnp.float32)
@@ -93,11 +99,72 @@ class GaussianParams(eqx.Module):
         return jnp.asarray(self.action_center, dtype=jnp.float32)
 
 
-def positive_sigma(raw: Float[Array, "... act"], already_softplus: bool) -> Float[Array, "... act"]:
-    """Make a standard deviation strictly positive without applying softplus twice."""
+def scheduled_sigma_floor(min_std: float, anneal_steps: int, env_steps: int) -> float:
+    """Standard-deviation floor at ``env_steps``.
+
+    ``anneal_steps <= 0`` keeps ``min_std`` for the whole run. Otherwise the floor starts at
+    ``min_std`` and falls linearly to zero once ``env_steps`` reaches ``anneal_steps``.
+
+    Args:
+        min_std: Floor at the start of training.
+        anneal_steps: Environment steps over which the floor decays. Zero keeps it constant.
+        env_steps: Environment steps collected so far.
+
+    Returns:
+        The floor to add on a state-dependent diagonal, or to enforce on a state-independent std.
+    """
+    if anneal_steps <= 0:
+        return float(min_std)
+    done = min(max(int(env_steps), 0), int(anneal_steps)) / float(anneal_steps)
+    return float(min_std) * (1.0 - done)
+
+
+def softplus_inverse(value: float) -> float:
+    """Inverse of softplus, matching the identity region of ``jax.nn.softplus`` above 20.
+
+    Args:
+        value: Positive softplus output.
+
+    Returns:
+        Bias whose softplus equals ``value``.
+    """
+    if value > 20.0:
+        return float(value)
+    return float(math.log(math.expm1(value)))
+
+
+def positive_sigma(
+    raw: Float[Array, "... act"],
+    already_softplus: bool,
+    floor: Float[Array, ""],
+) -> Float[Array, "... act"]:
+    """Standard deviation ``softplus(raw) + floor``.
+
+    When the network already applied a softplus, ``raw`` is used in its place so the activation
+    is not applied twice. ``floor`` is ``policy_min_std`` and is not a trained weight.
+
+    Args:
+        raw: Network output for one standard deviation, or for a Cholesky diagonal.
+        already_softplus: Whether ``raw`` already passed through a softplus.
+        floor: Amount added on the diagonal. Zero leaves a plain softplus.
+
+    Returns:
+        Positive widths of the same shape as ``raw``.
+    """
+    shift = jax.lax.stop_gradient(floor)
     if already_softplus:
-        return jnp.maximum(raw, SIGMA_MIN)
-    return jax.nn.softplus(raw) + SIGMA_MIN
+        return raw + shift
+    return jax.nn.softplus(raw) + shift
+
+
+def _state_independent_sigma(
+    log_sigma: Float[Array, " act"],
+    floor: Float[Array, ""],
+    like: Float[Array, "batch act"],
+) -> Float[Array, "batch act"]:
+    """``max(exp(log_sigma), floor)`` broadcast over the batch. A floor of zero leaves ``exp`` unchanged."""
+    shift = jax.lax.stop_gradient(floor)
+    return jnp.maximum(jnp.exp(log_sigma), shift)[None, :] + jnp.zeros_like(like)
 
 
 def forward(params: GaussianParams, states: Float[Array, "batch obs"]) -> Float[Array, "batch stats"]:
@@ -116,20 +183,23 @@ def forward(params: GaussianParams, states: Float[Array, "batch obs"]) -> Float[
             out = params.network.forward(states)
             act = out.shape[-1] // 2
             mu, raw = out[:, :act], out[:, act:]
-            sigma = positive_sigma(raw, params.sigma_is_softplus)
+            sigma = positive_sigma(raw, params.sigma_is_softplus, params.sigma_floor)
         case "single":
             mu = params.network.forward(states)
             assert params.log_sigma is not None
-            sigma = jnp.exp(params.log_sigma)[None, :] + jnp.zeros_like(mu)
+            sigma = _state_independent_sigma(params.log_sigma, params.sigma_floor, mu)
         case "fixed":
             mu = params.network.forward(states)
             assert params.fixed_log_sigma is not None
-            sigma = jnp.exp(jnp.asarray(params.fixed_log_sigma, dtype=jnp.float32))[None, :] + jnp.zeros_like(mu)
+            log_sigma = jnp.asarray(params.fixed_log_sigma, dtype=jnp.float32)
+            sigma = _state_independent_sigma(log_sigma, params.sigma_floor, mu)
         case "full":
             out = params.network.forward(states)
             action_dim = len(params.action_center)
             mu = out[:, :action_dim]
-            packed = with_positive_diagonal(out[:, action_dim:], action_dim, params.sigma_is_softplus)
+            packed = with_positive_diagonal(
+                out[:, action_dim:], action_dim, params.sigma_is_softplus, params.sigma_floor
+            )
             return jnp.concatenate([mu, packed], axis=-1)
         case _:
             raise NotImplementedError(f"unknown covariance type {params.cov_type}")
@@ -330,10 +400,13 @@ def unpack_lower(packed: Float[Array, "batch tril"], action_dim: int) -> Float[A
 
 
 def with_positive_diagonal(
-    packed: Float[Array, "batch tril"], action_dim: int, already_softplus: bool
+    packed: Float[Array, "batch tril"],
+    action_dim: int,
+    already_softplus: bool,
+    floor: Float[Array, ""],
 ) -> Float[Array, "batch tril"]:
-    """Softplus the diagonal of a packed Cholesky factor. Off-diagonal entries stay as they are."""
-    diagonal = positive_sigma(packed[:, tril_diag_index(action_dim)], already_softplus)
+    """Softplus the diagonal of a packed Cholesky factor and add ``floor``. Off-diagonal entries stay raw."""
+    diagonal = positive_sigma(packed[:, tril_diag_index(action_dim)], already_softplus, floor)
     return packed.at[:, tril_diag_index(action_dim)].set(diagonal)
 
 

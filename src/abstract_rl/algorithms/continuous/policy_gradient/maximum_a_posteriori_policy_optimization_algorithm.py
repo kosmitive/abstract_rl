@@ -25,7 +25,7 @@ from abstract_rl.data_structures.temporal_difference_data.replay_buffer import R
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc import buckets
 from abstract_rl.misc.cli_printer import CliPrinter
-from abstract_rl.misc.flat_params import l2_norm
+from abstract_rl.misc.flat_params import l2_norm, weight_spec
 from abstract_rl.misc.obs_norm import normalize_obs
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.gaussian_math import (
@@ -99,7 +99,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.v = self.sample_v()
         self.tx_outer = optax.adam(self.outer_lr)
         self.tx_inner = optax.adam(self.inner_lr)
-        diff, _static = eqx.partition(policy.params, eqx.is_inexact_array)
+        diff, _static = eqx.partition(policy.params, weight_spec(policy.params))
         self.opt_outer = self.tx_outer.init(diff)
         self.opt_inner = self.tx_inner.init(self.lm)
         self.policy: ContinuousPolicy = policy
@@ -293,7 +293,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         split_objective = self.split_objective
         split_constraint = self.split_constraint
         l2_reg = self.l2_reg
-        diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
+        diff, static = eqx.partition(self.policy.params, weight_spec(self.policy.params))
 
         def loss(weights: Any) -> Float[Array, ""]:
             params = eqx.combine(weights, static)
@@ -361,11 +361,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         """
         states = normalize_obs(self.policy.observation_norm(), replay.states)
         _fill_target_stats(replay, self.mc.get("policy", target=True).params, states)
-        diff, static = eqx.partition(self.policy.params, eqx.is_inexact_array)
+        diff, static = eqx.partition(self.policy.params, weight_spec(self.policy.params))
         if self.decoupled or str(self.conf.to_dict().get("eta_solver", "newton")) == "sgd":
             self._scan_options(replay, states, num_steps, batch_size, diff, static)
             return
-        diff, self.opt_outer, self.lm, self.opt_inner, main, multipliers, constraints = _mpo_scan(
+        diff, self.opt_outer, self.lm, self.opt_inner, main, multipliers, constraints, static = _mpo_scan(
             (
                 states,
                 replay.add_act,
@@ -421,7 +421,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             eta_opt = tx_eta.init(eta_raw)
             eta_eps = 1.0
         epsilon = jnp.asarray(self.v, dtype=jnp.float32) if self.decoupled else jnp.float32(self.v[0])
-        diff, self.opt_outer, self.lm, self.opt_inner, eta_raw, eta_opt, main, multipliers, constraints = (
+        diff, self.opt_outer, self.lm, self.opt_inner, eta_raw, eta_opt, main, multipliers, constraints, static = (
             _mpo_scan_options(
                 (
                     states,
@@ -765,15 +765,24 @@ def _mpo_scan(
     batch_size: int,
     epsilon: Float[Array, ""],
     l2_reg: float,
-) -> tuple[Any, Any, Float[Array, ""], Any, Float[Array, " steps"], Float[Array, " steps"], Float[Array, " steps"]]:
+) -> tuple[
+    Any,
+    Any,
+    Float[Array, ""],
+    Any,
+    Float[Array, " steps"],
+    Float[Array, " steps"],
+    Float[Array, " steps"],
+    Any,
+]:
     """Scan the max step (policy) and the min step (Lagrange multiplier).
 
     Replay tensors are the first argument and are not donated. The policy leaves, both Adam
-    states and the multiplier are donated into the returned values.
+    states, the multiplier and the static policy leaves are donated into the returned values.
 
     Returns:
         Updated policy leaves, policy optimiser state, multiplier, dual optimiser state,
-        and the per-step main objective, raw multiplier and constraint.
+        the per-step main objective, raw multiplier and constraint, and the static leaves.
     """
     states, actions, log_weights, target_stats, key, size = data
 
@@ -812,7 +821,9 @@ def _mpo_scan(
     (diff, opt_outer, multiplier, opt_inner, _key), (main, multipliers, constraints) = jax.lax.scan(
         body, (diff, opt_outer, multiplier, opt_inner, key), jnp.arange(num_steps)
     )
-    return diff, opt_outer, multiplier, opt_inner, main, multipliers, constraints
+    # ``static`` is donated with the other arguments, so hand the same buffer back. The std
+    # floor lives there and the caller still needs it after the scan.
+    return diff, opt_outer, multiplier, opt_inner, main, multipliers, constraints, static
 
 
 @eqx.filter_jit(donate="all-except-first")
@@ -853,6 +864,7 @@ def _mpo_scan_options(
     Float[Array, " steps"],
     Float[Array, "steps ..."],
     Float[Array, "steps ..."],
+    Any,
 ]:
     """M-step scan with an optional split KL and an optional Adam step on η.
 
@@ -914,4 +926,4 @@ def _mpo_scan_options(
         (diff, opt_outer, multiplier, opt_inner, eta_raw, eta_opt, key),
         jnp.arange(num_steps),
     )
-    return diff, opt_outer, multiplier, opt_inner, eta_raw, eta_opt, main, multipliers, constraints
+    return diff, opt_outer, multiplier, opt_inner, eta_raw, eta_opt, main, multipliers, constraints, static
