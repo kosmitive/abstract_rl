@@ -40,7 +40,7 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
             str(conf.get("init", "orthogonal")),
         )
         self.net = self.params
-        VanillaGradient.__init__(self, float(conf["lr"]))
+        VanillaGradient.__init__(self, float(conf["lr"]), float(conf.get_root("grad_clip")))
 
     def clone(self) -> "FullyVNeuralNet":
         other = FullyVNeuralNet.__new__(FullyVNeuralNet)
@@ -53,6 +53,7 @@ class FullyVNeuralNet(Syncable, VanillaGradient):
         other.net = other.params
         other.cli = self.cli
         other.lr = self.lr
+        other.grad_clip = self.grad_clip
         other.tx = self.tx
         other.opt_state = jax.tree.map(_copy_leaf, self.opt_state)
         other.fmtstr = self.fmtstr

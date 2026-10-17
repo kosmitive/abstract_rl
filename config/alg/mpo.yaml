@@ -66,3 +66,10 @@ mpo_outer_lr: 0.0003
 mpo_eps_mean: 0.1
 mpo_eps_cov: 1.0e-4
 mpo_l2_reg: 0.0
+# alpha = softplus(lm) + 1e-8, then clipped after every dual step. An unmet KL bound
+# otherwise drives lm until Adam's second moment overflows and the multiplier freezes.
+mpo_alpha_init: 1.0
+mpo_alpha_min: 1.0e-6
+mpo_alpha_max: 1.0e3
+# Global-norm cap on the policy, critic and multiplier Adam steps. 0 disables it.
+grad_clip: 40.0

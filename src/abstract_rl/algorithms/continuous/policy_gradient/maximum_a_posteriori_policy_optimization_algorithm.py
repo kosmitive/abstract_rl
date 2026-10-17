@@ -10,7 +10,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
@@ -18,6 +17,7 @@ from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon impo
     descend_temperature,
     positive_temperature,
 )
+from abstract_rl.algorithms.mixed.vanilla_gradient import adam_transform
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
@@ -32,9 +32,12 @@ from abstract_rl.policy.continuous.gaussian_math import (
     forward,
     kl_parts,
     log_prob,
+    softplus_inverse,
 )
 
 _STATS_CHUNK = 1024
+# softplus(lm) + offset stays positive. The offset is below the default clamp floor.
+_ALPHA_OFFSET = 1e-8
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
@@ -43,8 +46,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
     See https://arxiv.org/abs/1806.06920 and the decoupled mean and covariance constraints of
     arXiv 1812.02256. Retrace lives outside this class. One Adam step updates the policy (max
     step), one Adam step updates the two positive Lagrange multipliers (min step), and one Adam
-    step updates the E-step temperature. The constraint weight is the exponential of the
-    multiplier, so the weight stays positive.
+    step updates the E-step temperature. Each constraint weight is ``softplus(lm) + 1e-8``,
+    projected into ``[alpha_min, alpha_max]`` after the dual step.
     """
 
     def __repr__(self) -> str:
@@ -64,16 +67,20 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.cli = CliPrinter().instance
         self.trust_regions = [float(self.conf["eps_mean"]), float(self.conf["eps_cov"])]
         self.num_params = 2
-        self.lm = jnp.ones((self.num_params,), dtype=jnp.float32)
+        self.alpha_init = float(self.conf["alpha_init"])
+        self.alpha_min = float(self.conf["alpha_min"])
+        self.alpha_max = float(self.conf["alpha_max"])
+        self.grad_clip = float(self.conf.get_root("grad_clip"))
+        self.lm = initial_multiplier(self.alpha_init, self.num_params)
         self.v = self.sample_v()
-        self.tx_outer = optax.adam(self.outer_lr)
-        self.tx_inner = optax.adam(self.inner_lr)
+        self.tx_outer = adam_transform(self.outer_lr, self.grad_clip)
+        self.tx_inner = adam_transform(self.inner_lr, self.grad_clip)
         diff, _static = eqx.partition(policy.params, weight_spec(policy.params))
         self.opt_outer = self.tx_outer.init(diff)
         self.opt_inner = self.tx_inner.init(self.lm)
         self.policy: ContinuousPolicy = policy
-        self.fmtstr = "%10i | %10.5f" + self.num_params * " | %10.5f x %10.5f"
-        self.titlestr = "%10s | %10s" + self.num_params * " | %23s"
+        self.fmtstr = "%10i | %12.5f" + (3 * self.num_params) * " | %12.4e"
+        self.titlestr = "%10s | %12s" + (3 * self.num_params) * " | %12s"
 
     def sample_v(self) -> list[Any]:
         """Draw the trust-region bounds for this epoch.
@@ -106,7 +113,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         if num_steps <= 0:
             return
         self.sample_v()
-        labels = ("alpha_mu x KL_mu", "alpha_sigma x KL_sigma")
+        labels = ("alpha_mu", "alpha_sigma", "KL_mu", "KL_sigma", "slack_mu", "slack_sigma")
         self.cli.empty().print(self.titlestr % ("k", "objective", *labels))
         device = tc.device
         if device is not None and device.size > 0:
@@ -137,12 +144,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
                 prepared[4],
                 self.l2_reg,
             )
-            multipliers = np.exp(np.asarray(self.lm).reshape(-1))
-            slacks = np.asarray(slack).reshape(-1)
-            columns: list[float] = []
-            for multiplier, gap in zip(multipliers, slacks, strict=True):
-                columns.extend((float(multiplier), float(gap)))
-            self.cli.print(self.fmtstr % (step, float(main), *columns))
+            self._print_step(step, float(main), self.lm, slack, prepared[4])
 
     def __max_step(self, prepared: tuple[Any, ...]) -> None:
         """Adam step that ascends the Lagrangian with respect to the policy."""
@@ -176,10 +178,15 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         _value, grads = jax.value_and_grad(loss)(self.lm)
         updates, self.opt_inner = self.tx_inner.update(grads, self.opt_inner, self.lm)
-        self.lm = eqx.apply_updates(self.lm, updates)
+        self.lm = project_multiplier(eqx.apply_updates(self.lm, updates), self.alpha_min, self.alpha_max)
+
+    def _print_step(self, step: int, main: float, lm: Array, slack: Array, epsilon: Array) -> None:
+        """Print alpha, the KL and the slack for one M-step."""
+        columns = _step_columns(lm, slack, epsilon)
+        self.cli.print(self.fmtstr % (step, main, *columns))
 
     def _scan_default(self, replay: ReplayBuffer, num_steps: int, batch_size: int) -> None:
-        """Jitted M-step. Logs the main objective, the positive multipliers and the slacks.
+        """Jitted M-step. Logs the main objective, the multipliers, the KLs and the slacks.
 
         Replay states stay raw. The scan and the cached target statistics read a normalised copy
         of those rows, using the statistics frozen for this update.
@@ -213,6 +220,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
                 jnp.asarray(self.v, dtype=jnp.float32),
                 self.l2_reg,
                 float(builder.non_parametric_variational_eps),
+                self.alpha_min,
+                self.alpha_max,
             )
         )
         self.policy.params = eqx.combine(diff, static)
@@ -225,11 +234,64 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         for step in range(num_steps):
             if step % 10 != 0:
                 continue
-            columns: tuple[float, ...] = ()
-            for index in range(lm_np.shape[1]):
-                # The stored multiplier is unconstrained. The constraint weight is its exponential.
-                columns = (*columns, float(np.exp(lm_np[step, index])), float(constraint_np[step, index]))
-            self.cli.print(self.fmtstr % (step, float(main_np[step]), *columns))
+            self._print_step(
+                step,
+                float(main_np[step]),
+                lm_np[step],
+                constraint_np[step],
+                jnp.asarray(self.v, dtype=jnp.float32),
+            )
+
+
+def multiplier_alpha(lm: Float[Array, "..."]) -> Float[Array, "..."]:
+    """Constraint weight ``softplus(lm) + 1e-8``."""
+    return jax.nn.softplus(lm) + jnp.asarray(_ALPHA_OFFSET, dtype=lm.dtype)
+
+
+def initial_multiplier(alpha: float, n: int) -> Float[Array, " n"]:
+    """Raw multiplier whose softplus weight equals ``alpha``.
+
+    Args:
+        alpha: Positive starting weight. The default configuration uses 1.
+        n: Number of constraints. The decoupled M-step has a mean and a covariance multiplier.
+
+    Returns:
+        A float32 vector of length ``n``.
+    """
+    raw = softplus_inverse(float(alpha) - _ALPHA_OFFSET)
+    return jnp.full((n,), raw, dtype=jnp.float32)
+
+
+def project_multiplier(lm: Float[Array, "..."], alpha_min: float, alpha_max: float) -> Float[Array, "..."]:
+    """Project ``lm`` so the constraint weight lies in ``[alpha_min, alpha_max]``.
+
+    Args:
+        lm: Unconstrained multiplier parameter.
+        alpha_min: Lower clamp on ``softplus(lm) + 1e-8``.
+        alpha_max: Upper clamp on that weight.
+
+    Returns:
+        The projected parameter. A second projection leaves it unchanged up to float rounding.
+    """
+    offset = jnp.asarray(_ALPHA_OFFSET, dtype=lm.dtype)
+    clipped = jnp.clip(
+        multiplier_alpha(lm),
+        jnp.asarray(alpha_min, dtype=lm.dtype),
+        jnp.asarray(alpha_max, dtype=lm.dtype),
+    )
+    # ``softplus`` is the identity above 20, and ``expm1`` of a large value overflows float32.
+    value = clipped - offset
+    safe = jnp.where(value > 20.0, jnp.asarray(20.0, dtype=value.dtype), value)
+    inverse = jnp.log(jnp.expm1(safe))
+    return jnp.where(value > 20.0, value, inverse)
+
+
+def _step_columns(lm: Array, slack: Array, epsilon: Array) -> tuple[float, ...]:
+    """``alpha_mu, alpha_sigma, KL_mu, KL_sigma, slack_mu, slack_sigma``."""
+    alpha = np.asarray(multiplier_alpha(jnp.asarray(lm, dtype=jnp.float32))).reshape(-1)
+    gap = np.asarray(slack, dtype=np.float64).reshape(-1)
+    kl = np.asarray(epsilon, dtype=np.float64).reshape(-1) - gap
+    return tuple(float(value) for value in (*alpha, *kl, *gap))
 
 
 def _prepare(
@@ -285,7 +347,7 @@ def _decoupled_lagrangian(
     main = _weighted(params, current, l2_reg, actions, log_weights)
     kl_mu, kl_sigma = kl_parts(current, target_stats, params.cov_type, len(params.action_center))
     slack = epsilon - jnp.stack([kl_mu.mean(), kl_sigma.mean()])
-    total = main + jnp.sum(jnp.exp(multiplier) * slack)
+    total = main + jnp.sum(multiplier_alpha(multiplier) * slack)
     return total, main, slack
 
 
@@ -350,6 +412,8 @@ def _mpo_scan(
     epsilon: Float[Array, " 2"],
     l2_reg: float,
     eta_eps: float,
+    alpha_min: float = 1e-6,
+    alpha_max: float = 1e3,
 ) -> tuple[
     Any,
     Any,
@@ -371,8 +435,8 @@ def _mpo_scan(
 
     Returns:
         Updated policy leaves, policy optimiser state, multipliers, dual optimiser state,
-        temperature parameter and its Adam state, the per-step main objective, positive-scale
-        inputs (the raw multipliers) and slacks, and the static leaves.
+        temperature parameter and its Adam state, the per-step main objective, the raw multiplier
+        parameters and the slacks (``epsilon - KL``), and the static leaves.
     """
     states, actions, target_stats, q_values, key, size = data
 
@@ -405,7 +469,7 @@ def _mpo_scan(
 
         _dual, dual_grads = jax.value_and_grad(lambda lm_: full(weights, lm_))(lm)
         dual_updates, dual_state = tx_inner.update(dual_grads, dual_state, lm)
-        lm = eqx.apply_updates(lm, dual_updates)
+        lm = project_multiplier(eqx.apply_updates(lm, dual_updates), alpha_min, alpha_max)
 
         _value, main, constraint = _decoupled_lagrangian(
             eqx.combine(weights, static),

@@ -16,22 +16,40 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
+def adam_transform(lr: float, grad_clip: float) -> optax.GradientTransformation:
+    """Adam, with a global-norm cap when ``grad_clip`` is positive.
+
+    Args:
+        lr: Adam step size.
+        grad_clip: Maximum global gradient norm. ``0`` leaves the update as plain Adam.
+
+    Returns:
+        The Optax transform used by the value networks and the MPO policy and multipliers.
+    """
+    adam = optax.adam(lr)
+    if grad_clip > 0.0:
+        return optax.chain(optax.clip_by_global_norm(grad_clip), adam)
+    return adam
+
+
 class VanillaGradient:
     """Mini-batch Adam. Subclasses implement ``tr_obj``."""
 
     params: Any
 
-    def __init__(self, lr: float = 1e-3) -> None:
+    def __init__(self, lr: float = 1e-3, grad_clip: float = 0.0) -> None:
         """Attach Adam to ``self.params``.
 
         Args:
             lr: Adam step size.
+            grad_clip: Global-norm cap. ``0`` leaves the update as plain Adam.
         """
         self.cli = CliPrinter().instance
         self.lr = float(lr)
+        self.grad_clip = float(grad_clip)
         self.fmtstr = "%10i | %14.10f | %14.10f"
         self.titlestr = "%10s | %14s | %14s"
-        self.tx = optax.adam(self.lr)
+        self.tx = adam_transform(self.lr, self.grad_clip)
         diff, _static = eqx.partition(self.params, eqx.is_inexact_array)
         self.opt_state = self.tx.init(diff)
 

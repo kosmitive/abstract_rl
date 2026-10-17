@@ -249,11 +249,14 @@ src/abstract_rl/
 A training loop is a sequence of operator applications on trajectory collections:
 
 - **TRPO** per epoch: collect `env_sample` steps → `TD` operator (returns, bootstrapped at time limits) →
-  `GAE` operator → natural gradient step with KL trust region → V function fit (minibatch Adam).
+  `GAE` operator → natural gradient step with KL trust region → V function fit (minibatch Adam, `grad_clip`).
 - **MPO** per epoch: collect `env_sample` steps into the trajectory collection → `Resample` operator (actions from the
   target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric
   E-step) → KL constrained weighted maximum likelihood (M-step) → `Retrace` operator → Q function fit (Adam).
   The collection keeps an on-device copy, and the default M-step and the critic Adam loop are each one `lax.scan`.
+  Each KL multiplier is `softplus(lm) + 1e-8`, clipped to `[mpo_alpha_min, mpo_alpha_max]` after the dual step.
+  `grad_clip` (default 40, `0` off) caps the policy, critic and multiplier gradients. The M-step log prints
+  `alpha`, the KL and the slack (`eps - KL`) as separate columns. Episode entropy is `-mean log π(a|s)`.
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
 

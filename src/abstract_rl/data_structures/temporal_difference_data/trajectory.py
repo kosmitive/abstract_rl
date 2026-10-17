@@ -150,7 +150,10 @@ class Trajectory:
 
     @property
     def entropy(self) -> float:
-        """Calculate entropy of policy.
-        :return: The calculated entropy.
+        """Monte Carlo entropy of the behaviour policy along this episode.
+
+        ``-mean_t log pi(a_t | s_t)``. The stored log-density already includes the tanh
+        Jacobian when the action is squashed.
+        :return: Per-step entropy estimate.
         """
-        return -np.sum(self.log_likelihoods * np.exp(self.log_likelihoods))
+        return float(-np.mean(self.log_likelihoods))

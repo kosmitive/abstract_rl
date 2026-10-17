@@ -44,6 +44,8 @@ val_l2_reg: 0.001
 val_lr: 3.0e-4
 val_epochs: 10
 val_batch_size: 64
+# Global-norm cap on the value-net Adam step. The trust-region policy step is unchanged. 0 disables it.
+grad_clip: 40.0
 # advantage settings
 gae_lambda: 0.95
 # Transitions collected each epoch, and the on-policy update batch. The epoch count is
