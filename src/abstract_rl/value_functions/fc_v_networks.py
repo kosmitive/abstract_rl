@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -71,11 +70,9 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         loss = nn.MSELoss()
 
         # build up mse loss for v function
-        t_states = torch.Tensor(batch.states)
-        states = Variable(t_states)
+        states = torch.Tensor(batch.states)
         v_vals = self.v_val(states).view(-1)
         v_targets = torch.Tensor(batch["tv"]).view(-1)
-        v_targets = Variable(v_targets)
         w = torch.cat([p.view(-1) for p in self.parameters()])
         obj = loss(v_vals, v_targets) + self.l2 * torch.norm(w)
         return obj

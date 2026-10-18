@@ -50,7 +50,7 @@ class TemporalDifferenceOperator(TrajectoryOperator):
             for t in reversed(range(tl)):
                 tv[t] = t_rewards[t] + discount * mask[t] * tv[t + 1]
                 td_errors[t] = t_rewards[t] + discount * prev_value * mask[t] - v[t]
-                prev_value = v.data[t, 0]
+                prev_value = v[t, 0]
 
             trajectory["tv"] = tv[:-1]
             trajectory["td"] = td_errors

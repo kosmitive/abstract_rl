@@ -1,10 +1,10 @@
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
-from quanser_robots import GentlyTerminating
+from gymnasium.spaces import Box
 
 from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
@@ -36,7 +36,7 @@ class MCMCEnvWrapper:
         self.conf = conf
         self.num_epochs = conf.get_root("num_epochs")
         self.env_name = conf["name"]
-        self.env = GentlyTerminating(gym.make(self.env_name))
+        self.env = gym.make(self.env_name, render_mode="human" if self.render else None)
 
         self._normalize = conf["normalize"]
         self._discount = conf["discount"]
@@ -48,8 +48,8 @@ class MCMCEnvWrapper:
         self.max_traj_len = 0
         self.cli = CliPrinter().instance
         self.created_trajectories = 0
-        self.obs_sp = self.env.observation_space
-        self.act_sp = self.env.action_space
+        self.obs_sp = cast(Box, self.env.observation_space)
+        self.act_sp = cast(Box, self.env.action_space)
         self.thread_lock = threading.Lock()
 
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
@@ -67,7 +67,7 @@ class MCMCEnvWrapper:
         Resets the environment.
         :return: The state after the reset.
         """
-        cs = self.env.reset()
+        cs, _info = self.env.reset()
         return cs
 
     def execute_policy(
@@ -124,10 +124,10 @@ class MCMCEnvWrapper:
         """
 
         # reset environment and create empty trajectory
-        env = GentlyTerminating(gym.make(self.env_name)) if not self.render else self.env
-        cs = env.reset()
+        env = gym.make(self.env_name) if not self.render else self.env
+        cs, _info = env.reset()
         if self._normalize:
-            cs /= env.observation_space.high
+            cs /= self.observation_space.high
         self.state_filter.register(cs)
 
         # create new trajectory builder
@@ -151,18 +151,19 @@ class MCMCEnvWrapper:
             ll = policy.log_prob(a, suff_stats=suff_stats)
 
             # prepare for usage
-            ll = ll.detach().numpy()[0]
+            ll = float(ll.detach().reshape(-1)[0])
             a = a.detach().numpy()[0]
-            cs, r, done, _info = env.step(a)
+            cs, r, terminated, truncated, _info = env.step(a)
+            done = terminated or truncated
             self.state_filter.register(cs)
             self.reward_filter.register(cs)
 
             # bug fix for quanser
-            cs /= env.observation_space.high
+            cs /= self.observation_space.high
 
             t += 1
             # only punish if episode aborted
-            traj_builder.observe(a, r, cs, ll, int(done))
+            traj_builder.observe(a, float(r), cs, ll, int(done))
 
             # render if needed
             if render:
@@ -179,7 +180,7 @@ class MCMCEnvWrapper:
         return traj
 
     @property
-    def observation_space(self) -> gym.Space:
+    def observation_space(self) -> Box:
         """
         Bounds for the observation space.
         :return: Bound of the observation space.
@@ -188,7 +189,7 @@ class MCMCEnvWrapper:
         return self.obs_sp
 
     @property
-    def action_space(self) -> gym.Space:
+    def action_space(self) -> Box:
         """
         Bounds for the action space.
         :return: Bound of the action space.

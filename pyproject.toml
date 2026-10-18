@@ -78,13 +78,3 @@ no_implicit_optional = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = false
-
-[[tool.mypy.overrides]]
-# Dropped once the Gymnasium port replaces these imports.
-module = [
-    "gym",
-    "gym.*",
-    "quanser_robots",
-    "quanser_robots.*",
-]
-ignore_missing_imports = true

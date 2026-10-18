@@ -2,7 +2,6 @@ import math
 
 import numpy as np
 import torch
-from torch.autograd import Variable
 
 from abstract_rl.misc.cli_printer import CliPrinter
 
@@ -35,7 +34,7 @@ def find_optimal_temperature(q_tensor: torch.Tensor, eps: float, eta0: float = 1
         q_tensor = q_tensor - max_q_val
 
         # optimization specific
-        log_eta = Variable(torch.Tensor([np.log(eta0)]), requires_grad=True)
+        log_eta = torch.tensor([np.log(eta0)], dtype=torch.float32, requires_grad=True)
         eta = torch.exp(log_eta)
         optimizer = torch.optim.Adam([log_eta], lr)
         n_eta = eta[0].detach().numpy()

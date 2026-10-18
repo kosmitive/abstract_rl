@@ -2,7 +2,6 @@ from typing import Any
 
 import torch
 import torch.autograd as autograd
-from torch.autograd import Variable
 
 from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
@@ -48,7 +47,7 @@ class TrustRegionGradient:
         old_obj = self.tr_obj(batch)
         x = get_flat_params_from(self._model)
         grads = autograd.grad(old_obj, list(self._model.parameters()))
-        g = torch.cat([el.view(-1) for el in grads]).data
+        g = torch.cat([el.view(-1) for el in grads]).detach()
 
         # fisher vector products using direct mehtod
         def fvp(v: torch.Tensor) -> torch.Tensor:
@@ -57,10 +56,10 @@ class TrustRegionGradient:
             v_obj = self.tr_distance(tr_batch)
             grad_f_parts = torch.autograd.grad(v_obj, list(self._model.parameters()), create_graph=True)
             grad_f = torch.cat([el.view(-1) for el in grad_f_parts])
-            z = (grad_f * Variable(v)).sum()
+            z = (grad_f * v).sum()
             grad_grad = torch.autograd.grad(z, list(self._model.parameters()))
             r_hvp = torch.cat([grad.contiguous().view(-1) for grad in grad_grad])
-            r_vp = r_hvp.data + self.dvp_damping * v
+            r_vp = r_hvp.detach() + self.dvp_damping * v
             return r_vp
 
         # calc natural gradient and set gradient for line search

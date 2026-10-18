@@ -56,7 +56,7 @@ class VanillaGradient:
             set_flat_params_to(self._model, torch.Tensor(x))
             obj = self.tr_obj(batch)
             obj.backward()
-            return (obj.data.double().numpy(), get_flat_grad_from(self._model).data.double().numpy())
+            return (obj.detach().double().numpy(), get_flat_grad_from(self._model).detach().double().numpy())
 
         # start optimizer
         params, _, _opt_info = sp.optimize.fmin_l_bfgs_b(
