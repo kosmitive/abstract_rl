@@ -32,6 +32,10 @@ Source = "https://github.com/kosmitive/abstract_rl"
 mujoco = [
     "gymnasium[mujoco]>=1.0",
 ]
+baselines = [
+    "sb3-contrib>=2.4",
+    "stable-baselines3>=2.4",
+]
 
 [dependency-groups]
 dev = [
@@ -82,3 +86,8 @@ no_implicit_optional = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = false
+
+[[tool.mypy.overrides]]
+# optional extra `baselines`, only imported by scripts/run_baselines.py
+module = ["stable_baselines3.*", "sb3_contrib.*"]
+ignore_missing_imports = true
