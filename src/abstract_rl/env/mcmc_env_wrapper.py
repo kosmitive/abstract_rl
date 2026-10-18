@@ -131,8 +131,8 @@ class MCMCEnvWrapper:
         :return: The finalized and built trajectory.
         """
 
-        # reset environment and create empty trajectory
-        env = gym.make(self.env_name) if not self.render else self.env
+        # one environment for the run, so its RNG advances across episodes
+        env = self.env
         cs, _info = env.reset()
         cs = self._preprocess(cs)
         self.state_filter.register(cs)
@@ -181,7 +181,6 @@ class MCMCEnvWrapper:
         # compile using the discount factor
         traj = traj_builder.finalize()
         self.max_traj_len = max(self.max_traj_len, t)
-        env.close()
         return traj
 
     def close(self) -> None:
