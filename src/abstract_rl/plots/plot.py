@@ -2,13 +2,11 @@ import matplotlib.pyplot as plt
 
 
 class Plot:
-
     """This class can be used to give a class access to subplots managed
     by itself."""
 
     def __init__(self, title, grid_shape):
-        """Constructs a new LayoutManagedPlot. Creates subplots according to grid_shapes.
-        """
+        """Constructs a new LayoutManagedPlot. Creates subplots according to grid_shapes."""
 
         # common settings
         self.title = title

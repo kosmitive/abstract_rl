@@ -1,5 +1,4 @@
 import torch
-
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 
 
@@ -18,7 +17,7 @@ class PolicyOptimizationAlgorithm:
         """
         assert isinstance(mc, ModelConfiguration)
         self.mc = mc
-        self.conf = mc['conf']
+        self.conf = mc["conf"]
 
     def obj(self, trajectories):
         """
@@ -30,7 +29,7 @@ class PolicyOptimizationAlgorithm:
         obj = torch.zeros(1)
         num_steps = 0
         for traj in trajectories:
-            policy = self.mc.get('policy', False)
+            policy = self.mc.get("policy", False)
 
             # calculate the objective
             t_states = torch.Tensor(traj.states)
@@ -41,7 +40,7 @@ class PolicyOptimizationAlgorithm:
             old_ll = torch.Tensor(log_likelihoods)
 
             # calculate the ratio term
-            a_vals = torch.Tensor(traj['a'])
+            a_vals = torch.Tensor(traj["a"])
             r = torch.exp(ll - old_ll)
             obj = (num_steps * obj + torch.sum(r * a_vals)) / (num_steps + len(traj))
             num_steps += len(traj)

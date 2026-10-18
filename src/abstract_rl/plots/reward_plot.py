@@ -1,5 +1,4 @@
 import numpy as np
-
 from abstract_rl.src.plots.plot import Plot
 
 
@@ -8,7 +7,7 @@ class RewardValueFunctionPlot(Plot):
     and the actions used in each state."""
 
     def __init__(self):
-        super().__init__('Average Total Reward', None)
+        super().__init__("Average Total Reward", None)
 
     def update(self, stoch_rewards, num_evals):
 

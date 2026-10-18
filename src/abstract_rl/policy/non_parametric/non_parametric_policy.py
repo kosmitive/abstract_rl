@@ -9,5 +9,3 @@ class NonParametricPolicy:
         :param samples: The samples to add to the policy
         """
         self.samples = samples
-
-

@@ -1,5 +1,4 @@
 import torch
-
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
 
@@ -18,14 +17,14 @@ class ResampleOperator(TrajectoryOperator):
         :param mc: The model configuration with env and so on.
         """
         assert isinstance(mc, ModelConfiguration)
-        conf = mc.get('conf')
+        conf = mc.get("conf")
         self.conf = conf
-        self.add_act = conf['add_acts']
+        self.add_act = conf["add_acts"]
         self.mc = mc
-        self.policy = mc.get('policy', True)
-        self.q_net = mc.get('q_network', True)
+        self.policy = mc.get("policy", True)
+        self.q_net = mc.get("q_network", True)
 
-        env = mc['env']
+        env = mc["env"]
         self.discount = env.discount()
 
     def transform(self, trajectory):
@@ -43,7 +42,6 @@ class ResampleOperator(TrajectoryOperator):
         act_rew = sampled_actions.detach().numpy()
         q_vals = q_vals.detach().numpy()
         ll = ll.detach().numpy()
-        trajectory['add_act'] = act_rew
-        trajectory['add_q'] = q_vals
-        trajectory['add_pi'] = ll
-
+        trajectory["add_act"] = act_rew
+        trajectory["add_q"] = q_vals
+        trajectory["add_pi"] = ll

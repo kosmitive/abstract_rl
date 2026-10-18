@@ -1,13 +1,11 @@
-
 import numpy as np
 import torch
-from torch.distributions import Normal
-from torch.nn import Parameter
-
+from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.misc.cli_printer import CliPrinter
 from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.policy.continuous.continuous_policy import ContinuousPolicy
+from torch.distributions import Normal
+from torch.nn import Parameter
 
 
 class UnivariateGaussianPolicy(ContinuousPolicy):
@@ -24,21 +22,21 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         assert isinstance(mc, ModelConfiguration)
 
         self.mc = mc
-        run_conf = mc.get('conf')
+        run_conf = mc.get("conf")
         self.conf = run_conf
-        self.cov_type = run_conf['cov_type']
+        self.cov_type = run_conf["cov_type"]
         self.cli = CliPrinter().instance
 
         self.num_output_net = None
         self.cov_variable = None
-        if self.cov_type == 'state':
+        if self.cov_type == "state":
             self.num_output_net = 2
-        elif self.cov_type == 'fixed':
-            init_sigma = np.log(np.exp([run_conf['sigma']]) - 1)
+        elif self.cov_type == "fixed":
+            init_sigma = np.log(np.exp([run_conf["sigma"]]) - 1)
             self.cov_variable = torch.Tensor([init_sigma])
             self.cov_variable.backward()
             self.num_output_net = 0
-        elif self.cov_type == 'single':
+        elif self.cov_type == "single":
             self.cov_variable = Parameter(torch.zeros([1, 1]), requires_grad=True)
             self.cov_variable.backward()
             self.num_output_net = 1
@@ -46,22 +44,13 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         # create policy network
         sd = mc.env.observation_dim
-        policy_net_structure = np.concatenate(
-            (
-                [sd],
-                run_conf['structure'],
-                [self.num_output_net]
-            ))
+        policy_net_structure = np.concatenate(([sd], run_conf["structure"], [self.num_output_net]))
 
-        af = run_conf['act_fn']
+        af = run_conf["act_fn"]
         self.network = MultilayerPerceptron(
-            mc,
-            hidden_neurons=policy_net_structure,
-            act_fn=af,
-            layer_norm=run_conf['layer_norm'],
-            init=run_conf['init']
+            mc, hidden_neurons=policy_net_structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
         )
-        self.add_module('nn', self.network)
+        self.add_module("nn", self.network)
 
     def get_suff_stats_dim(self):
         """
@@ -69,7 +58,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         :return: depending on the configuration 1 for mean-only and 2 for mean and covariance.
         """
 
-        return 2 
+        return 2
 
     def forward(self, states):
         """
@@ -78,10 +67,10 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         :return: A matrix of shape [D, 2]
         """
 
-        if self.cov_type == 'state':
+        if self.cov_type == "state":
             return self.network.forward(states)
 
-        elif self.cov_type == 'fixed' or self.cov_type == 'single':
+        elif self.cov_type == "fixed" or self.cov_type == "single":
             mu = self.network.forward(states)
             fw = torch.exp(self.cov_variable)
             sigma = fw.expand_as(mu)
@@ -103,7 +92,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         assert states is None or suff_stats is None
 
         # get suff statistics
-        if suff_stats is None: suff_stats = self.forward(states)
+        if suff_stats is None:
+            suff_stats = self.forward(states)
 
         # extract mu and sigma depending on settings
         mu, sigma = torch.split(suff_stats, 1, dim=1)
@@ -118,7 +108,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         assert states is None or suff_stats is None
 
         # get suff statistics
-        if suff_stats is None: suff_stats = self.forward(states)
+        if suff_stats is None:
+            suff_stats = self.forward(states)
         return suff_stats[:, 0:1]
 
     def sample_actions(self, states=None, suff_stats=None, num_actions=1):
@@ -136,7 +127,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         assert states is None or suff_stats is None
 
         # get suff statistics
-        if suff_stats is None: suff_stats = self.forward(states)
+        if suff_stats is None:
+            suff_stats = self.forward(states)
 
         # extract mu and sigma depending on settings
         mu, sigma = torch.split(suff_stats, 1, dim=1)
@@ -165,7 +157,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         return v
 
     def entropy(self, batch):
-        policy = self.mc.get('policy', False)
+        policy = self.mc.get("policy", False)
         t_states = torch.Tensor(batch.states)
         suff_stats = policy.forward(t_states)
 
@@ -174,7 +166,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         ent = std_normal.entropy().mean()
         return ent
 
-    def kl_divergence(self, batch, suff_stats=None, mode='i-projection', est='sum'):
+    def kl_divergence(self, batch, suff_stats=None, mode="i-projection", est="sum"):
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
@@ -183,7 +175,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         # calc sufficient statistics
         states = torch.Tensor(batch.states)
-        if suff_stats is None: suff_stats = self.forward(states)
+        if suff_stats is None:
+            suff_stats = self.forward(states)
 
         # create this distribution
         mu, sigma = torch.split(suff_stats, 1, dim=1)
@@ -192,25 +185,29 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # create this distribution
         # get the old sufficient statistics
         with torch.no_grad():
-            t_policy = self.mc.get('policy', True)
+            t_policy = self.mc.get("policy", True)
             t_suff_stats = t_policy.forward(states)
             t_mu, t_sigma = torch.split(t_suff_stats, 1, dim=1)
             t_std_normal = Normal(t_mu[:, 0], t_sigma[:, 0])
 
         # use I projection
-        if mode == 'i-projection':
+        if mode == "i-projection":
             p = std_normal
             q = t_std_normal
 
         # use M Projection
-        elif mode == 'm-projection':
+        elif mode == "m-projection":
             q = std_normal
             p = t_std_normal
 
-        else: raise NotImplementedError
+        else:
+            raise NotImplementedError
 
         kl = torch.distributions.kl.kl_divergence(p, q)
 
-        if est == 'sum': return kl.sum()
-        elif est == 'mean': return kl.mean()
-        else: raise NotImplementedError
+        if est == "sum":
+            return kl.sum()
+        elif est == "mean":
+            return kl.mean()
+        else:
+            raise NotImplementedError

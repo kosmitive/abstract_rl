@@ -1,5 +1,4 @@
 import torch
-
 from abstract_rl.src.algorithms.mixed.conjugate_gradient import conjugate_gradient
 
 

@@ -1,15 +1,13 @@
-from quanser_robots import GentlyTerminating
-
 import threading
 
 import gym
-import torch
 import numpy as np
-
+import torch
 from abstract_rl.src.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
 from abstract_rl.src.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.src.misc.cli_printer import CliPrinter
 from abstract_rl.src.misc.running_centered_filter import RunningCenteredFilter
+from quanser_robots import GentlyTerminating
 
 
 class MCMCEnvWrapper:
@@ -23,19 +21,19 @@ class MCMCEnvWrapper:
         Initialize a new environment.
         :param mc: The model configuration with everything important.
         """
-        conf = mc['conf']
+        conf = mc["conf"]
         self.mc = mc
-        self.num_threads = conf['num_threads']
-        self.render = conf['render']
+        self.num_threads = conf["num_threads"]
+        self.render = conf["render"]
 
         # save config
         self.conf = conf
-        self.num_epochs = conf.get_root('num_epochs')
-        self.env_name = conf['name']
+        self.num_epochs = conf.get_root("num_epochs")
+        self.env_name = conf["name"]
         self.env = GentlyTerminating(gym.make(self.env_name))
 
-        self._normalize = conf['normalize']
-        self._discount = conf['discount']
+        self._normalize = conf["normalize"]
+        self._discount = conf["discount"]
 
         self.epoch = 0
 
@@ -48,8 +46,8 @@ class MCMCEnvWrapper:
         self.act_sp = self.env.action_space
         self.thread_lock = threading.Lock()
 
-        self.state_filter = RunningCenteredFilter('states', self.observation_dim)
-        self.reward_filter = RunningCenteredFilter('rewards', 1)
+        self.state_filter = RunningCenteredFilter("states", self.observation_dim)
+        self.reward_filter = RunningCenteredFilter("rewards", 1)
 
     def discount(self):
         """
@@ -75,19 +73,21 @@ class MCMCEnvWrapper:
         :return: A list of trajectories.
         """
 
-        with self.conf.ns('policy'):
+        with self.conf.ns("policy"):
             t = 0
             k = 0
             trajectories = []
             while t < batch_size:
-                tr = self.execute_policy_once(np.minimum(batch_size - t, max_steps), policy, render and k == 0, opt=not exploration)
+                tr = self.execute_policy_once(
+                    np.minimum(batch_size - t, max_steps), policy, render and k == 0, opt=not exploration
+                )
                 trajectories.append(tr)
                 t += len(tr)
                 k += 1
 
         if rew_field_name is not None:
             disc_rewards = [traj.discounted_reward(self.discount()) for traj in trajectories]
-            self.mc['log'].log({rew_field_name: [np.mean(disc_rewards), np.std(disc_rewards)]})
+            self.mc["log"].log({rew_field_name: [np.mean(disc_rewards), np.std(disc_rewards)]})
 
         self.epoch += 1
 
@@ -109,7 +109,8 @@ class MCMCEnvWrapper:
         # reset environment and create empty trajectory
         env = GentlyTerminating(gym.make(self.env_name)) if not self.render else self.env
         cs = env.reset()
-        if self._normalize: cs /= env.observation_space.high
+        if self._normalize:
+            cs /= env.observation_space.high
         self.state_filter.register(cs)
 
         # create new trajectory builder
@@ -122,22 +123,20 @@ class MCMCEnvWrapper:
 
         # repeat for the number of steps
         while max_steps is None or t < max_steps:
-
             # sample distribution based on state
             tcs = torch.Tensor(cs)
             tcs = tcs.view([1, -1])
 
             # sample action and calc log likelihood
             suff_stats = policy.forward(tcs)
-            a = policy.mode(suff_stats=suff_stats) \
-                if opt else policy.sample_actions(suff_stats=suff_stats)
+            a = policy.mode(suff_stats=suff_stats) if opt else policy.sample_actions(suff_stats=suff_stats)
 
             ll = policy.log_prob(a, suff_stats=suff_stats)
 
             # prepare for usage
             ll = ll.detach().numpy()[0]
             a = a.detach().numpy()[0]
-            cs, r, done, info = env.step(a)
+            cs, r, done, _info = env.step(a)
             self.state_filter.register(cs)
             self.reward_filter.register(cs)
 
@@ -149,10 +148,12 @@ class MCMCEnvWrapper:
             traj_builder.observe(a, r, cs, ll, int(done))
 
             # render if needed
-            if render: env.render()
+            if render:
+                env.render()
 
             # break if necessary
-            if done: break
+            if done:
+                break
 
         # compile using the discount factor
         traj = traj_builder.finalize()

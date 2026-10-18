@@ -1,10 +1,9 @@
 import scipy as sp
-
+import scipy.optimize
 import torch
 from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.flat_params import set_flat_params_to, get_flat_grad_from, get_flat_params_from
+from abstract_rl.src.misc.flat_params import get_flat_grad_from, get_flat_params_from, set_flat_params_to
 
-import scipy.optimize
 
 class VanillaGradient:
     """Simple vanilla gradient. Simply inherit from this class to add support"""
@@ -55,11 +54,14 @@ class VanillaGradient:
             return (obj.data.double().numpy(), get_flat_grad_from(self._model).data.double().numpy())
 
         # start optimizer
-        params, _, opt_info = sp.optimize.fmin_l_bfgs_b(closure, get_flat_params_from(self._model).double().numpy(), maxiter=maxiter)
+        params, _, _opt_info = sp.optimize.fmin_l_bfgs_b(
+            closure, get_flat_params_from(self._model).double().numpy(), maxiter=maxiter
+        )
         set_flat_params_to(self._model, torch.Tensor(params))
 
         # calc new obj for comparison
         new_obj = self.tr_obj(batch)
         self.cli.print(self.fmtstr % (curst, old_obj, new_obj))
 
-    def tr_obj(self, batch): pass
+    def tr_obj(self, batch):
+        pass

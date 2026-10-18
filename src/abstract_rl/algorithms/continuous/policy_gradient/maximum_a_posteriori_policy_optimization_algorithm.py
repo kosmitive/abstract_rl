@@ -1,10 +1,11 @@
 import torch
 import torch.optim as optim
-from pandas.tests.extension.numpy_.test_numpy_nested import np
-
-from abstract_rl.src.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
+from abstract_rl.src.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
+    PolicyOptimizationAlgorithm,
+)
 from abstract_rl.src.misc.cli_printer import CliPrinter
 from abstract_rl.src.misc.flat_params import get_flat_params_from
+from pandas.tests.extension.numpy_.test_numpy_nested import np
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
@@ -16,7 +17,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
     one in a supervised fashion.
     """
 
-    def __repr__(self): return f"Maximum A Posteriori Policy Optimization"
+    def __repr__(self):
+        return "Maximum A Posteriori Policy Optimization"
 
     def __init__(self, mc):
         """
@@ -26,18 +28,18 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         PolicyOptimizationAlgorithm.__init__(self, mc)
 
         # create lagrange multiplier
-        policy = self.mc.get('policy', target=False)
+        policy = self.mc.get("policy", target=False)
         num_lagrange_multipliers = policy.get_suff_stats_dim()
 
         # inner and outer learning rated, trust regions and batch size shortcuts
-        self.outer_lr = self.conf['outer_lr']
-        self.inner_lr = self.conf['inner_lr']
-        self.mode = self.conf['mode']
-        self.trust_regions = self.conf['trust_regions']
-        self.split_objective = self.conf['coordinate_ascent_objective']
-        self.split_constraint = self.conf['coordinate_ascent_constraint']
+        self.outer_lr = self.conf["outer_lr"]
+        self.inner_lr = self.conf["inner_lr"]
+        self.mode = self.conf["mode"]
+        self.trust_regions = self.conf["trust_regions"]
+        self.split_objective = self.conf["coordinate_ascent_objective"]
+        self.split_constraint = self.conf["coordinate_ascent_constraint"]
         self.cli = CliPrinter().instance
-        self.l2_reg = self.conf['l2_reg']
+        self.l2_reg = self.conf["l2_reg"]
 
         num_params = 1 if not self.split_constraint else num_lagrange_multipliers
         self.lagrange_mults = [torch.nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(num_params)]
@@ -74,8 +76,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         # get target and correct policy
         t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get('policy', target=True)
-        policy = self.mc.get('policy', target=False)
+        t_policy = self.mc.get("policy", target=True)
+        policy = self.mc.get("policy", target=False)
 
         # target stats
         target_suff_stats = t_policy.forward(t_states).detach()
@@ -87,9 +89,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         num_dims = target_suff_stats.size()[1]
         for d in range(num_dims):
             lst_els = []
-            if d > 0: lst_els.append(target_suff_stats[:, :d])
-            lst_els.append(suff_stats[:, d:d + 1].view([-1, 1]))
-            if d < num_dims - 1: lst_els.append(target_suff_stats[:, d + 1:])
+            if d > 0:
+                lst_els.append(target_suff_stats[:, :d])
+            lst_els.append(suff_stats[:, d : d + 1].view([-1, 1]))
+            if d < num_dims - 1:
+                lst_els.append(target_suff_stats[:, d + 1 :])
             l_suff_stats.append(torch.cat(lst_els, dim=1))
 
         return l_suff_stats
@@ -104,11 +108,10 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         # split objective if wanted
         t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get('policy', target=True)
+        t_policy = self.mc.get("policy", target=True)
 
         target_suff_stats = t_policy.forward(t_states).detach()
         if self.split_objective:
-
             # build the objective in a coordinate ascent fashion
             # iterate over the dimensions
             num_dims = target_suff_stats.size()[1]
@@ -130,26 +133,22 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         :return A list of constraints
         """
 
-        if self.mode == 'parametric':
-            kl = 'i-projection'
-        else:
-            kl = 'm-projection'
-        policy = self.mc.get('policy', target=False)
+        kl = "i-projection" if self.mode == "parametric" else "m-projection"
+        policy = self.mc.get("policy", target=False)
         t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get('policy', target=True)
+        t_policy = self.mc.get("policy", target=True)
         target_suff_stats = t_policy.forward(t_states).detach()
 
         # split constraint if wanted
         if self.split_constraint:
-
             num_dims = target_suff_stats.size()[1]
             constraints = []
             for d in range(num_dims):
-                c = (self.v[d] - policy.kl_divergence(batch, l_suff_stats[d+1], kl, 'mean'))
+                c = self.v[d] - policy.kl_divergence(batch, l_suff_stats[d + 1], kl, "mean")
                 constraints.append(c)
 
         else:
-            constraints = [(self.v[0] - policy.kl_divergence(batch, l_suff_stats[0], kl, 'mean'))]
+            constraints = [(self.v[0] - policy.kl_divergence(batch, l_suff_stats[0], kl, "mean"))]
 
         return constraints
 
@@ -163,7 +162,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         l_suff_stats = self.shuffle_up_stats(batch)
         obj = self.main_obj(batch, l_suff_stats)
         constraints = self.main_constraints(batch, l_suff_stats)
-        for lm, c in zip(self.lagrange_mults, constraints):
+        for lm, c in zip(self.lagrange_mults, constraints, strict=False):
             obj = obj + torch.exp(lm) * c
 
         return obj
@@ -176,11 +175,13 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         """
 
         self.sample_v()
-        self.cli.empty().print(self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))]))
+        self.cli.empty().print(
+            self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
+        )
 
         # perform a min step
         for s in range(num_steps):
-            batch = tc.sample(batch_size, ['add_act', 'grad_ranking', 'add_pi'])
+            batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
             self.perform_step(s, batch)
 
     def perform_step(self, step, batch):
@@ -198,25 +199,31 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         obj = self.main_obj(batch, l_suff_stats)
         constraints = self.main_constraints(batch, l_suff_stats)
 
-        self.cli.print(self.fmtstr % (step, obj.detach().numpy(), *[item for sublist in zip(self.lagrange_mults, constraints) for item in sublist]))
+        self.cli.print(
+            self.fmtstr
+            % (
+                step,
+                obj.detach().numpy(),
+                *[item for sublist in zip(self.lagrange_mults, constraints, strict=False) for item in sublist],
+            )
+        )
 
     def __lagrange_obj(self, batch, suff_stats):
         """
-        Calculated the reweighted objective needed for the min max problem. This is only partly 
+        Calculated the reweighted objective needed for the min max problem. This is only partly
         the objective as the lagrange constraints are missing.
         :param batch: The batch to use for estimating the objective.
-        :param suff_stats: A matrix containing for each element of the batch a vector of the 
+        :param suff_stats: A matrix containing for each element of the batch a vector of the
                sufficient statistics.
         :return: The calculated objective.
         """
 
-        policy = self.mc.get('policy', target=False)
+        policy = self.mc.get("policy", target=False)
 
         # build regularization for mean
-        if self.mode == 'parametric':
-
+        if self.mode == "parametric":
             act = torch.Tensor(batch.actions)
-            adv = torch.Tensor(batch['a'])
+            adv = torch.Tensor(batch["a"])
 
             # sample sufficient statistics
             ll = policy.log_prob(act, suff_stats=suff_stats)
@@ -224,9 +231,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             obj = torch.mean(rew_vals)
 
         else:
-
-            t_add_act = torch.Tensor(batch['add_act'])
-            t_add_q = torch.Tensor(batch['grad_ranking'])
+            t_add_act = torch.Tensor(batch["add_act"])
+            t_add_q = torch.Tensor(batch["grad_ranking"])
 
             # sample sufficient statistics
             ll = policy.log_prob(t_add_act, suff_stats=suff_stats)
@@ -242,7 +248,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         """
 
         # short hand and optimizer
-        policy = self.mc.get('policy', target=False)
+        policy = self.mc.get("policy", target=False)
         policy_parameters = list(policy.parameters())
         opt_outer = optim.Adam(policy_parameters, lr=self.outer_lr)
 

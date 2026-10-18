@@ -35,14 +35,14 @@ class ContinuousPolicy(Policy, Syncable):
         """
         raise NotImplementedError
 
-    def kl_divergence(self, batch, suff_stats=None, mode='i-projection', est='sum'):
+    def kl_divergence(self, batch, suff_stats=None, mode="i-projection", est="sum"):
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
         :return:
         """
 
-        tp = self.mc.get('policy', True)
+        tp = self.mc.get("policy", True)
 
         # calc sufficient statistics
         states = torch.Tensor(batch.states)
@@ -54,23 +54,27 @@ class ContinuousPolicy(Policy, Syncable):
         new_lls = self.log_prob(actions, suff_stats=suff_stats)
 
         # use I projection
-        if mode == 'm-projection':
+        if mode == "m-projection":
             p = log_likelihoods
             q = new_lls
 
         # use M Projection
-        elif mode == 'i-projection':
+        elif mode == "i-projection":
             p = new_lls
             q = log_likelihoods
 
-        else: raise NotImplementedError
+        else:
+            raise NotImplementedError
 
         # build kl terms adn sum up
         kl = torch.exp(p) * (p - q)
 
-        if est == 'sum': kl_est = torch.sum
-        elif est == 'mean':  kl_est = torch.mean
-        else: raise NotImplementedError
+        if est == "sum":
+            kl_est = torch.sum
+        elif est == "mean":
+            kl_est = torch.mean
+        else:
+            raise NotImplementedError
 
         return kl_est(kl)
 
@@ -81,7 +85,7 @@ class ContinuousPolicy(Policy, Syncable):
         :return: A un detached version of the objective
         """
 
-        policy = self.mc.get('policy', False)
+        policy = self.mc.get("policy", False)
 
         # calculate the objective
         states = torch.Tensor(batch.states)
@@ -91,7 +95,7 @@ class ContinuousPolicy(Policy, Syncable):
         old_ll = torch.Tensor(batch.log_likelihoods)
 
         # calculate the ratio term
-        a_vals = torch.Tensor(batch['a'])
+        a_vals = torch.Tensor(batch["a"])
         mean_a = a_vals.mean()
         std_a = a_vals.std()
         advantages = (a_vals - mean_a) / std_a

@@ -1,9 +1,10 @@
 import math
 
 import numpy as np
-
 from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
-from abstract_rl.src.policy.non_parametric.non_parametric_variational_policy_builder import NonParametricVariationalPolicyBuilder
+from abstract_rl.src.policy.non_parametric.non_parametric_variational_policy_builder import (
+    NonParametricVariationalPolicyBuilder,
+)
 
 
 class VariationalRankingOperator(TrajectoryOperator):
@@ -19,10 +20,10 @@ class VariationalRankingOperator(TrajectoryOperator):
         Initializes a new variational reweighting operator.
         :param mc: The model configuration to use.
         """
-        self.conf = mc['conf']
+        self.conf = mc["conf"]
         self.mc = mc
-        self.policy = mc.get('policy', True)
-        self.num_add_actions = self.conf.get_root('res_add_acts')
+        self.policy = mc.get("policy", True)
+        self.num_add_actions = self.conf.get_root("res_add_acts")
         self.b = NonParametricVariationalPolicyBuilder(self.mc)
 
     def hook(self):
@@ -43,4 +44,4 @@ class VariationalRankingOperator(TrajectoryOperator):
         q.samples -= np.expand_dims(q_norm, 1)
 
         # add a annotation to the trajectory
-        trajectory['grad_ranking'] = q.samples
+        trajectory["grad_ranking"] = q.samples

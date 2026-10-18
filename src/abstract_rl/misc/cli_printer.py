@@ -1,27 +1,28 @@
 from os import mkdir
-from os.path import join, exists
+from os.path import exists, join
 
 
 class CliPrinter:
     """
     Represents a cli printer, with a specified line length. Can be used to make uniform printing commands.
     """
-    class __CliPrinter:
 
+    class __CliPrinter:
         def __init__(self, line_length=200):
             """
             Initializes a new cli printer.
             :param line_length: The trajectory length for headers and sections.
             """
             self.line_length = line_length
-            self.ver_stack = [('base', True)]
+            self.ver_stack = [("base", True)]
             self.tabs = 1
             self.filename = None
 
         def new_epoch(self, root, epoch):
-            path = join(root, 'logs')
-            if not exists(path): mkdir(path)
-            self.filename = join(path, f'epoch_{epoch}.txt')
+            path = join(root, "logs")
+            if not exists(path):
+                mkdir(path)
+            self.filename = join(path, f"epoch_{epoch}.txt")
             open(self.filename, "w+").close()
 
         def print_and_write(self, message):
@@ -37,8 +38,9 @@ class CliPrinter:
             :param message: The message to print.
             :return: The printer itself.
             """
-            if not self.ver_stack[-1][1]: return self
-            tab_string = '\t' * self.tabs
+            if not self.ver_stack[-1][1]:
+                return self
+            tab_string = "\t" * self.tabs
             self.print_and_write(f"{tab_string}{message}")
             return self
 
@@ -47,9 +49,10 @@ class CliPrinter:
             Prints a single line using '-'.
             :return: The printer itself.
             """
-            if not self.ver_stack[-1][1]: return self
-            tab_string = '\t' * self.tabs
-            self.print_and_write(tab_string + '-' * (self.line_length - 4 * self.tabs))
+            if not self.ver_stack[-1][1]:
+                return self
+            tab_string = "\t" * self.tabs
+            self.print_and_write(tab_string + "-" * (self.line_length - 4 * self.tabs))
             return self
 
         def dbl_line(self):
@@ -57,8 +60,9 @@ class CliPrinter:
             Prints a double line using '='
             :return: The printer itself.
             """
-            if not self.ver_stack[-1][1]: return self
-            self.print_and_write('=' * self.line_length)
+            if not self.ver_stack[-1][1]:
+                return self
+            self.print_and_write("=" * self.line_length)
             return self
 
         def empty(self):
@@ -66,19 +70,23 @@ class CliPrinter:
             Prints a double line using '='
             :return: The printer itself.
             """
-            if not self.ver_stack[-1][1]: return self
+            if not self.ver_stack[-1][1]:
+                return self
             self.print_and_write("")
             return self
 
-        def indent(self, num=1): return CliClosure("indent", self.ver_stack[-1][1], num)
+        def indent(self, num=1):
+            return CliClosure("indent", self.ver_stack[-1][1], num)
 
         def big_header(self, title, verbose=True):
-            if verbose: self.empty().line(title).dbl_line()
+            if verbose:
+                self.empty().line(title).dbl_line()
             assert len(self.ver_stack) == 1
             return CliClosure(title, verbose, 0)
 
         def header(self, title, verbose=True):
-            if verbose: self.empty().line(title).line()
+            if verbose:
+                self.empty().line(title).line()
             return CliClosure(title, verbose, 1)
 
         def line(self, header=None):
@@ -88,17 +96,18 @@ class CliPrinter:
             :return: The printer itself.
             """
 
-            if not self.ver_stack[-1][1]: return
+            if not self.ver_stack[-1][1]:
+                return
             # define the line
             if header is None:
                 self.single_line()
 
             else:
                 tl = len(header)
-                tab_string = '\t' * self.tabs
+                tab_string = "\t" * self.tabs
                 sl = "-" * (self.line_length - tl - 22 - 4 * self.tabs)
-                l = f"{tab_string} {header} {sl}"
-                self.print_and_write(l)
+                line = f"{tab_string} {header} {sl}"
+                self.print_and_write(line)
 
             return self
 
@@ -113,11 +122,11 @@ class CliPrinter:
             CliPrinter._instance.line_length = line_length
 
     @property
-    def instance(self): return self._instance
+    def instance(self):
+        return self._instance
 
 
 class CliClosure:
-
     def __init__(self, closure_name, verbose=True, indent=0):
         self.closure_name = closure_name
         self.verbose = verbose

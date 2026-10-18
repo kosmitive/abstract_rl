@@ -57,6 +57,6 @@ class DataLogger:
             assert vp_value.ndim == 1
             self._data[key].append(value)
 
-            path = join(self._filepath, f'{key}.txt')
-            with open(path, 'a') as handle:
+            path = join(self._filepath, f"{key}.txt")
+            with open(path, "a") as handle:
                 np.savetxt(handle, value)

@@ -23,11 +23,14 @@ class Batch:
 
     # --- some syntactic sugar
 
-    def __len__(self): return len(self.states)
+    def __len__(self):
+        return len(self.states)
 
-    def __getitem__(self, key): return self._annotations[key]
+    def __getitem__(self, key):
+        return self._annotations[key]
 
-    def __setitem__(self, key, data): self._annotations[key] = data
+    def __setitem__(self, key, data):
+        self._annotations[key] = data
 
     @property
     def states(self):

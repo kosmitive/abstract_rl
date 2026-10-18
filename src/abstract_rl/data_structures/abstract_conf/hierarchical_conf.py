@@ -47,7 +47,8 @@ class SharedConf:
         """
         s = f"{self.__to_prefix_identifier(self.names)}"
         cont = f"{s}{key}" in self.__data
-        if not cont: self.__data[f"{s}{key}"] = default
+        if not cont:
+            self.__data[f"{s}{key}"] = default
         return self.__data[f"{s}{key}"]
 
     def __getitem__(self, key):
@@ -68,7 +69,8 @@ class SharedConf:
         s = self.__to_prefix_identifier(self.names)
         self.__data[f"{s}{key}"] = item
 
-    def ns(self, name): return HConfWrapper(self, name)
+    def ns(self, name):
+        return HConfWrapper(self, name)
 
     def push(self, name):
         """
@@ -106,6 +108,7 @@ class SharedConf:
         """
         return self.__data
 
+
 class HConfWrapper:
     def __init__(self, hconf, name):
         self.name = [name]
@@ -120,5 +123,3 @@ class HConfWrapper:
     def add(self, name):
         self.name.append(name)
         return self
-
-

@@ -1,5 +1,4 @@
 import torch
-
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
 
@@ -18,12 +17,12 @@ class TemporalDifferenceOperator(TrajectoryOperator):
         :param mc: The model configuration to use.
         """
         assert isinstance(mc, ModelConfiguration)
-        conf = mc.get('conf')
+        conf = mc.get("conf")
         self.conf = conf
-        self.v_net = mc.get('v_network', True)
+        self.v_net = mc.get("v_network", True)
 
         # get discount
-        self.env = mc['env']
+        self.env = mc["env"]
 
     def transform(self, trajectory):
         """
@@ -33,7 +32,6 @@ class TemporalDifferenceOperator(TrajectoryOperator):
 
         # deactivate grad
         with torch.no_grad():
-
             # obtain rewards
             discount = self.env.discount()
             t_states = torch.Tensor(trajectory.states)
@@ -43,14 +41,14 @@ class TemporalDifferenceOperator(TrajectoryOperator):
             mask = 1 - dones
 
             tl = len(trajectory)
-            tv = torch.zeros(tl+1)
+            tv = torch.zeros(tl + 1)
             td_errors = torch.zeros_like(dones)
             prev_value = 0
 
             for t in reversed(range(tl)):
-                tv[t] = t_rewards[t] + discount * mask[t] * tv[t+1]
+                tv[t] = t_rewards[t] + discount * mask[t] * tv[t + 1]
                 td_errors[t] = t_rewards[t] + discount * prev_value * mask[t] - v[t]
                 prev_value = v.data[t, 0]
 
-            trajectory['tv'] = tv[:-1]
-            trajectory['td'] = td_errors
+            trajectory["tv"] = tv[:-1]
+            trajectory["td"] = td_errors

@@ -1,5 +1,4 @@
 import numpy as np
-
 from abstract_rl.src.misc.cli_printer import CliPrinter
 
 
@@ -22,17 +21,20 @@ class Trajectory:
         self._sd = self.env.observation_dim
         self._ad = self.env.action_dim
         self.cli = CliPrinter().instance
-        self._states = self.__data_frame.loc[:, "s_0":f"s_{self._sd-1}"].values
+        self._states = self.__data_frame.loc[:, "s_0" : f"s_{self._sd - 1}"].values
         self._rewards = self.__data_frame.loc[:, "r":"r"].values[:-1]
 
     def __len__(self):
         return len(self._trajectory.index) - 1
 
-    def __setitem__(self, key, item): self._annotations[key] = item
+    def __setitem__(self, key, item):
+        self._annotations[key] = item
 
-    def __getitem__(self, key): return self._annotations[key]
+    def __getitem__(self, key):
+        return self._annotations[key]
 
-    def __contains__(self, value): return value in self._annotations
+    def __contains__(self, value):
+        return value in self._annotations
 
     # --- standard reinforcement learning fields
 
@@ -50,7 +52,7 @@ class Trajectory:
         Actions of trajectory.
         :return: All actions of the trajectory.
         """
-        return self.__data_frame.loc[:, "a_0":f"a_{self._ad-1}"].values[:-1]
+        return self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].values[:-1]
 
     @property
     def dones(self):
@@ -59,6 +61,7 @@ class Trajectory:
         :return: All log likelihoods of the trajectory.
         """
         return self.__data_frame.loc[:, "d":"d"].values[:-1]
+
     @property
     def log_likelihoods(self):
         """

@@ -1,8 +1,7 @@
 import torch
-from pandas.tests.extension.numpy_.test_numpy_nested import np
-
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
+from pandas.tests.extension.numpy_.test_numpy_nested import np
 
 
 class RetraceOperator(TrajectoryOperator):
@@ -19,19 +18,19 @@ class RetraceOperator(TrajectoryOperator):
         :param mc: The model configuration with env and so on.
         """
         assert isinstance(mc, ModelConfiguration)
-        conf = mc.get('conf')
+        conf = mc.get("conf")
         self.conf = conf
         self.mc = mc
-        self.policy = mc.get('policy', False)
-        self.q_network = mc.get('q_network', True)
+        self.policy = mc.get("policy", False)
+        self.q_network = mc.get("q_network", True)
 
-        env = mc['env']
+        env = mc["env"]
         self.discount = env.discount()
         self.env = env
 
-        self.ret_lambda = torch.Tensor([self.conf['lambda']])
-        self.ret_bootstrap = self.conf.get_root('mem_bootstrap_steps')
-        self.ret_add_acts = self.conf['add_acts']
+        self.ret_lambda = torch.Tensor([self.conf["lambda"]])
+        self.ret_bootstrap = self.conf.get_root("mem_bootstrap_steps")
+        self.ret_add_acts = self.conf["add_acts"]
 
     def train(self):
         """
@@ -50,7 +49,6 @@ class RetraceOperator(TrajectoryOperator):
 
         # it is not necessary to correctly log the grads
         with torch.no_grad():
-
             # get truncated length
             tl = len(trajectory)
 
@@ -63,7 +61,7 @@ class RetraceOperator(TrajectoryOperator):
             nxt_states = torch.Tensor(trajectory.next_states)
             dones = torch.Tensor(trajectory.dones)
             nxt_v_vals = self.q_network.v_val(nxt_states)
-            nxt_v_vals[-1] *= (1 - dones[-1])
+            nxt_v_vals[-1] *= 1 - dones[-1]
 
             # get import. sampling coefficients
             c = self._def_bounded_importance_sampling_coefficients(trajectory)
@@ -77,19 +75,18 @@ class RetraceOperator(TrajectoryOperator):
 
             # backwards iterate for all q values
             tq = q_vals
-            for t in range(tl-self.ret_bootstrap+1):
-
+            for t in range(tl - self.ret_bootstrap + 1):
                 # extract coefficients and build up
-                extracted_c = c[t:t+self.ret_bootstrap-1, 0]
+                extracted_c = c[t : t + self.ret_bootstrap - 1, 0]
                 one_c = torch.cat([torch.ones(1), extracted_c])
                 cum_c = torch.cumprod(one_c, 0)
 
                 # get all fields
-                coeff = cum_c * gammas * td_errors_q[t:t+self.ret_bootstrap]
+                coeff = cum_c * gammas * td_errors_q[t : t + self.ret_bootstrap]
                 tq[t] += torch.sum(coeff)
 
-            trajectory['q'] = q_vals
-            trajectory['tq'] = tq
+            trajectory["q"] = q_vals
+            trajectory["tq"] = tq
 
     def _def_bounded_importance_sampling_coefficients(self, trajectory):
         """

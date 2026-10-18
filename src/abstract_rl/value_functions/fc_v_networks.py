@@ -1,15 +1,13 @@
 import numpy as np
-import torch.nn as nn
 import torch
-from torch.autograd import Variable
-
+import torch.nn as nn
 from abstract_rl.src.algorithms.mixed.vanilla_gradient import VanillaGradient
-from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
+from torch.autograd import Variable
 
 
 class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
-
     """Fully connected neural network."""
 
     def __init__(self, mc):
@@ -18,8 +16,8 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         layer including the input as well as the output layer."""
         nn.Module.__init__(self)
 
-        conf = mc.get('conf')
-        struct = conf['struct']
+        conf = mc.get("conf")
+        struct = conf["struct"]
 
         # shortcut for state and action dim
         sd = mc.env.observation_dim
@@ -30,14 +28,14 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.loss = torch.nn.MSELoss()
 
         # neural nets
-        layer_norm = conf.get('layer_norm', False)
-        init = conf.get('init', 'orthogonal')
-        def_fn = conf['act_fn']
-        self.l2 = conf['l2_reg']
+        layer_norm = conf.get("layer_norm", False)
+        init = conf.get("init", "orthogonal")
+        def_fn = conf["act_fn"]
+        self.l2 = conf["l2_reg"]
 
         # create network
         self.net = MultilayerPerceptron(mc, np.concatenate(([sd], struct, [1])), def_fn, layer_norm, init)
-        self.add_module('neural_net', self.net)
+        self.add_module("neural_net", self.net)
 
         # set up trust regions
         VanillaGradient.__init__(self, self.net)
@@ -73,7 +71,7 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         t_states = torch.Tensor(batch.states)
         states = Variable(t_states)
         v_vals = self.v_val(states).view(-1)
-        v_targets = torch.Tensor(batch['tv']).view(-1)
+        v_targets = torch.Tensor(batch["tv"]).view(-1)
         v_targets = Variable(v_targets)
         w = torch.cat([p.view(-1) for p in self.parameters()])
         obj = loss(v_vals, v_targets) + self.l2 * torch.norm(w)

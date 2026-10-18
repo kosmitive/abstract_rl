@@ -14,33 +14,32 @@
 #  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import numpy as np
-import torch.nn as nn
 import torch
-
+import torch.nn as nn
 from abstract_rl.src.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
 
 
 class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
-
     """Fully connected neural network."""
+
     def __init__(self, mc):
         """Create a new neural network, whereas the structure is passed
         as a list of numbers, representing the size of each fully connected
         layer including the input as well as the output layer."""
         nn.Module.__init__(self)
 
-        conf = mc.get('conf')
+        conf = mc.get("conf")
 
         # required settings
-        struct = conf['struct']
-        self.batch_size = conf['batch_size']
+        struct = conf["struct"]
+        self.batch_size = conf["batch_size"]
 
         # neural nets
-        layer_norm = conf.get('layer_norm', False)
-        init = conf.get('init', 'orthogonal')
-        def_fn = conf['act_fn']
+        layer_norm = conf.get("layer_norm", False)
+        init = conf.get("init", "orthogonal")
+        def_fn = conf["act_fn"]
 
         # shortcut for state and action dim
         sd = mc.env.observation_dim
@@ -52,8 +51,8 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.loss = torch.nn.MSELoss()
 
         # neural nets
-        self.fc_net = MultilayerPerceptron(mc, np.concatenate(([sd+ad], struct, [1])), def_fn, layer_norm, init)
-        self.add_module('neural_net', self.fc_net)
+        self.fc_net = MultilayerPerceptron(mc, np.concatenate(([sd + ad], struct, [1])), def_fn, layer_norm, init)
+        self.add_module("neural_net", self.fc_net)
 
         # set up trust regions
         VanillaGradient.__init__(self, self.fc_net)
@@ -81,7 +80,7 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
     def v_val(self, states, exp_actions=10):
 
         # use policy to estimate v values
-        policy = self.mc.get('policy', True)
+        policy = self.mc.get("policy", True)
         rep_states = states.repeat([exp_actions, 1])
         samp_actions = policy.sample_actions(states, num_actions=exp_actions)
         lin_actions = samp_actions.view([-1, 1])
@@ -105,5 +104,5 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         t_states = torch.Tensor(batch.states)
         t_actions = torch.Tensor(batch.actions)
         q_vals = self.q_val(t_states, t_actions)
-        q_targets = torch.Tensor(batch['tq']).view(-1)
+        q_targets = torch.Tensor(batch["tq"]).view(-1)
         return self.loss(q_vals, q_targets)

@@ -1,5 +1,4 @@
 import torch
-
 from abstract_rl.src.misc.cli_printer import CliPrinter
 
 
@@ -25,9 +24,7 @@ def conjugate_gradient(A, b, max_k=10, tol=1e-10):
     cli = CliPrinter().instance
 
     with cli.header("conjugate gradients started", False):
-
         while k < max_k:
-
             # remaining fields
             _Avp = A(p)
             alpha = rdotr / torch.dot(p, _Avp)
@@ -40,7 +37,8 @@ def conjugate_gradient(A, b, max_k=10, tol=1e-10):
             beta = new_rdotr / rdotr
             p = beta * p + r
             rdotr = new_rdotr
-            if rdotr <= tol: break
+            if rdotr <= tol:
+                break
 
             # calculate next conjugate gradient
             k += 1

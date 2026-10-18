@@ -1,5 +1,4 @@
 import torch
-
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
 
@@ -18,13 +17,13 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
         :param mc: The model configuration to use.
         """
         assert isinstance(mc, ModelConfiguration)
-        conf = mc.get('conf')
+        conf = mc.get("conf")
         self.conf = conf
-        self.v_net = mc.get('v_network', True)
+        self.v_net = mc.get("v_network", True)
 
         # get discount
-        self.env = mc['env']
-        self.gae_lambda = torch.Tensor([self.conf['lambda']])
+        self.env = mc["env"]
+        self.gae_lambda = torch.Tensor([self.conf["lambda"]])
 
     def transform(self, trajectory):
         """
@@ -34,14 +33,13 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
 
         # deactivate grad
         with torch.no_grad():
-
             tl = len(trajectory)
 
             # obtain rewards
             discount = self.env.discount()
 
             # use v approximation to get advantages
-            td_errors = torch.Tensor(trajectory['td'])
+            td_errors = torch.Tensor(trajectory["td"])
             dones = torch.Tensor(trajectory.dones)
             mask = 1 - dones
 
@@ -54,4 +52,4 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
             for t in reversed(range(tl)):
                 a[t] = td_errors[t] + mask[t] * gae_gamma_lambda * a[t + 1]
 
-            trajectory['a'] = a[:-1]
+            trajectory["a"] = a[:-1]

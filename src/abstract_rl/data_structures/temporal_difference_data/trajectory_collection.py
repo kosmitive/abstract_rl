@@ -20,9 +20,8 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
-from abstract_rl.src.data_structures.temporal_difference_data.batch import Batch
 import numpy as np
-
+from abstract_rl.src.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.src.misc.cli_printer import CliPrinter
 
 
@@ -57,11 +56,22 @@ class TrajectoryCollection:
         titstr = "%16s | %10s | %28s | %29s | %10s %10s %10s"
         fmtstr = "%10i [%3i] | %10.5f | a ~ %10.5f +- %10.5f | %10.5f <= r <= %10.5f | %10.5f %10.5f %10.5f"
 
-        self.cli.empty().print(titstr % ("id [len]", "entropy", "action_stats", "reward_stats", "avg_rew", "tot_rew", "disc_rew")).line()
+        self.cli.empty().print(
+            titstr % ("id [len]", "entropy", "action_stats", "reward_stats", "avg_rew", "tot_rew", "disc_rew")
+        ).line()
         for traj in self.__trajectories:
-
-            print_str = fmtstr % (traj.traj_id, len(traj), traj.entropy, np.mean(traj.actions), np.std(traj.actions),
-                      np.min(traj.rewards), np.max(traj.rewards), traj.average_reward, traj.total_reward, traj.discounted_reward(traj.env.discount()))
+            print_str = fmtstr % (
+                traj.traj_id,
+                len(traj),
+                traj.entropy,
+                np.mean(traj.actions),
+                np.std(traj.actions),
+                np.min(traj.rewards),
+                np.max(traj.rewards),
+                traj.average_reward,
+                traj.total_reward,
+                traj.discounted_reward(traj.env.discount()),
+            )
             self.cli.print(print_str)
 
     def extend(self, trajectories):
@@ -80,9 +90,11 @@ class TrajectoryCollection:
         self.__trajectories = self.__trajectories[i:]
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
 
-    def __iter__(self): return iter(self.__trajectories)
+    def __iter__(self):
+        return iter(self.__trajectories)
 
-    def trajectories(self): return self.__trajectories
+    def trajectories(self):
+        return self.__trajectories
 
     def to_batch(self, copy_fields=None):
         """Convert the trajectory collection to a batch.
@@ -104,7 +116,6 @@ class TrajectoryCollection:
 
         # if it should be continued
         for t in range(len(self.__trajectories)):
-
             # obtain possible length
             traj = self.__trajectories[t]
 
@@ -126,7 +137,8 @@ class TrajectoryCollection:
         nxt_states = np.concatenate(nxt_states, 0)
         rewards = np.concatenate(rewards, 0)
         ds = np.concatenate(ds, 0)
-        for a in copy_fields: annots[a] = np.concatenate(annots[a], 0)
+        for a in copy_fields:
+            annots[a] = np.concatenate(annots[a], 0)
 
         batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
         assert len(batch) > 0
@@ -135,7 +147,7 @@ class TrajectoryCollection:
     def sample(self, batch_size, copy_fields=None):
 
         batch_size = min(batch_size, self.__num_data_points)
-        tindices = np.random.randint(0, batch_size, size=batch_size)
+        tindices = np.random.randint(0, batch_size, size=batch_size)  # noqa: NPY002
         tindices.sort()
 
         # define basic lists
@@ -155,17 +167,17 @@ class TrajectoryCollection:
 
         # if it should be continued
         for t in range(len(self.__trajectories)):
-
             # obtain possible length
             traj = self.__trajectories[t]
             traj_len = len(traj) - 7
 
             # get all possible indices
             j = 0
-            while j < traj_len and i+j < len(tindices) and tindices[i+j] - traj_offset < traj_len: j += 1
+            while j < traj_len and i + j < len(tindices) and tindices[i + j] - traj_offset < traj_len:
+                j += 1
 
             # map indices to trajectory
-            m_indices = tindices[i:i+j] - traj_offset
+            m_indices = tindices[i : i + j] - traj_offset
 
             # append infos
             states.append(traj.states[m_indices])
@@ -186,7 +198,8 @@ class TrajectoryCollection:
         nxt_states = np.concatenate(nxt_states, 0)
         rewards = np.concatenate(rewards, 0)
         ds = np.concatenate(ds, 0)
-        for a in copy_fields: annots[a] = np.concatenate(annots[a], 0)
+        for a in copy_fields:
+            annots[a] = np.concatenate(annots[a], 0)
 
         batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
         assert len(batch) > 0

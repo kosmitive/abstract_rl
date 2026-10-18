@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-
 from abstract_rl.src.data_structures.temporal_difference_data.trajectory import Trajectory
 
 
@@ -68,8 +67,10 @@ class TrajectoryBuilder:
         l_states = self._trajectory[0::5]
         np_actions = np.stack(l_actions)
         np_states = np.stack(l_states)
-        if np_states.ndim == 1: np_states = np.expand_dims(np_states, 1)
-        if np_actions.ndim == 1: np_actions = np.expand_dims(np_actions, 1)
+        if np_states.ndim == 1:
+            np_states = np.expand_dims(np_states, 1)
+        if np_actions.ndim == 1:
+            np_actions = np.expand_dims(np_actions, 1)
 
         # fill in the values
         states[:] = np_states

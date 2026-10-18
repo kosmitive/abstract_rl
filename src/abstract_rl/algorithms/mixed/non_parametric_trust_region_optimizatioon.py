@@ -1,10 +1,9 @@
 import math
 
-import torch
-from torch.autograd import Variable
 import numpy as np
-
+import torch
 from abstract_rl.src.misc.cli_printer import CliPrinter
+from torch.autograd import Variable
 
 
 def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
@@ -25,12 +24,11 @@ def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
 
     cli.empty().print("statistics of problem").empty()
     with cli.indent():
-        cli.print(f'Q(s,a) \t~ {torch.mean(q_tensor)} +- [{torch.std(q_tensor)}]')
-        cli.print(f'ε \t\t= {torch.mean(q_tensor)} +- [{torch.std(q_tensor)}]')
+        cli.print(f"Q(s,a) \t~ {torch.mean(q_tensor)} +- [{torch.std(q_tensor)}]")
+        cli.print(f"ε \t\t= {torch.mean(q_tensor)} +- [{torch.std(q_tensor)}]")
 
     cli.empty().print("obtain optimal eta*").empty()
     with cli.indent():
-
         # obtain maximum q value
         max_q_val = torch.max(q_tensor)
         q_tensor = q_tensor - max_q_val
@@ -50,7 +48,6 @@ def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
 
         k = 0
         while diff > 1e-5:
-
             # set grad to zero
             optimizer.zero_grad()
 
@@ -63,7 +60,8 @@ def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
             obj = eta * eps + eta * outer_integral + K * max_q_val * math.log(N)
             obj.backward()
 
-            if k % 20 == 0: cli.print(fmtstr % (k, n_eta, diff, obj))
+            if k % 20 == 0:
+                cli.print(fmtstr % (k, n_eta, diff, obj))
             k += 1
 
             optimizer.step()

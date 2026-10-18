@@ -1,15 +1,12 @@
 import numpy as np
 
-
 # from https://github.com/joschu/modular_rl
 # http://www.johndcook.com/blog/standard_deviation/
 # https://github.com/ikostrikov/pytorch-trpo/blob/master/running_state.py
-
 from abstract_rl.src.misc.cli_printer import CliPrinter
 
 
 class RunningCenteredFilter:
-
     def __init__(self, name, dim, std_dev_noise=1e-8, clip=5):
 
         # build running variables
@@ -23,7 +20,8 @@ class RunningCenteredFilter:
         self._std_dev_noise = std_dev_noise
 
     def register(self, xs):
-        if len(xs.shape) == 1: xs = xs.reshape([-1, self._dim])
+        if len(xs.shape) == 1:
+            xs = xs.reshape([-1, self._dim])
 
         # for all datapoints
         for i in range(len(xs)):
@@ -41,7 +39,8 @@ class RunningCenteredFilter:
                 self._s[...] = self._s + (s - old_mean) * (s - self._m)
 
     def __call__(self, x, update=True):
-        if update: self.register(x)
+        if update:
+            self.register(x)
         x = (x - self.mean) / (self.std + self._std_dev_noise)
         x = np.clip(x, -self._clip, self._clip)
         return x
@@ -57,4 +56,3 @@ class RunningCenteredFilter:
     @property
     def std(self):
         return np.sqrt(self.var)
-

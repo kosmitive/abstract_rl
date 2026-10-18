@@ -1,18 +1,16 @@
 import numpy as np
 import torch
 import torch.autograd as autograd
-from torch.autograd import Variable
-
 from abstract_rl.src.algorithms.mixed.conjugate_gradient import conjugate_gradient
 from abstract_rl.src.misc.cli_printer import CliPrinter
 from abstract_rl.src.misc.flat_params import get_flat_params_from, set_flat_params_to
+from torch.autograd import Variable
 
 
 class TrustRegionGradient:
-    """Add trust region gradient based optimization to any class by inheriting this one.
-    """
+    """Add trust region gradient based optimization to any class by inheriting this one."""
 
-    def __init__(self, model, tr_eps, cg_max_k=10, cg_residual_tol=1e-6, dvp_damping=1e-5, mode='min'):
+    def __init__(self, model, tr_eps, cg_max_k=10, cg_residual_tol=1e-6, dvp_damping=1e-5, mode="min"):
         """Should be self explanatory
 
         :param model: The model to use
@@ -81,7 +79,6 @@ class TrustRegionGradient:
         self.cli.print(titlestr % ("step", "old_obj", "obj", "lr", "ratio", "act_improv", "exp_improv")).line()
 
         with torch.no_grad():
-
             old_obj = self.tr_obj(batch).data
             old_obj = old_obj.detach().numpy()
 
@@ -90,7 +87,6 @@ class TrustRegionGradient:
             step = 0
             lr = 1.0
             while step < max_steps:
-
                 # calc difference and revert this difference
                 x_new = x + lr * fullstep
                 set_flat_params_to(self._model, x_new)
