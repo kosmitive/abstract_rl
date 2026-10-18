@@ -53,6 +53,8 @@ def run_trpo(conf: Any) -> np.ndarray:
     # define namespace for v
     with conf.ns("val"):
         sync_steps = conf["sync_steps"]
+        v_opt_steps = conf["opt_steps"]
+        v_batch_size = conf["batch_size"]
         v_network = FullyVNeuralNet(mc)
         mc.add_syncable("v_network", v_network, sync_steps)
 
@@ -138,8 +140,7 @@ def run_trpo(conf: Any) -> np.ndarray:
             alg.perform_tr_sgd(0, batch, batch)
 
         with cli.header("v-step", True):
-            batch = tc.to_batch(["tv"])
-            v_network.perform_sgd(0, batch)
+            v_network.perform_mult_sgd(v_opt_steps, tc, v_batch_size, ["tv"])
 
         # copy target_networks
         mc.sync()

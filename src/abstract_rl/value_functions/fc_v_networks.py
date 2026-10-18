@@ -40,7 +40,7 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.add_module("neural_net", self.net)
 
         # set up trust regions
-        VanillaGradient.__init__(self, self.net)
+        VanillaGradient.__init__(self, self.net, lr=conf.get("lr", 1e-3))
 
     def clone(self) -> "FullyVNeuralNet":
         """Clones the Neural Network"""

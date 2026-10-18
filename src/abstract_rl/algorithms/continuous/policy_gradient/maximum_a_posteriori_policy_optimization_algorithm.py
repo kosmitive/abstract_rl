@@ -51,6 +51,10 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.lagrange_mults = [torch.nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(num_params)]
         self.v = self.sample_v()
 
+        # optimizers are persistent over all steps, so adam can accumulate its moment estimates
+        self.opt_outer = optim.Adam(policy.parameters(), lr=self.outer_lr)
+        self.opt_inner = optim.Adam(self.lagrange_mults, lr=self.inner_lr)
+
         self.fmtstr = "%10i | %10.5f" + num_params * " | %10.5f x %10.5f"
         self.titlestr = "%10s | %10s" + num_params * " | %23s"
 
@@ -248,16 +252,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         Solves the minimization problem targeting the policy parameters only.
         """
 
-        # short hand and optimizer
-        policy = self.mc.get("policy", target=False)
-        policy_parameters = list(policy.parameters())
-        opt_outer = optim.Adam(policy_parameters, lr=self.outer_lr)
-
         # optimize
-        opt_outer.zero_grad()
+        self.opt_outer.zero_grad()
         obj = -self.obj(batch)
         obj.backward()
-        opt_outer.step()
+        self.opt_outer.step()
 
     def __min_step(self, batch: Batch) -> None:
         """
@@ -265,11 +264,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         positive.
         """
 
-        # short hand and optimizer
-        opt_inner = optim.Adam(self.lagrange_mults, lr=self.inner_lr)
-
         # training step
-        opt_inner.zero_grad()
+        self.opt_inner.zero_grad()
         obj = self.obj(batch)
         obj.backward()
-        opt_inner.step()
+        self.opt_inner.step()
