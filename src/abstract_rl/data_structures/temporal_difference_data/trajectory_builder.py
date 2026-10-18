@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory import Trajectory
+
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 
 
 class TrajectoryBuilder:

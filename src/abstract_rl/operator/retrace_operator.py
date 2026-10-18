@@ -1,7 +1,8 @@
+import numpy as np
 import torch
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
-from pandas.tests.extension.numpy_.test_numpy_nested import np
+
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
 class RetraceOperator(TrajectoryOperator):

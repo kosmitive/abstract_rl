@@ -1,5 +1,6 @@
 import torch
-from abstract_rl.src.algorithms.mixed.conjugate_gradient import conjugate_gradient
+
+from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
 
 
 def test_mult_conjugate_gradients():

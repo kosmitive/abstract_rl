@@ -1,6 +1,7 @@
 import torch
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
+
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
 class TemporalDifferenceOperator(TrajectoryOperator):

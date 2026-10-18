@@ -1,5 +1,6 @@
 import torch
-from abstract_rl.src.misc.cli_printer import CliPrinter
+
+from abstract_rl.misc.cli_printer import CliPrinter
 
 
 def conjugate_gradient(A, b, max_k=10, tol=1e-10):

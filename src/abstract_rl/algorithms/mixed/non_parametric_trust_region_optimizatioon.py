@@ -2,8 +2,9 @@ import math
 
 import numpy as np
 import torch
-from abstract_rl.src.misc.cli_printer import CliPrinter
 from torch.autograd import Variable
+
+from abstract_rl.misc.cli_printer import CliPrinter
 
 
 def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):

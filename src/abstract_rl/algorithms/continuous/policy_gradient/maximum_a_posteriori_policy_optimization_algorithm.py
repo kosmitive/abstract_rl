@@ -1,11 +1,12 @@
+import numpy as np
 import torch
 import torch.optim as optim
-from abstract_rl.src.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
+
+from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
     PolicyOptimizationAlgorithm,
 )
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.flat_params import get_flat_params_from
-from pandas.tests.extension.numpy_.test_numpy_nested import np
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.flat_params import get_flat_params_from
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
@@ -58,7 +59,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         v = [None] * len(samp_trust_regions)
         for d in range(len(samp_trust_regions)):
             if isinstance(samp_trust_regions[d], list):
-                v[d] = np.random.uniform(samp_trust_regions[d][0], samp_trust_regions[d][1])
+                v[d] = np.random.uniform(samp_trust_regions[d][0], samp_trust_regions[d][1])  # noqa: NPY002
             else:
                 v[d] = samp_trust_regions[d]
 

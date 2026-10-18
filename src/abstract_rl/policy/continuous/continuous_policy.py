@@ -1,6 +1,7 @@
 import torch
-from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.src.policy.policy import Policy
+
+from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.policy.policy import Policy
 
 
 class ContinuousPolicy(Policy, Syncable):

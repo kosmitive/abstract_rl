@@ -1,10 +1,11 @@
 import numpy as np
 import torch
 import torch.autograd as autograd
-from abstract_rl.src.algorithms.mixed.conjugate_gradient import conjugate_gradient
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.flat_params import get_flat_params_from, set_flat_params_to
 from torch.autograd import Variable
+
+from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.flat_params import get_flat_params_from, set_flat_params_to
 
 
 class TrustRegionGradient:

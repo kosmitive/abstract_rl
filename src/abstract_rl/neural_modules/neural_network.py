@@ -2,8 +2,9 @@ import math as m
 
 import torch
 import torch.nn as nn
-from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.src.misc.mixed import select_activation
+
+from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.misc.mixed import select_activation
 
 
 class MultilayerPerceptron(nn.Module, Syncable):

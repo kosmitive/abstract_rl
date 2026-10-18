@@ -1,4 +1,4 @@
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 
 
 class TrajectoryOperator:

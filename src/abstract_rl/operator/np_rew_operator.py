@@ -1,8 +1,9 @@
 import math
 
 import numpy as np
-from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
-from abstract_rl.src.policy.non_parametric.non_parametric_variational_policy_builder import (
+
+from abstract_rl.operator.trajectory_operator import TrajectoryOperator
+from abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder import (
     NonParametricVariationalPolicyBuilder,
 )
 

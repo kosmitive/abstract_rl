@@ -1,11 +1,12 @@
 import numpy as np
 import torch
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
-from abstract_rl.src.policy.continuous.continuous_policy import ContinuousPolicy
 from torch.distributions import Normal
 from torch.nn import Parameter
+
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
+from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 
 
 class UnivariateGaussianPolicy(ContinuousPolicy):

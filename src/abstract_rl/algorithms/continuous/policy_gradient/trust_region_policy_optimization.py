@@ -1,7 +1,5 @@
-from abstract_rl.src.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
-    PolicyOptimizationAlgorithm,
-)
-from abstract_rl.src.algorithms.mixed.trust_region_gradient import TrustRegionGradient
+from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
+from abstract_rl.algorithms.mixed.trust_region_gradient import TrustRegionGradient
 
 
 class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):

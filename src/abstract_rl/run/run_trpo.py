@@ -2,20 +2,21 @@ from os.path import join
 
 import numpy as np
 import torch
-from abstract_rl.src.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
+
+from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
 
 # create the environment in initial state.
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.env.mcmc_env_wrapper import MCMCEnvWrapper
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.data_logger import DataLogger
-from abstract_rl.src.misc.mixed import default_settings
-from abstract_rl.src.operator.filter_operator import FilterOperator
-from abstract_rl.src.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
-from abstract_rl.src.operator.td_operator import TemporalDifferenceOperator
-from abstract_rl.src.plots.reward_plot import RewardValueFunctionPlot
-from abstract_rl.src.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
-from abstract_rl.src.value_functions.fc_v_networks import FullyVNeuralNet
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.data_logger import DataLogger
+from abstract_rl.misc.mixed import default_settings
+from abstract_rl.operator.filter_operator import FilterOperator
+from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
+from abstract_rl.operator.td_operator import TemporalDifferenceOperator
+from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
+from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 
 
 # title of the script

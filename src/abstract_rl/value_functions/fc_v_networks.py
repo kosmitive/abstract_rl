@@ -1,10 +1,11 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from abstract_rl.src.algorithms.mixed.vanilla_gradient import VanillaGradient
-from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
 from torch.autograd import Variable
+
+from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
+from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
 class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):

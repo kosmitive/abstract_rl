@@ -1,5 +1,6 @@
 import numpy as np
-from abstract_rl.src.plots.plot import Plot
+
+from abstract_rl.plots.plot import Plot
 
 
 class RewardValueFunctionPlot(Plot):

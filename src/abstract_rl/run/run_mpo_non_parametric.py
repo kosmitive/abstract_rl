@@ -2,24 +2,25 @@ from os.path import join
 
 import numpy as np
 import torch
-from abstract_rl.src.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
+
+from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
     MPOAlgorithm,
 )
 
 # create the environment in initial state.
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
-from abstract_rl.src.env.mcmc_env_wrapper import MCMCEnvWrapper
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.data_logger import DataLogger
-from abstract_rl.src.misc.mixed import default_settings
-from abstract_rl.src.operator.filter_operator import FilterOperator
-from abstract_rl.src.operator.np_rew_operator import VariationalRankingOperator
-from abstract_rl.src.operator.resample_actions_operator import ResampleOperator
-from abstract_rl.src.operator.retrace_operator import RetraceOperator
-from abstract_rl.src.plots.reward_plot import RewardValueFunctionPlot
-from abstract_rl.src.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
-from abstract_rl.src.value_functions.fc_q_networks import FullyQNeuralNet
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.data_logger import DataLogger
+from abstract_rl.misc.mixed import default_settings
+from abstract_rl.operator.filter_operator import FilterOperator
+from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
+from abstract_rl.operator.resample_actions_operator import ResampleOperator
+from abstract_rl.operator.retrace_operator import RetraceOperator
+from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
+from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
 # title of the script
 

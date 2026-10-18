@@ -3,11 +3,12 @@ import threading
 import gym
 import numpy as np
 import torch
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
-from abstract_rl.src.misc.cli_printer import CliPrinter
-from abstract_rl.src.misc.running_centered_filter import RunningCenteredFilter
 from quanser_robots import GentlyTerminating
+
+from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
 
 
 class MCMCEnvWrapper:

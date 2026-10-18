@@ -1,7 +1,8 @@
 import numpy as np
 import torch
-from abstract_rl.src.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
-from abstract_rl.src.policy.non_parametric.non_parametric_policy import NonParametricPolicy
+
+from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy
 
 
 class NonParametricVariationalPolicyBuilder:

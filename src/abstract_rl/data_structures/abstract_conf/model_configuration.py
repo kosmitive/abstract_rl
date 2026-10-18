@@ -5,9 +5,10 @@ from os.path import exists, join
 
 import numpy as np
 import torch
-from abstract_rl.src.data_structures.abstract_conf.hierarchical_conf import SharedConf
-from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.src.env.mcmc_env_wrapper import MCMCEnvWrapper
+
+from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
+from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
 
 
 class ModelConfiguration:

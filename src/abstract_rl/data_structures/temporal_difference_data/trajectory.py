@@ -1,5 +1,6 @@
 import numpy as np
-from abstract_rl.src.misc.cli_printer import CliPrinter
+
+from abstract_rl.misc.cli_printer import CliPrinter
 
 
 class Trajectory:

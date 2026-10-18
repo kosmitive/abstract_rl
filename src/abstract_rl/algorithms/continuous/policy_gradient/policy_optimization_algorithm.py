@@ -1,5 +1,6 @@
 import torch
-from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
+
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 
 
 class PolicyOptimizationAlgorithm:
