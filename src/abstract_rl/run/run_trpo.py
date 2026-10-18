@@ -2,21 +2,21 @@ from os.path import join
 from typing import Any
 
 import numpy as np
-import torch
 from numpy import ndarray
 
 from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request, training_epochs
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
-from abstract_rl.operator.filter_operator import FilterOperator
+from abstract_rl.misc.obs_norm import absorb_observations
 from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
 from abstract_rl.operator.td_operator import TemporalDifferenceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.policy.continuous.continuous_policy import refresh_sigma_floors
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 
@@ -36,9 +36,7 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     cli = CliPrinter().instance
 
     seed = run_conf["seed"]
-    torch.manual_seed(seed)
     np.random.seed(seed)
-    num_epochs = run_conf["num_epochs"]
     max_steps = run_conf["max_steps"]
 
     # make default instance available
@@ -48,6 +46,7 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     # create an environment wrapper
     with run_conf.ns("env"):
         render = run_conf["render"]
+        epoch_steps = int(run_conf["sample"])
         env = MCMCEnvWrapper(mc)
         mc.add_environment(env)
 
@@ -59,14 +58,9 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
 
     # policy neural_modules
     with run_conf.ns("policy"):
-        policy_batch_size = run_conf["batch_size"]
         sync_steps = run_conf["sync_steps"]
         policy = select_policy(mc)
         mc.add_syncable("policy", policy, sync_steps)
-
-    with run_conf.ns("filter"):
-        filter = FilterOperator(mc)
-        mc.add_main("fil", filter)
 
     # create algo
     with run_conf.ns("tdop"):
@@ -91,20 +85,20 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     # number of environment steps collected in each epoch (for plotting learning curves over samples)
     logger.create_field("steps", 1)
 
-    # repeat for the number of given steps
-    # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
-    max_env_steps = run_conf.get("max_env_steps", None)
-    epoch_steps = policy_batch_size
+    # Stop at env.steps. The last epoch is shortened when the budget is not a multiple of env_sample.
+    budget = int(run_conf["steps"])
+    num_epochs = training_epochs(budget, epoch_steps)
     for e in range(num_epochs):
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
-        if max_env_steps:
-            done_steps = getattr(env, "total_steps", 0)
-            if done_steps >= max_env_steps:
-                break
-            policy_batch_size = min(epoch_steps, max_env_steps - done_steps)
+        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), budget)
+        if request is None:
+            break
+        policy_batch_size = request
+        # This epoch acts and updates with the floor scheduled for the steps collected so far.
+        refresh_sigma_floors(policy, int(getattr(env, "total_steps", 0)))
 
         # --------------------------------
         # test policy
@@ -114,7 +108,6 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
             tc = env.execute_policy(
                 policy, max_steps, policy_batch_size, exploration=True, render=render, rew_field_name=stoch_reward
             )
-            filter.transform_all(tc)
 
         with cli.header("store model & generate plots", 1):
             # make and store reward plot
@@ -141,6 +134,9 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
         with cli.header("v-step", True):
             batch = tc.to_batch(["tv"])
             v_network.perform_sgd(0, batch)
+
+        # The update above used the statistics the rollout acted with. Fold this batch in afterwards.
+        policy.obs_norm = absorb_observations(policy.obs_norm, tc.trajectories())
 
         # copy target_networks
         mc.sync()

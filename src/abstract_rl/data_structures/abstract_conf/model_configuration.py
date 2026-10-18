@@ -5,10 +5,10 @@ from os.path import exists, join
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.misc.rng import RNG
 
 if TYPE_CHECKING:
     from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
@@ -66,6 +66,7 @@ class ModelConfiguration:
             self.data_dir = join(self.run_root, "data")
             if not exists(self.data_dir):
                 mkdir(self.data_dir)
+            self.rng = RNG(int(conf.get("seed", 0)))
 
         else:
             conf_dir = conf["reload_dir"]
@@ -77,6 +78,7 @@ class ModelConfiguration:
 
                 stored_conf = json.loads(file_str)
             self.add_main("conf", SharedConf(stored_conf))
+            self.rng = RNG(int(stored_conf.get("seed", 0)))
 
     def __getitem__(self, key: str) -> Any:
         """
@@ -94,7 +96,7 @@ class ModelConfiguration:
 
         for k in self.syncables:
             model = self.syncables[k][1]
-            model.load_state_dict(torch.load(join(self.run_root, "model/last", f"{k}.data"), weights_only=True))
+            model.load(join(self.run_root, "model/last", f"{k}.data"))
 
         return self.overall_step
 
@@ -112,10 +114,10 @@ class ModelConfiguration:
 
         for k in self.syncables:
             model = self.syncables[k][1]
-            torch_path = join(self.model_root, name)
-            if not exists(torch_path):
-                mkdir(torch_path)
-            torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
+            model_path = join(self.model_root, name)
+            if not exists(model_path):
+                mkdir(model_path)
+            model.save(join(model_path, f"{k}.data"))
 
     def get(self, key: str, target: bool = False) -> Any:
         """

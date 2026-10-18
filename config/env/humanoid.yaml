@@ -1,0 +1,18 @@
+# Humanoid-v5 trains on Gymnasium MuJoCo. MJX is not used.
+# The observation is 348 and the action is 17 torques in [-0.4, 0.4].
+# A fall terminates the episode: torso height outside [1, 2] (terminate_when_unhealthy).
+# The time limit is 1000 steps.
+# 3000000 env steps is a reduced budget. Published Humanoid runs usually use 5–10 million steps or more.
+# Gymnasium registers no reward_threshold. healthy_reward is 5 per step, so 5000 is an episode that
+# only stands for all 1000 steps. success is 8000, which requires forward reward and so a real walk.
+id: Humanoid-v5
+success: 8000.0
+steps: 3000000
+overrides:
+  all: {max_steps: 1000, policy_init_std: 0.5}
+  trpo:
+    env_sample: 15000
+    policy_structure: [256, 256]
+    val_struct: [256, 256]
+  mpo:
+    policy_structure: [256, 256]

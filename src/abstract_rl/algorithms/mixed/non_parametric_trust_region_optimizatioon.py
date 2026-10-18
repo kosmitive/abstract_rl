@@ -1,67 +1,68 @@
+"""Dual of the non-parametric MPO E-step."""
+
+from typing import Any
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
-import scipy.optimize
-import torch
-from numpy import float32
+import optax
+from jaxtyping import Array, Float
 
-from abstract_rl.misc.cli_printer import CliPrinter
+jax.config.update("jax_enable_x64", True)
 
 
-def temperature_dual(q_tensor: torch.Tensor, eta: torch.Tensor, eps: float) -> torch.Tensor:
+def temperature_dual(q_values: Float[Array, "batch k"], eta: Float[Array, ""], eps: float) -> Float[Array, ""]:
+    """Dual ``g(η) = η ε + η mean_s log mean_a exp(Q(s, a) / η)``.
+
+    Args:
+        q_values: Q samples, shape ``[batch, k]``.
+        eta: Temperature.
+        eps: KL bound of the E-step.
+
+    Returns:
+        Scalar dual value.
     """
-    Dual function of the non parametric E-step for a fixed temperature, see https://arxiv.org/abs/1806.06920.
+    max_q = jnp.max(q_values, axis=1, keepdims=True)
+    log_mean_exp = jax.nn.logsumexp((q_values - max_q) / eta, axis=1) - jnp.log(q_values.shape[1])
+    return eta * eps + jnp.mean(max_q) + eta * jnp.mean(log_mean_exp)
 
-        g(eta) = eta * eps + eta * mean_s log mean_a exp(Q(s, a) / eta)
 
-    :param q_tensor: A tensor of [NxA] with N states and A actions.
-    :param eta: The temperature.
-    :param eps: The KL bound.
-    :return: The value of the dual function.
+def positive_temperature(raw: Float[Array, ""]) -> Float[Array, ""]:
+    """Temperature ``softplus(raw)``, clipped to a positive range."""
+    return jnp.clip(jax.nn.softplus(raw), 1e-6, 1e6)
+
+
+def temperature_raw(eta: float) -> Float[Array, ""]:
+    """Raw parameter whose softplus equals ``eta``."""
+    value = float(np.clip(eta, 1e-4, 1e5))
+    return jnp.asarray(np.log(np.expm1(value)), dtype=jnp.float32)
+
+
+def descend_temperature(
+    q_values: Float[Array, "batch k"],
+    raw: Float[Array, ""],
+    opt_state: Any,
+    tx: optax.GradientTransformation,
+    eps: float,
+) -> tuple[Float[Array, ""], Any, Float[Array, ""]]:
+    """One Adam step of the dual in the softplus parameter of η.
+
+    Args:
+        q_values: Q samples of one minibatch, shape ``[batch, k]``.
+        raw: Unconstrained parameter, ``η = softplus(raw)``.
+        opt_state: Adam state for ``raw``.
+        tx: Adam transform. Its learning rate is the temperature step size.
+        eps: KL bound of the E-step.
+
+    Returns:
+        Updated raw parameter, updated Adam state, and the positive temperature.
     """
-    max_q = torch.max(q_tensor, dim=1, keepdim=True).values
-    log_mean_exp = torch.logsumexp((q_tensor - max_q) / eta, dim=1) - np.log(q_tensor.shape[1])
-    return eta * eps + torch.mean(max_q.view(-1)) + eta * torch.mean(log_mean_exp)
 
+    def loss(raw_: Float[Array, ""]) -> Float[Array, ""]:
+        return temperature_dual(q_values, positive_temperature(raw_), eps)
 
-def find_optimal_temperature(
-    q_tensor: torch.Tensor, eps: float, eta0: float32 | float = 1.0, lr: float | None = None, max_steps: int = 200
-) -> torch.Tensor:
-    """
-    Uses a batch of data to find the optimal temperature eta for reweighting by minimizing the convex dual.
-    :param q_tensor: A tensor of [NxA] with N states and A actions.
-    :param eps: The eps to use.
-    :param eta0: The initial eta
-    :param lr: Unused, kept for backwards compatibility (the dual is solved with L-BFGS-B).
-    :param max_steps: Maximum number of iterations of the solver.
-    :return: The found optimal temperature as a tensor of shape [1].
-    """
-    cli = CliPrinter().instance
-    cli.empty().print("solve for q(a|s)").empty()
-    with cli.indent():
-        cli.print("max	\t\t∫ u(s) ∫ q(a|s) Q(s,a) dads")
-        cli.print("st.	\t\t∫ u(s) KL(q(a|s), π(a|s)) ds < ε")
-        cli.print("    \t\t∫∫ u(s) q(a|s) dads = 1")
-
-    cli.empty().print("statistics of problem").empty()
-    with cli.indent():
-        cli.print(f"Q(s,a) \t~ {torch.mean(q_tensor):.5f} +- [{torch.std(q_tensor):.5f}]")
-        cli.print(f"ε \t\t= {eps}")
-
-    q_tensor = q_tensor.double()
-
-    def fn(x: np.ndarray) -> tuple[float, np.ndarray]:
-        eta = torch.tensor(x[0], dtype=torch.float64, requires_grad=True)
-        obj = temperature_dual(q_tensor, eta, eps)
-        obj.backward()
-        assert eta.grad is not None
-        return obj.item(), np.array([eta.grad.item()])
-
-    eta0 = float(np.clip(np.asarray(eta0).reshape(-1)[0], 1e-6, None))
-    res = scipy.optimize.minimize(
-        fn, np.array([eta0]), jac=True, method="L-BFGS-B", bounds=[(1e-6, None)], options={"maxiter": max_steps}
-    )
-    eta = float(res.x[0])
-
-    with cli.indent():
-        cli.empty().print(f"eta* = {eta:.6f} (dual = {res.fun:.6f}, iterations = {res.nit})")
-
-    return torch.tensor([eta], dtype=torch.float32)
+    _value, grad = jax.value_and_grad(loss)(raw)
+    updates, opt_state = tx.update(grad, opt_state, raw)
+    raw = eqx.apply_updates(raw, updates)
+    return raw, opt_state, positive_temperature(raw)

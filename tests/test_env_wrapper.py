@@ -21,3 +21,14 @@ def test_max_steps_cut_is_not_stored_as_done(make_pendulum_mc):
     traj = env.execute_policy_once(10, policy)
     assert len(traj) == 10
     assert not np.any(traj.dones)
+
+
+def test_collection_stops_at_the_batch_and_keeps_truncation(make_pendulum_mc):
+    mc = make_pendulum_mc(env_vector_envs=2)
+    env, policy = mc.env, None
+    with mc["conf"].ns("policy"):
+        policy = UnivariateGaussianPolicy(mc)
+    collection = env.execute_policy(policy, 50, 120, exploration=True)
+    assert sum(len(traj) for traj in collection) == 120
+    assert all(len(traj) <= 50 for traj in collection)
+    assert all(not np.any(traj.dones) for traj in collection)

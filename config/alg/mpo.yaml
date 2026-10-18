@@ -1,7 +1,5 @@
 # MPO defaults (tuned on Pendulum-v1)
 name: mpo
-reload: false
-seed: 1
 env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
@@ -11,31 +9,45 @@ policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false
 policy_init: xavier_gaussian
 policy_sync_steps: 1
-policy_sigma: 1.0
-policy_cov_type: single
+# softplus(bias) = init_std on a state-dependent or Cholesky diagonal, and the std/Cholesky
+# final-layer weights are multiplied by 0.01. A state-independent or fixed std uses
+# log_sigma = log(init_std). A zero state then starts at init_std + policy_min_std.
+policy_init_std: 0.5
+# softplus(raw) + policy_min_std on a state-dependent or Cholesky diagonal. A state-independent
+# std uses max(exp(log_sigma), policy_min_std), so a configured std above the floor is unchanged.
+policy_min_std: 0.0
+# Decay policy_min_std linearly to 0 over this many env steps. 0 keeps it constant.
+# Refreshed at the start of each epoch from the env-step count.
+policy_min_std_anneal_steps: 0
+# 1.0 leaves the mean head on the default init. Any other value multiplies only the final-layer
+# mean weights and leaves the mean bias at 0. Hidden layers stay on the default init.
+policy_mean_init_scale: 1.0
+# full: state-dependent Cholesky. single: one learned std. fixed: a constant std.
+# state: a state-dependent diagonal. One-dimensional actions use the univariate policy
+# unless cov_type is full.
+policy_cov_type: full
 policy_squash: true
-filter_states: false
-filter_rewards: false
-num_epochs: 150
+# Running observation normalisation, applied when acting and when training. Off leaves results unchanged.
+#   alg.obs_norm=true alg.obs_clip=10
+obs_norm: false
+obs_clip: 10.0
 max_steps: 200
 alg: mpo
 env_traj_evaluations: 5
+# Transitions collected each epoch. The epoch count is ceil(env.steps / env_sample).
 env_sample: 1000
 # off policy memory (number of transitions)
 tc_size: 50000
 mem_bootstrap_steps: 5
 # retrace
 ret_lambda: 1.0
-ret_add_acts: 20
 res_add_acts: 20
-# non-parametric e-step
+# non-parametric e-step. η is an Adam dual on each M-step minibatch.
 rnk_eps: 0.1
 rnk_lr: 0.0003
 rnk_init_eta: 1.0
-rnk_max_steps: 200
 # fully connected neural q function
 val_struct: [256, 256]
-val_optimizer: adam
 val_lr: 0.001
 val_opt_steps: 1000
 val_batch_size: 256
@@ -43,15 +55,21 @@ val_layer_norm: false
 val_act_fn: [elu, elu, none]
 val_init: xavier_gaussian
 val_sync_steps: 1
-val_ret_lambda: 1.0
 val_l2_reg: 0.0
 policy_opt_steps: 100
+# M-step minibatch. Collection size is env_sample.
 policy_batch_size: 256
-# m-step
+# m-step. Decoupled mean and covariance KL (Abdolmaleki et al. 2018, arXiv 1806.06920 and
+# 1812.02256). Each bound has its own positive multiplier.
 mpo_inner_lr: 0.01
 mpo_outer_lr: 0.0003
-mpo_mode: non-parametric
-mpo_trust_regions: [0.01]
-mpo_coordinate_ascent_objective: false
-mpo_coordinate_ascent_constraint: false
+mpo_eps_mean: 0.1
+mpo_eps_cov: 1.0e-4
 mpo_l2_reg: 0.0
+# alpha = softplus(lm) + 1e-8, then clipped after every dual step. An unmet KL bound
+# otherwise drives lm until Adam's second moment overflows and the multiplier freezes.
+mpo_alpha_init: 1.0
+mpo_alpha_min: 1.0e-6
+mpo_alpha_max: 1.0e3
+# Global-norm cap on the policy, critic and multiplier Adam steps. 0 disables it.
+grad_clip: 40.0

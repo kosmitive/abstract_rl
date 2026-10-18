@@ -2,7 +2,6 @@ from os.path import join
 from typing import Any
 
 import numpy as np
-import torch
 from numpy import ndarray
 
 from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
@@ -12,15 +11,16 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper, collection_request, training_epochs
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
-from abstract_rl.operator.filter_operator import FilterOperator
+from abstract_rl.misc.obs_norm import absorb_observations
 from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.policy.continuous.continuous_policy import refresh_sigma_floors
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
@@ -41,9 +41,7 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
     cli = CliPrinter().instance
 
     seed = run_conf["seed"]
-    torch.manual_seed(seed)
     np.random.seed(seed)
-    num_epochs = run_conf["num_epochs"]
     max_steps = run_conf["max_steps"]
 
     # make default instance available
@@ -85,10 +83,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         q_network = FullyQNeuralNet(mc)
         mc.add_syncable("q_network", q_network, sync_steps)
 
-    with run_conf.ns("filter"):
-        filter = FilterOperator(mc)
-        mc.add_main("fil", filter)
-
     # push retrace
     with run_conf.ns("ret"):
         ret = RetraceOperator(mc)
@@ -104,6 +98,9 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         rnk = VariationalRankingOperator(mc)
         mc.add_main("rnk", rnk)
 
+    # fixed on-device arrays behind the trajectory collection, read by the jitted updates
+    tc.attach_device(int(run_conf.get_root("res_add_acts")), int(max_steps), policy.get_suff_stats_dim())
+
     # names for rewards
     stoch_reward = "sreward"
 
@@ -116,20 +113,21 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
     # if reloaded load old values
     e = 0
 
-    # repeat for the number of given steps
-    # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
-    max_env_steps = run_conf.get("max_env_steps", None)
+    # Stop at env.steps. The last epoch is shortened when the budget is not a multiple of env_sample.
+    budget = int(run_conf["steps"])
     epoch_steps = num_new_steps
+    num_epochs = training_epochs(budget, int(epoch_steps))
     while e < num_epochs:
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
-        if max_env_steps:
-            done_steps = getattr(env, "total_steps", 0)
-            if done_steps >= max_env_steps:
-                break
-            num_new_steps = min(epoch_steps, max_env_steps - done_steps)
+        request = collection_request(int(getattr(env, "total_steps", 0)), int(epoch_steps), budget)
+        if request is None:
+            break
+        num_new_steps = request
+        # This epoch acts and updates with the floor scheduled for the steps collected so far.
+        refresh_sigma_floors(policy, int(getattr(env, "total_steps", 0)))
 
         # --------------------------------
         # test policy
@@ -143,7 +141,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
                 policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
             )
             tc.merge(new_tc)
-            filter.transform_all(tc)
 
         with cli.header("store model & generate plots", 1):
             # make and store reward plot
@@ -160,7 +157,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         # --------------------------------
 
         with cli.header("e-step", 1):
-            # resample extra actions and q values
             res.transform_all(tc)
             rnk.hook()
             rnk.transform_all(tc)
@@ -171,6 +167,9 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         with cli.header("v-step", 1):
             ret.transform_all(tc)
             q_network.perform_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
+
+        # Replay rows stay raw. The next epoch samples them with statistics that include this batch.
+        policy.obs_norm = absorb_observations(policy.obs_norm, new_tc.trajectories())
 
         # copy target_networks
         mc.sync()

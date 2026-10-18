@@ -22,7 +22,7 @@ def steps_per_epoch(run_dir: str) -> int:
     """Number of environment steps collected per epoch, read from the stored run configuration."""
     with open(join(run_dir, "run.conf")) as f:
         conf = json.load(f)
-    return conf.get("env_sample", conf.get("policy_batch_size"))
+    return conf["env_sample"]
 
 
 def plot(run_dirs: list[str], labels: list[str], output: str, title: str) -> None:

@@ -43,7 +43,7 @@ gym.register("TestPointMass-v0", entry_point=PointMass, max_episode_steps=30)
 def trpo_conf(tmp_path):
     """A tiny TRPO configuration on Pendulum-v1, writing into a temporary directory."""
     conf = copy.deepcopy(trpo_config)
-    conf.update({"num_epochs": 2, "policy_batch_size": 400, "data_root": str(tmp_path)})
+    conf.update({"steps": 800, "env_sample": 400, "data_root": str(tmp_path)})
     return conf
 
 
@@ -53,7 +53,7 @@ def mpo_conf(tmp_path):
     conf = copy.deepcopy(mpo_config)
     conf.update(
         {
-            "num_epochs": 2,
+            "steps": 800,
             "env_sample": 400,
             "val_opt_steps": 5,
             "policy_opt_steps": 5,

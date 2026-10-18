@@ -1,123 +1,470 @@
+"""Shared behaviour of the squashed Gaussian policies."""
+
+import os
+from collections.abc import Sequence
 from typing import Any
 
-import torch
+import equinox as eqx
+import jax.numpy as jnp
+import numpy as np
+from jaxtyping import Array, Float, PRNGKeyArray
 
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.flat_params import copy_module
+from abstract_rl.misc.obs_norm import ObsNorm, normalize_obs, obs_norm_path
+from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
+from abstract_rl.policy.continuous.gaussian_math import (
+    GaussianParams,
+    entropy_from_cholesky,
+    entropy_from_sigma,
+    forward,
+    head_activations,
+    kl_divergence,
+    likelihood_ratio,
+    log_prob,
+    mode,
+    sample,
+    scheduled_sigma_floor,
+    sigma_is_softplus,
+    softplus_inverse,
+    tril_diag_index,
+    unpack_lower,
+)
+from abstract_rl.policy.continuous.numpy_act import NumpyPolicy, act_numpy, extract_numpy_policy, seed_generator
 from abstract_rl.policy.policy import Policy
+
+_LIKELIHOOD = eqx.filter_jit(likelihood_ratio)
+_KL = eqx.filter_jit(kl_divergence)
+# Final-layer scale of the std/Cholesky head when ``policy_init_std`` is set. The mean head uses
+# ``policy_mean_init_scale`` instead, and 1.0 leaves that head on the default initialisation.
+STD_HEAD_INIT_SCALE = 0.01
+
+
+def build_gaussian_params(mc: ModelConfiguration, key: PRNGKeyArray, univariate: bool) -> GaussianParams:
+    """Build the Gaussian configured in the current namespace of ``mc``.
+
+    Args:
+        mc: Model configuration with the environment registered. The active namespace is the policy.
+        key: Initialisation key.
+
+    Returns:
+        Equinox parameters of the policy.
+    """
+    run_conf = mc.get("conf")
+    cov_type = str(run_conf["cov_type"])
+    action_dim = mc.env.action_dim
+    init_std, min_std, mean_scale = _std_options(run_conf)
+    squash = bool(run_conf.get("squash", False))
+    low = np.asarray(mc.env.action_space.low, dtype=np.float64).reshape(-1)
+    high = np.asarray(mc.env.action_space.high, dtype=np.float64).reshape(-1)
+    if squash and not (np.all(np.isfinite(low)) and np.all(np.isfinite(high))):
+        raise ValueError("squashing needs a bounded action space")
+    center: tuple[float, ...]
+    scale: tuple[float, ...]
+    if squash and univariate:
+        # The univariate policy squashes with ``max |high| * tanh(u)`` and no centre shift.
+        center = (0.0,)
+        scale = (float(np.max(np.abs(high))),)
+    elif squash:
+        center = tuple(float(v) for v in (high + low) / 2)
+        scale = tuple(float(v) for v in (high - low) / 2)
+    else:
+        center = tuple(0.0 for _ in range(action_dim))
+        scale = tuple(1.0 for _ in range(action_dim))
+
+    match cov_type:
+        case "state":
+            n_out = 2 * action_dim
+            log_sigma = None
+            fixed_log_sigma = None
+        case "fixed":
+            n_out = action_dim
+            log_sigma = None
+            fixed_log_sigma = tuple(float(np.log(init_std)) for _ in range(action_dim))
+        case "single":
+            n_out = action_dim
+            log_sigma = jnp.full((action_dim,), float(np.log(init_std)), dtype=jnp.float32)
+            fixed_log_sigma = None
+        case "full":
+            n_out = action_dim + action_dim * (action_dim + 1) // 2
+            log_sigma = None
+            fixed_log_sigma = None
+        case _:
+            raise NotImplementedError(f"unknown covariance type {cov_type}")
+
+    act_fn, sigma_acts = _policy_activations(run_conf["act_fn"], action_dim, cov_type)
+    structure: Sequence[int] = [mc.env.observation_dim, *list(run_conf["structure"]), n_out]
+    network = MultilayerPerceptron(
+        key,
+        structure,
+        act_fn,
+        bool(run_conf["layer_norm"]),
+        str(run_conf["init"]),
+    )
+    network = _scale_policy_head(network, cov_type, action_dim, init_std, mean_scale)
+    return GaussianParams(
+        network=network,
+        log_sigma=log_sigma,
+        cov_type=cov_type,
+        squash=squash,
+        sigma_is_softplus=sigma_is_softplus(sigma_acts),
+        action_center=center,
+        action_scale=scale,
+        fixed_log_sigma=fixed_log_sigma,
+        sigma_floor=jnp.asarray(min_std, dtype=jnp.float32),
+    )
+
+
+def _ns_value(conf: Any, key: str, default: Any) -> Any:
+    """Read a namespaced key. Missing keys keep ``default`` and are not inserted into the config."""
+    names = list(getattr(conf, "names", []))
+    prefix = f"{'_'.join(names)}_" if names else ""
+    return conf.to_dict().get(f"{prefix}{key}", default)
+
+
+def _std_options(conf: Any) -> tuple[float, float, float]:
+    """``policy_init_std``, the epoch-0 floor, and ``policy_mean_init_scale``."""
+    raw = _ns_value(conf, "init_std", None)
+    if raw is None:
+        raise ValueError("policy_init_std is required")
+    init_std = float(raw)
+    if not init_std > 0.0:
+        raise ValueError(f"policy_init_std must be positive, got {init_std}")
+    min_std = float(_ns_value(conf, "min_std", 0.0))
+    anneal_steps = int(_ns_value(conf, "min_std_anneal_steps", 0))
+    # The object stored on the policy is the floor at step 0, which is ``min_std`` itself.
+    floor = scheduled_sigma_floor(min_std, anneal_steps, 0)
+    mean_scale = float(_ns_value(conf, "mean_init_scale", 1.0))
+    return init_std, floor, mean_scale
+
+
+def _scale_policy_head(
+    network: MultilayerPerceptron,
+    cov_type: str,
+    action_dim: int,
+    init_std: float,
+    mean_scale: float,
+) -> MultilayerPerceptron:
+    """Scale the final layer only. Hidden layers keep the default initialisation.
+
+    ``mean_scale == 1`` does not touch the mean head, so that path stays the default init.
+    Any other scale multiplies the mean rows and leaves their bias at zero.
+    ``policy_init_std`` multiplies the std or Cholesky rows by ``STD_HEAD_INIT_SCALE`` and
+    sets the diagonal bias so ``softplus(bias) = init_std``. Off-diagonal Cholesky bias stays
+    zero, and the initial covariance at a zero state is ``(init_std + policy_min_std)^2 I``.
+    A state-independent or fixed std stores ``log(init_std)`` and has no std head to scale.
+    """
+    if mean_scale != 1.0:
+        width = action_dim if cov_type in ("state", "full") else int(network.layers[-1].weight.shape[0])
+        mean_rows = np.arange(width)
+        network = _retune_last_layer(network, mean_rows, mean_scale, mean_rows, 0.0)
+    if cov_type in ("single", "fixed"):
+        return network
+    bias = softplus_inverse(init_std)
+    if cov_type == "state":
+        rows = np.arange(action_dim, 2 * action_dim)
+        return _retune_last_layer(network, rows, STD_HEAD_INIT_SCALE, rows, bias)
+    packed = action_dim * (action_dim + 1) // 2
+    rows = np.arange(action_dim, action_dim + packed)
+    diagonal = action_dim + tril_diag_index(action_dim)
+    return _retune_last_layer(network, rows, STD_HEAD_INIT_SCALE, diagonal, bias)
+
+
+def _retune_last_layer(
+    network: MultilayerPerceptron,
+    rows: np.ndarray,
+    scale: float,
+    bias_rows: np.ndarray,
+    bias_value: float,
+) -> MultilayerPerceptron:
+    """Multiply ``rows`` of the last weight and set ``bias_rows`` to ``bias_value``."""
+    layers = list(network.layers)
+    layer = layers[-1]
+    if layer.bias is None:
+        raise ValueError("the policy head is initialised with a bias")
+    index = jnp.asarray(rows, dtype=jnp.int32)
+    weight = layer.weight.at[index].mul(jnp.asarray(scale, dtype=layer.weight.dtype))
+    bias_index = jnp.asarray(bias_rows, dtype=jnp.int32)
+    bias = layer.bias.at[bias_index].set(jnp.asarray(bias_value, dtype=layer.bias.dtype))
+    layer = eqx.tree_at(lambda lin: (lin.weight, lin.bias), layer, (weight, bias))
+    layers[-1] = layer
+    return eqx.tree_at(lambda net: net.layers, network, tuple(layers))
+
+
+def _policy_activations(act_fn: Any, action_dim: int, cov_type: str) -> tuple[list[Any], list[Any]]:
+    """Head activations. A full covariance keeps one name per layer and softplus-es ``diag L`` itself."""
+    if cov_type == "full":
+        layers = list(act_fn)
+        last = layers[-1]
+        if isinstance(last, list | tuple):
+            raise ValueError(
+                "the full-covariance head uses one activation name; softplus is applied to the Cholesky diagonal"
+            )
+        return layers, [last]
+    return head_activations(act_fn, action_dim)
 
 
 class ContinuousPolicy(Policy, Syncable):
-    """
-    Represents a continuous policy, e.g a gaussian policy
-    """
+    """Gaussian policy wrapper. ``params`` is the Equinox module the optimisers update."""
+
+    params: GaussianParams
+    flat_actions: bool
+
+    def __init__(self, mc: ModelConfiguration, flat_actions: bool) -> None:
+        super().__init__(mc)
+        self.flat_actions = flat_actions
+        self.params = build_gaussian_params(mc, mc.rng.split(), univariate=flat_actions)
+        # The anneal is a Python schedule. The value on ``params.sigma_floor`` is what the jitted
+        # forward reads, and it is refreshed once per epoch.
+        self._min_std = float(_ns_value(mc.get("conf"), "min_std", 0.0))
+        self._min_std_anneal_steps = int(_ns_value(mc.get("conf"), "min_std_anneal_steps", 0))
+        root = mc.get("conf").to_dict()
+        self.obs_norm = ObsNorm.create(
+            mc.env.observation_dim,
+            bool(root.get("obs_norm", False)),
+            float(root.get("obs_clip", 10.0)),
+        )
+        self._act_cache_id = -1
+        self._act_cache: NumpyPolicy | None = None
+        self._act_rng: np.random.Generator | None = None
+        self._affine_id = -1
+        self._affine_np: tuple[np.ndarray, np.ndarray, float] | None = None
+
+    @property
+    def network(self) -> MultilayerPerceptron:
+        return self.params.network
+
+    @network.setter
+    def network(self, value: MultilayerPerceptron) -> None:
+        self.params = eqx.tree_at(lambda params: params.network, self.params, value)
+
+    @property
+    def squash(self) -> bool:
+        return self.params.squash
+
+    @property
+    def cov_type(self) -> str:
+        return self.params.cov_type
+
+    def get_suff_stats_dim(self) -> int:
+        return 2 * self.mc.env.action_dim
+
+    def observation_norm(self) -> ObsNorm:
+        """Moments used to normalise observations. The live policy owns them; the target reads those."""
+        try:
+            live = self.mc.get("policy", False)
+        except KeyError:
+            return self.obs_norm
+        norm = getattr(live, "obs_norm", None)
+        if not isinstance(norm, ObsNorm):
+            return self.obs_norm
+        return norm
+
+    def _network_obs(self, states: Float[Array, "... obs"] | np.ndarray) -> Float[Array, "... obs"]:
+        """Observation the network sees. Disabled normalisation returns the float32 array unchanged."""
+        return normalize_obs(self.observation_norm(), _f32(states))
+
+    def _numpy_affine(self) -> tuple[np.ndarray, np.ndarray, float] | None:
+        """Cached host affine. Rebuilt when the moment object is replaced at the end of an epoch."""
+        norm = self.observation_norm()
+        if self._affine_id == id(norm):
+            return self._affine_np
+        self._affine_id = id(norm)
+        self._affine_np = norm.numpy_affine()
+        return self._affine_np
+
+    def forward(self, states: Float[Array, "batch obs"] | np.ndarray) -> Float[Array, "batch stats"]:
+        """Sufficient statistics ``[mu, sigma]``."""
+        return forward(self.params, self._network_obs(states))
 
     def log_prob(
-        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self,
+        actions: Float[Array, "..."] | np.ndarray,
+        states: Float[Array, "batch obs"] | np.ndarray | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
+    ) -> Float[Array, "batch k"]:
+        """Log probability of actions.
+
+        Univariate policies take actions of shape ``[batch, k]``. Diagonal policies take
+        ``[batch, k, act]`` or ``[batch, act]``.
         """
-        Can be used to obtain log probability of actions relative to states.
-        :param actions: A matrix of size [D, K] containing actions for each state.
-        :param states: A matrix of size [D, Ds]. If this None => suff_states not None
-        :param suff_stats: A matrix of size [D, get_suff_stats_dim()] containing suff stats.
-            If this None => states is not None
-        :return: A matrix [D, K] containing the log prob for each action in each row of
-            actions matched to the row and the the suff stats of the specific state.
+        return log_prob(
+            self.params,
+            _f32(actions),
+            None if states is None else self._network_obs(states),
+            None if suff_stats is None else _f32(suff_stats),
+        )
+
+    def mode(
+        self,
+        states: Float[Array, "batch obs"] | np.ndarray | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
+    ) -> Float[Array, "batch act"]:
+        """Most likely action, shape ``[batch, act]``."""
+        acted = mode(
+            self.params,
+            None if states is None else self._network_obs(states),
+            None if suff_stats is None else _f32(suff_stats),
+        )
+        if self.flat_actions:
+            return acted[:, :1]
+        return acted
+
+    def sample_actions(
+        self,
+        states: Float[Array, "batch obs"] | np.ndarray | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
+        num_actions: int = 1,
+        key: PRNGKeyArray | None = None,
+    ) -> Float[Array, "..."]:
+        """Sample ``num_actions`` actions per state.
+
+        Returns ``[batch, k]`` for the univariate policy and ``[batch, k, act]`` otherwise.
         """
-        raise NotImplementedError
+        if key is None:
+            key = self.mc.rng.split()
+        drawn = sample(
+            self.params,
+            key,
+            num_actions,
+            None if states is None else self._network_obs(states),
+            None if suff_stats is None else _f32(suff_stats),
+        )
+        if self.flat_actions:
+            return drawn[..., 0]
+        return drawn
+
+    def act(self, states: np.ndarray, deterministic: bool) -> tuple[np.ndarray, np.ndarray]:
+        """Action selection for environment interaction.
+
+        The density matches ``log_prob``. Weights are copied to the host once per parameter
+        object, then every step is a NumPy matmul. Stochastic steps draw noise from a generator
+        seeded from the run key instead of splitting a JAX key per step.
+
+        Args:
+            states: Batch of observations, shape ``[batch, obs]``.
+            deterministic: Use the mode instead of a sample.
+
+        Returns:
+            Actions ``[batch, act]`` and log probabilities ``[batch]``, both NumPy arrays.
+        """
+        obs = np.asarray(states, dtype=np.float32)
+        if obs.ndim == 1:
+            obs = obs.reshape(1, -1)
+        affine = self._numpy_affine()
+        if affine is not None:
+            mean, inverse, clip = affine
+            obs = np.clip((obs - mean) * inverse, -np.float32(clip), np.float32(clip)).astype(np.float32)
+        spec = self._numpy_policy()
+        if deterministic:
+            actions, log_density = act_numpy(spec, obs, None)
+        else:
+            noise = self._action_generator().standard_normal((obs.shape[0], spec.center.shape[0]), dtype=np.float32)
+            actions, log_density = act_numpy(spec, obs, noise)
+        return actions, log_density
+
+    def _numpy_policy(self) -> NumpyPolicy:
+        cache_id = id(self.params)
+        if self._act_cache is not None and self._act_cache_id == cache_id:
+            return self._act_cache
+        spec = extract_numpy_policy(self.params)
+        self._act_cache_id = cache_id
+        self._act_cache = spec
+        return spec
+
+    def _action_generator(self) -> np.random.Generator:
+        if self._act_rng is None:
+            self._act_rng = seed_generator(self.mc.rng.split())
+        return self._act_rng
+
+    def refresh_sigma_floor(self, env_steps: int) -> None:
+        """Set the std floor from the env-step schedule. Held constant until the next epoch."""
+        floor = scheduled_sigma_floor(self._min_std, self._min_std_anneal_steps, int(env_steps))
+        self.params = eqx.tree_at(
+            lambda params: params.sigma_floor,
+            self.params,
+            jnp.asarray(floor, dtype=jnp.float32),
+        )
 
     def clone(self) -> "ContinuousPolicy":
-        """
-        Clones the current instance.
-        :return: A new identical clones instance of the current.
-        """
-
-        raise NotImplementedError
+        other = self.__class__.__new__(self.__class__)
+        other.mc = self.mc
+        other.flat_actions = self.flat_actions
+        other.params = copy_module(self.params)
+        other.obs_norm = self.obs_norm
+        other._min_std = self._min_std
+        other._min_std_anneal_steps = self._min_std_anneal_steps
+        other._act_cache_id = -1
+        other._act_cache = None
+        other._act_rng = None
+        other._affine_id = -1
+        other._affine_np = None
+        return other
 
     def sync(self, v: Any) -> Any:
-        """
-        Copies the content of the current instance to the supplied parameter instance.
-        :param v: The other instance, where the current values should be copied to.
-        """
-        raise NotImplementedError
+        v.params = self.params
+        v.obs_norm = self.obs_norm
+        v._affine_id = -1
+        v._affine_np = None
+        return v
 
-    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
-        """
-        The most likely action of each state.
-        :return: A matrix [D, A].
-        """
-        raise NotImplementedError
+    def save(self, path: str) -> None:
+        """Write the parameter tree to ``path`` and the observation moments beside it."""
+        eqx.tree_serialise_leaves(path, self.params)
+        eqx.tree_serialise_leaves(obs_norm_path(path), self.observation_norm())
+
+    def load(self, path: str) -> None:
+        """Load a parameter tree previously written by ``save``, and the moments if they were stored."""
+        self.params = eqx.tree_deserialise_leaves(path, self.params)
+        sidecar = obs_norm_path(path)
+        if os.path.exists(sidecar):
+            self.obs_norm = eqx.tree_deserialise_leaves(sidecar, self.obs_norm)
+        self._affine_id = -1
+        self._affine_np = None
 
     def kl_divergence(
         self,
         batch: Batch,
-        suff_stats: torch.Tensor | None = None,
+        suff_stats: Float[Array, "batch stats"] | np.ndarray | None = None,
         mode: str = "i-projection",
         est: str = "sum",
-    ) -> torch.Tensor:
-        """
-        Calculates the kl divergence between the current policy and the saved likelihood values.
-        :param batch:
-        :return:
-        """
+    ) -> Float[Array, ""]:
+        """Analytic KL against the target policy registered in the model configuration."""
+        target = self.mc.get("policy", True).params
+        stats = None if suff_stats is None else _f32(suff_stats)
+        return _KL(self.params, target, self._network_obs(batch.states), stats, mode, est)
 
-        tp = self.mc.get("policy", True)
+    def likelihood_ratio(self, batch: Batch) -> Float[Array, ""]:
+        """Negative standardised likelihood-ratio surrogate of ``batch``."""
+        return _LIKELIHOOD(
+            self.params,
+            self._network_obs(batch.states),
+            _f32(batch.actions),
+            _f32(batch.log_likelihoods),
+            _f32(batch["a"]),
+        )
 
-        # calc sufficient statistics
-        states = torch.Tensor(batch.states)
-        if suff_stats is None:
-            suff_stats = self.forward(states)
+    def entropy(self, batch: Batch) -> Float[Array, ""]:
+        """Closed-form Gaussian entropy. Squashed policies have none."""
+        if self.squash:
+            raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
+        stats = forward(self.params, self._network_obs(batch.states))
+        if self.params.cov_type == "full":
+            action_dim = len(self.params.action_center)
+            return entropy_from_cholesky(unpack_lower(stats[:, action_dim:], action_dim))
+        act = stats.shape[-1] // 2
+        return entropy_from_sigma(stats[:, act:])
 
-        actions = torch.Tensor(batch.actions)
-        log_likelihoods = tp.log_prob(actions, states).detach()
-        new_lls = self.log_prob(actions, suff_stats=suff_stats)
 
-        # use I projection
-        if mode == "m-projection":
-            p = log_likelihoods
-            q = new_lls
+def refresh_sigma_floors(policy: ContinuousPolicy, env_steps: int) -> None:
+    """Refresh the live policy and its target so both use this epoch's floor."""
+    policy.refresh_sigma_floor(env_steps)
+    target = policy.mc.get("policy", True)
+    if target is not policy:
+        target.refresh_sigma_floor(env_steps)
 
-        # use M Projection
-        elif mode == "i-projection":
-            p = new_lls
-            q = log_likelihoods
 
-        else:
-            raise NotImplementedError
-
-        # build kl terms adn sum up
-        kl = torch.exp(p) * (p - q)
-
-        if est == "sum":
-            kl_est = torch.sum
-        elif est == "mean":
-            kl_est = torch.mean
-        else:
-            raise NotImplementedError
-
-        return kl_est(kl)
-
-    def likelihood_ratio(self, batch: Batch) -> torch.Tensor:
-        """
-        Calculate the objective of the underlying objective using the passed batch.
-        :param batch: Use this batch to estimate objective.
-        :return: A un detached version of the objective
-        """
-
-        policy = self.mc.get("policy", False)
-
-        # calculate the objective
-        states = torch.Tensor(batch.states)
-        actions = torch.Tensor(batch.actions)
-        suff_stats = policy.forward(states)
-        ll = policy.log_prob(actions, suff_stats=suff_stats).view(-1)
-        old_ll = torch.Tensor(batch.log_likelihoods).view(-1)
-
-        # calculate the ratio term (all terms are flat vectors of length D)
-        a_vals = torch.as_tensor(batch["a"], dtype=torch.float32).view(-1)
-        mean_a = a_vals.mean()
-        std_a = a_vals.std()
-        advantages = (a_vals - mean_a) / (std_a + 1e-8)
-        r = torch.exp(ll - old_ll)
-        obj = torch.mean(r * advantages)
-        return -obj
+def _f32(value: Float[Array, "..."] | np.ndarray) -> Float[Array, "..."]:
+    return jnp.asarray(value, dtype=jnp.float32)

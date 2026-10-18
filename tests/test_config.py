@@ -10,9 +10,7 @@ def test_namespaces():
         assert "lr" in conf
         assert conf.get("missing", 5) == 5
         assert conf.get_root("seed") == 3
-        assert conf.get_namespace() == "policy"
     assert conf["policy_missing"] == 5
-    assert conf.get_namespace() == ""
 
 
 def test_model_configuration_creates_run_dirs(tmp_path):

@@ -3,11 +3,12 @@
 Usage::
 
     uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
-    uv run --extra mujoco python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=50
+    uv run python -m abstract_rl.scripts.run env=pendulum alg=mpo seed=1
+    uv run --extra mujoco python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 env.steps=50000
     uv run python -m abstract_rl.scripts.run --cfg job env=mountaincar alg=mpo   # print the composed config
 
-Environments: pendulum, mountaincar, inverted_pendulum, inverted_double_pendulum, halfcheetah. ``alg.<key>=value``
-overrides beat the environment table of ``config/env/<env>.yaml``. Runs are written to
+Environments: pendulum, mountaincar, inverted_pendulum, inverted_double_pendulum, halfcheetah, humanoid.
+``alg.<key>=value`` overrides beat the environment table of ``config/env/<env>.yaml``. Runs are written to
 ``<data_root>/<env id>/<alg>/<timestamp>/``.
 """
 
@@ -22,7 +23,7 @@ from abstract_rl.scripts.hydra_conf import CONFIG_DIR, run_config
 
 def train(alg: str, conf: dict[str, Any]) -> Any:
     """Run one training. Returns the logged ``[mean, std]`` return of every epoch."""
-    if alg == "mpo":
+    if str(alg).startswith("mpo"):
         from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 
         return run_mpo_non_parametric(conf)

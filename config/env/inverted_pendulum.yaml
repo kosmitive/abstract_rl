@@ -2,6 +2,5 @@ id: InvertedPendulum-v5
 success: 950.0
 steps: 150000
 overrides:
-  all: {max_steps: 1000}
-  trpo: {num_epochs: 75, policy_batch_size: 2000, trpo_tr_eps: 0.02}
-  mpo: {num_epochs: 150}
+  all: {max_steps: 1000, policy_init_std: 0.5}
+  trpo: {env_sample: 2000, trpo_tr_eps: 0.01}

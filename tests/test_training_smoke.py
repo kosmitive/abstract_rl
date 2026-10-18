@@ -1,7 +1,12 @@
 import numpy as np
 
+from abstract_rl.env.mcmc_env_wrapper import training_epochs
 from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 from abstract_rl.run.run_trpo import run_trpo
+
+
+def _epochs(conf: dict) -> int:
+    return training_epochs(int(conf["steps"]), int(conf["env_sample"]))
 
 
 def _check_returns(returns, num_epochs):
@@ -14,13 +19,13 @@ def _check_returns(returns, num_epochs):
 
 def test_trpo_pendulum_smoke(trpo_conf, tmp_path):
     returns = run_trpo(trpo_conf)
-    _check_returns(returns, trpo_conf["num_epochs"])
+    _check_returns(returns, _epochs(trpo_conf))
     assert list(tmp_path.glob("Pendulum-v1/trpo/*/model/last/policy.data"))
 
 
 def test_mpo_pendulum_smoke(mpo_conf, tmp_path):
     returns = run_mpo_non_parametric(mpo_conf)
-    _check_returns(returns, mpo_conf["num_epochs"])
+    _check_returns(returns, _epochs(mpo_conf))
     assert list(tmp_path.glob("Pendulum-v1/mpo/*/model/last/policy.data"))
 
 
@@ -42,12 +47,12 @@ def _check_multi_dimensional(returns, num_epochs):
 
 
 def test_trpo_with_two_dimensional_actions_smoke(trpo_conf, tmp_path):
-    trpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "policy_batch_size": 300})
-    _check_multi_dimensional(run_trpo(trpo_conf), trpo_conf["num_epochs"])
+    trpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "env_sample": 300, "steps": 600})
+    _check_multi_dimensional(run_trpo(trpo_conf), _epochs(trpo_conf))
     assert list(tmp_path.glob("TestPointMass-v0/trpo/*/model/last/policy.data"))
 
 
 def test_mpo_with_two_dimensional_actions_smoke(mpo_conf, tmp_path):
-    mpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "env_sample": 300})
-    _check_multi_dimensional(run_mpo_non_parametric(mpo_conf), mpo_conf["num_epochs"])
+    mpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "env_sample": 300, "steps": 600})
+    _check_multi_dimensional(run_mpo_non_parametric(mpo_conf), _epochs(mpo_conf))
     assert list(tmp_path.glob("TestPointMass-v0/mpo/*/model/last/policy.data"))

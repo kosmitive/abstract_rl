@@ -2,6 +2,5 @@ id: HalfCheetah-v5
 success: 4800.0
 steps: 1200000
 overrides:
-  all: {max_steps: 1000}
-  trpo: {num_epochs: 150, policy_batch_size: 8000, trpo_tr_eps: 0.02}
-  mpo: {num_epochs: 1200, policy_sigma: 0.5, mpo_trust_regions: [0.02]}
+  all: {max_steps: 1000, policy_init_std: 0.5}
+  trpo: {env_sample: 8000, trpo_tr_eps: 0.02}

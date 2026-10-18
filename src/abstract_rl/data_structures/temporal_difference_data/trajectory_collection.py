@@ -42,6 +42,9 @@ class TrajectoryCollection:
         self._sd = self._env.observation_dim
         self._ad = self._env.action_dim
         self.cli = CliPrinter().instance
+        # On-device copy of the same episodes, filled by ``attach_device``. The list of
+        # trajectories stays the memory the rest of the library addresses.
+        self.device: Any = None
 
     def __len__(self) -> int:
         return len(self.__trajectories)
@@ -99,6 +102,43 @@ class TrajectoryCollection:
             self.__trajectories = self.__trajectories[i:]
 
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
+        self._sync_device()
+
+    def attach_device(self, n_actions: int, time_limit: int, stats_dim: int | None = None) -> None:
+        """Allocate the fixed on-device arrays the jitted MPO updates sample from.
+
+        Args:
+            n_actions: Extra actions stored per state by the E-step.
+            time_limit: Longest episode the Retrace kernel pads to.
+            stats_dim: Width of the cached policy statistics. ``None`` stores a diagonal Gaussian.
+        """
+        from abstract_rl.data_structures.temporal_difference_data.replay_buffer import ReplayBuffer
+
+        capacity = int(self.max_l) if self.max_l is not None else max(self.__num_data_points, 1)
+        self.device = ReplayBuffer(self._sd, self._ad, capacity, n_actions, time_limit, stats_dim)
+        self._sync_device()
+
+    def _sync_device(self) -> None:
+        """Rebuild the on-device copy from the trajectories this collection currently holds."""
+        if self.device is None:
+            return
+        self.device.clear()
+        if self.__trajectories:
+            self.device.add_trajectories(self.__trajectories)
+
+    def scatter_field(self, name: str, values: Any) -> None:
+        """Copy a device array back onto each trajectory under ``name``.
+
+        Args:
+            name: Annotation key, for example ``add_q`` or ``grad_ranking``.
+            values: Array whose leading axis lines up with the packed transitions.
+        """
+        if self.device is None:
+            return
+        # One device-to-host copy of the packed field, then a view per episode.
+        host = np.asarray(values)
+        for (start, length), trajectory in zip(self.device.episodes, self.__trajectories):
+            trajectory[name] = host[start : start + length]
 
     def __iter__(self) -> Iterator[Trajectory]:
         return iter(self.__trajectories)

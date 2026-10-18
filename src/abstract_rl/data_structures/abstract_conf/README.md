@@ -9,7 +9,6 @@ c = {
     # environment settings
     'env_name': 'Pendulum-v1',
 
-    'ret_add_acts': 20,
     'res_add_acts': 20,
 }
 

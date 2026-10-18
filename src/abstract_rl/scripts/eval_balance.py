@@ -20,7 +20,6 @@ from typing import Any
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 from numpy import ndarray
 from PIL import Image
 
@@ -40,8 +39,7 @@ def load_policy(run_dir: str) -> tuple[MCMCEnvWrapper, ContinuousPolicy]:
         mc.add_environment(env)
     with conf.ns("policy"):
         policy = select_policy(mc)
-        policy.load_state_dict(torch.load(join(run_dir, "model/last", "policy.data"), weights_only=True))
-    policy.eval()
+        policy.load(join(run_dir, "model/last", "policy.data"))
     return env, policy
 
 
@@ -52,10 +50,9 @@ def run_episode(
     obs, _ = env.reset(seed=seed)
     total, thetas, done = 0.0, [], False
     while not done:
-        with torch.no_grad():
-            s = torch.as_tensor(env_wrapper._preprocess(obs), dtype=torch.float32).view(1, -1)
-            a = policy.mode(states=s).numpy()[0].astype(np.float64)
-        obs, r, terminated, truncated, _ = env.step(a)
+        state = np.asarray(env_wrapper._preprocess(obs), dtype=np.float64).reshape(1, -1)
+        action = np.asarray(policy.mode(states=state))[0].astype(np.float64)
+        obs, r, terminated, truncated, _ = env.step(action)
         total += float(r)
         thetas.append(float(np.arctan2(obs[1], obs[0])))
         if frames is not None:

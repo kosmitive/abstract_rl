@@ -1,9 +1,12 @@
-"""Hydra configuration of the benchmark runs (``config/`` at the repository root).
+"""Hydra configuration of the benchmark runs.
 
 ``config/alg/<alg>.yaml`` holds the Pendulum-v1 defaults of TRPO and MPO, ``config/env/<env>.yaml`` the Gymnasium id,
 the success threshold, the env-step budget and the overrides of the algorithm defaults (``all``, ``trpo``, ``mpo``).
 ``run_config`` merges them into the flat dictionary the training loops expect: algorithm defaults, then environment
 overrides, then explicit ``alg.<key>=...`` command line overrides.
+
+The directory is the copy installed next to this package (``abstract_rl/config``, included in the wheel) when that
+file is present, and the repository ``config/`` when running from a checkout.
 """
 
 import functools
@@ -13,7 +16,18 @@ from typing import Any
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+
+def _resolve_config_dir() -> Path:
+    packaged = Path(__file__).resolve().parents[1] / "config"
+    if (packaged / "config.yaml").is_file():
+        return packaged
+    checkout = Path(__file__).resolve().parents[3] / "config"
+    if (checkout / "config.yaml").is_file():
+        return checkout
+    raise FileNotFoundError("abstract_rl Hydra config was not found in the package or the repository checkout")
+
+
+CONFIG_DIR = _resolve_config_dir()
 ALGORITHMS = sorted(p.stem for p in (CONFIG_DIR / "alg").glob("*.yaml"))
 ALGORITHMS_SB3 = ["ppo", "trpo"]
 
@@ -27,7 +41,7 @@ def load(overrides: list[str] | None = None) -> DictConfig:
 def run_config(cfg: DictConfig, overrides: list[str] | None = None) -> dict[str, Any]:
     """Flat run configuration of a composed config; ``overrides`` are the command line overrides of ``cfg``."""
     alg: dict[str, Any] = OmegaConf.to_container(cfg.alg, resolve=True)  # type: ignore[assignment]
-    name = alg.pop("name")
+    name = str(alg.pop("name"))
     spec: dict[str, Any] = OmegaConf.to_container(cfg.env.overrides, resolve=True)  # type: ignore[assignment]
     conf: dict[str, Any] = {**alg, **(spec.get("all") or {}), **(spec.get(name) or {})}
     # explicit alg.<key>=value overrides of the command line take precedence over the environment table
@@ -35,8 +49,9 @@ def run_config(cfg: DictConfig, overrides: list[str] | None = None) -> dict[str,
         key = item.lstrip("+~").partition("=")[0]
         if key.startswith("alg.") and key.count(".") == 1:
             conf[key[4:]] = alg[key[4:]]
-    if cfg.max_env_steps is not None:
-        conf["max_env_steps"] = cfg.max_env_steps
+    # The training budget is the environment `steps` field (`env.steps=` on the command line).
+    # Epochs are ceil(steps / env_sample). An `alg.steps` entry is not a second budget.
+    conf["steps"] = int(cfg.env.steps)
     conf.update({"env_name": cfg.env.id, "seed": cfg.seed, "data_root": cfg.data_root})
     return conf
 
@@ -67,6 +82,7 @@ _ORDER = [
     "InvertedPendulum-v5",
     "InvertedDoublePendulum-v5",
     "HalfCheetah-v5",
+    "Humanoid-v5",
 ]
 
 
