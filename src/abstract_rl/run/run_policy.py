@@ -6,7 +6,6 @@ from os.path import join
 
 import torch
 
-from abstract_rl.src.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.env.mcmc_env_wrapper import MCMCEnvWrapper
 from abstract_rl.src.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy

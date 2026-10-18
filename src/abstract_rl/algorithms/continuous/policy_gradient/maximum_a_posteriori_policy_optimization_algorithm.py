@@ -210,7 +210,6 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         :return: The calculated objective.
         """
 
-        policy = self.mc.get('policy', target=True)
         policy = self.mc.get('policy', target=False)
 
         # build regularization for mean

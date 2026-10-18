@@ -57,11 +57,6 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.net.sync(v.net)
         return v
 
-    def count_parameters(self):
-        """Counts the parameters of the module itself."""
-
-        return self.net.num_params()
-
     def forward(self, states):
         """Propagate the x in a forward fashion through the network."""
         return self.v_val(states)

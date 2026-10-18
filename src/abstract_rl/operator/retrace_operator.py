@@ -3,7 +3,6 @@ from pandas.tests.extension.numpy_.test_numpy_nested import np
 
 from abstract_rl.src.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.src.operator.trajectory_operator import TrajectoryOperator
-from abstract_rl.src.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
 class RetraceOperator(TrajectoryOperator):
@@ -91,13 +90,6 @@ class RetraceOperator(TrajectoryOperator):
 
             trajectory['q'] = q_vals
             trajectory['tq'] = tq
-
-    def _run_retrace(self, trajectory):
-        """
-        Executes retrace on the trajectory.
-        :param trajectory: The trajectory to execute retrace on.
-        :return: The retraced q values.
-        """
 
     def _def_bounded_importance_sampling_coefficients(self, trajectory):
         """

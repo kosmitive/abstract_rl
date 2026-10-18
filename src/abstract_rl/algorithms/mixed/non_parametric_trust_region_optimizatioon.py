@@ -1,7 +1,6 @@
 import math
 
 import torch
-import torch.optim as opt
 from torch.autograd import Variable
 import numpy as np
 

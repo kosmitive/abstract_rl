@@ -1,12 +1,10 @@
 import scipy as sp
 
 import torch
-import torch.optim as optim
 from abstract_rl.src.misc.cli_printer import CliPrinter
 from abstract_rl.src.misc.flat_params import set_flat_params_to, get_flat_grad_from, get_flat_params_from
 
 import scipy.optimize
-import scipy as sp
 
 class VanillaGradient:
     """Simple vanilla gradient. Simply inherit from this class to add support"""

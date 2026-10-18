@@ -21,7 +21,6 @@
 #  SOFTWARE.
 
 from abstract_rl.src.data_structures.temporal_difference_data.batch import Batch
-from abstract_rl.src.data_structures.temporal_difference_data.trajectory import Trajectory
 import numpy as np
 
 from abstract_rl.src.misc.cli_printer import CliPrinter
@@ -49,12 +48,6 @@ class TrajectoryCollection:
         :param collection: The collection to merge into
         """
         self.extend(collection.trajectories())
-
-    def is_full(self):
-        """
-        :return: True if is full.
-        """
-        return len(self.__trajectories) == self.max_l
 
     def print(self):
         """

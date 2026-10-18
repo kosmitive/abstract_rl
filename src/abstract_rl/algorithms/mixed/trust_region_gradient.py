@@ -33,12 +33,6 @@ class TrustRegionGradient:
         self.fmtstr = "%10i | %14.10f | %14.10f | %10.5f | %10.5f | %10.5f x %10.5f | %10.5f | %10.5f | %10.5f"
         self.titlestr = "%10s | %14s | %14s | %10s | %10s | %23s | %10s | %10s | %10s "
 
-    def perform_mult_tr_sgd(self, num_steps, tc, batch_size, fields):
-
-        for s in range(num_steps):
-            batch = tc.sample(batch_size, fields)
-            self.perform_tr_sgd(s, batch, batch)
-
     def perform_tr_sgd(self, curst, batch, tr_batch):
 
         # get v objective and the gradient

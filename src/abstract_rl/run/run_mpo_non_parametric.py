@@ -17,8 +17,6 @@ from abstract_rl.src.operator.filter_operator import FilterOperator
 from abstract_rl.src.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.src.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.src.plots.reward_plot import RewardValueFunctionPlot
-from abstract_rl.src.plots.trajectory_plot import TrajectoryPlot
-from abstract_rl.src.policy.continuous.univariate_beta_policy import UnivariateBetaPolicy
 from abstract_rl.src.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 from abstract_rl.src.value_functions.fc_q_networks import FullyQNeuralNet
 from abstract_rl.src.operator.retrace_operator import RetraceOperator
@@ -78,7 +76,6 @@ def run_mpo_non_parametric(conf):
         mc.add_main('alg', alg)
 
     with conf.ns('val'):
-        v_lr = conf['lr']
         q_opt_steps = conf['opt_steps']
         q_batch_size = conf['batch_size']
         sync_steps = conf['sync_steps']

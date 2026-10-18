@@ -2,7 +2,6 @@ from os.path import join
 
 import numpy as np
 import torch
-import os
 
 from abstract_rl.src.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
 from abstract_rl.src.env.mcmc_env_wrapper import MCMCEnvWrapper
@@ -16,7 +15,6 @@ from abstract_rl.src.operator.filter_operator import FilterOperator
 from abstract_rl.src.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
 from abstract_rl.src.operator.td_operator import TemporalDifferenceOperator
 from abstract_rl.src.plots.reward_plot import RewardValueFunctionPlot
-from abstract_rl.src.plots.trajectory_plot import TrajectoryPlot
 from abstract_rl.src.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 from abstract_rl.src.value_functions.fc_v_networks import FullyVNeuralNet
 

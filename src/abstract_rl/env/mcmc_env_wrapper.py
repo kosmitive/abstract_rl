@@ -18,9 +18,6 @@ class MCMCEnvWrapper:
     instead of only giving a step based interface to the outside.
     """
 
-    def namespace(self):
-        return self._name_sp
-
     def __init__(self, mc):
         """
         Initialize a new environment.
@@ -30,7 +27,6 @@ class MCMCEnvWrapper:
         self.mc = mc
         self.num_threads = conf['num_threads']
         self.render = conf['render']
-        self._name_sp = conf.get_namespace()
 
         # save config
         self.conf = conf
@@ -45,9 +41,7 @@ class MCMCEnvWrapper:
 
         # set best measured reward to lowest possible reward
         self.best_reward = np.finfo(np.float64).min
-        self.last_reward = None
         self.max_traj_len = 0
-        self.min_reward = None
         self.cli = CliPrinter().instance
         self.created_trajectories = 0
         self.obs_sp = self.env.observation_space
@@ -56,10 +50,6 @@ class MCMCEnvWrapper:
 
         self.state_filter = RunningCenteredFilter('states', self.observation_dim)
         self.reward_filter = RunningCenteredFilter('rewards', 1)
-
-    def last_ucb_reward(self):
-        assert self.last_reward is not None
-        return self.last_reward
 
     def discount(self):
         """

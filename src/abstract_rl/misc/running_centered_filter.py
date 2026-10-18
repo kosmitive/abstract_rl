@@ -4,7 +4,6 @@ import numpy as np
 # from https://github.com/joschu/modular_rl
 # http://www.johndcook.com/blog/standard_deviation/
 # https://github.com/ikostrikov/pytorch-trpo/blob/master/running_state.py
-import torch
 
 from abstract_rl.src.misc.cli_printer import CliPrinter
 
@@ -59,7 +58,3 @@ class RunningCenteredFilter:
     def std(self):
         return np.sqrt(self.var)
 
-    def print_block(self):
-        self.cli.empty().line(self._name).line()
-        self.cli.print(f"mean \t\t=\t{self.mean}")
-        self.cli.print(f"std \t\t=\t{self.std}")

@@ -1,9 +1,6 @@
-import math
-import torch.nn.functional as F
 
 import numpy as np
 import torch
-from torch.autograd import Variable
 from torch.distributions import Normal
 from torch.nn import Parameter
 
@@ -167,12 +164,6 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.network.sync(v.network)
         return v
 
-    def print_block(self):
-        self.cli.line().print(f"gaussian policy")
-        w = self.network.get_params()
-        norm_w = torch.dot(w, w).detach().numpy()
-        self.cli.print(f"|w| \t=\t{norm_w}")
-
     def entropy(self, batch):
         policy = self.mc.get('policy', False)
         t_states = torch.Tensor(batch.states)
@@ -223,37 +214,3 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         if est == 'sum': return kl.sum()
         elif est == 'mean': return kl.mean()
         else: raise NotImplementedError
-
-    def lagrange_sigma_constraint(self, suff_stats, t_suff_stats):
-        """
-        Calculates the kl constraint on sigma.
-        :param suff_stats: Sufficient statistics of current policy.
-        :param t_suff_stats: Sufficient statistics of target policy.
-        :return: the lagrange constraint for sigma.
-        """
-
-        t_mu_suff_states, t_sigma_suff_states = torch.split(t_suff_stats, 1, dim=1)
-        t_mu_suff_states = t_mu_suff_states.detach()
-
-        # sample sufficient statistics
-        mu_suff_states, sigma_suff_states = torch.split(suff_stats, 1, dim=1)
-
-        c_sigma = torch.mean(torch.pow((mu_suff_states - t_mu_suff_states), 2) / sigma_suff_states)
-        return c_sigma
-
-    def lagrange_mu_constraint(self, suff_stats, t_suff_stats):
-        """
-        Calculates the kl constraint on mu.
-        :param suff_stats: Sufficient statistics of current policy.
-        :param t_suff_stats: Sufficient statistics of target policy.
-        :return: the lagrange constraint for mu.
-        """
-        t_mu_suff_states, t_sigma_suff_states = torch.split(t_suff_stats, 1, dim=1)
-
-        # sample sufficient statistics
-        mu_suff_states, sigma_suff_states = torch.split(suff_stats, 1, dim=1)
-
-        log_back = torch.log(sigma_suff_states / t_sigma_suff_states)
-        c_mu = torch.mean(t_sigma_suff_states / sigma_suff_states - 1 + log_back)
-        return c_mu
-

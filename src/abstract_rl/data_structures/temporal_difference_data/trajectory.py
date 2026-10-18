@@ -36,14 +36,6 @@ class Trajectory:
 
     # --- standard reinforcement learning fields
 
-    def list_annotations(self): return self._annotations.keys()
-
-    @property
-    def state_dim(self): return self._sd
-
-    @property
-    def act_dim(self): return self._ad
-
     @property
     def states(self):
         """

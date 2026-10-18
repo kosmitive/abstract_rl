@@ -17,7 +17,6 @@ import numpy as np
 import torch.nn as nn
 import torch
 
-from abstract_rl.src.algorithms.mixed.trust_region_gradient import TrustRegionGradient
 from abstract_rl.src.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.src.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.src.neural_modules.neural_network import MultilayerPerceptron
@@ -74,11 +73,6 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.fc_net.sync(v.fc_net)
         return v
 
-    def count_parameters(self):
-        """Counts the parameters of the module itself."""
-
-        return self.fc_net.num_params()
-
     def forward(self, states, actions):
         """Propagate the x in a forward fashion through the network."""
 
@@ -90,7 +84,6 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         policy = self.mc.get('policy', True)
         rep_states = states.repeat([exp_actions, 1])
         samp_actions = policy.sample_actions(states, num_actions=exp_actions)
-        samp_ll = policy.log_prob(samp_actions, states=states)
         lin_actions = samp_actions.view([-1, 1])
 
         # calculate q values and

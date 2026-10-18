@@ -1,8 +1,6 @@
 import torch
 
 import numpy as np
-from torch import nn, optim as opt
-from torch.autograd import Variable
 
 from abstract_rl.src.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
 from abstract_rl.src.policy.non_parametric.non_parametric_policy import NonParametricPolicy

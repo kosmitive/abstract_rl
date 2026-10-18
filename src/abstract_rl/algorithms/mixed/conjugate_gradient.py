@@ -3,15 +3,6 @@ import torch
 from abstract_rl.src.misc.cli_printer import CliPrinter
 
 
-def to_col(x):
-
-    # make column vector
-    n = x.shape[0]
-    if len(x.shape) == 1: x = x.view([-1, 1])
-    assert x.shape[0] == n and x.shape[1] == 1
-    return x
-
-
 def conjugate_gradient(A, b, max_k=10, tol=1e-10):
     """
     Implementation of conjugate gradient algorithm. It uses vector matrix products for efficient calculation. See

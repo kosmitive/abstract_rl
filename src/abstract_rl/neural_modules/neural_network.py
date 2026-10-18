@@ -29,7 +29,6 @@ class MultilayerPerceptron(nn.Module, Syncable):
         # save settings
         self.mc = mc
         self.structure = hidden_neurons
-        self.act_fn = act_fn
         self.layer_norm = layer_norm
         self.init = init
 

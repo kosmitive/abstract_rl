@@ -1,4 +1,3 @@
-import torch
 
 from abstract_rl.src.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
 from abstract_rl.src.algorithms.mixed.trust_region_gradient import TrustRegionGradient
