@@ -74,11 +74,14 @@ class MCMCEnvWrapper:
         # affine reward transform r' = reward_scale * r + reward_offset used for training only (evaluation scripts
         # report the raw environment return). reward_clip, when set, clips that transformed reward to [-c, c].
         # num_envs above 1 collects with a gymnasium SyncVectorEnv; the default of one keeps the serial rollout.
+        # to_dict, not conf.get: a missing key must not be written into a TRPO config
+        namespace = conf.get_namespace()
+        prefix = f"{namespace}_" if namespace else ""
         raw = conf.to_dict()
-        self.num_envs = int(raw["num_envs"]) if "env_num_envs" in raw else 1
+        self.num_envs = int(raw.get(f"{prefix}num_envs", 1))
         self._reward_scale = float(conf.get("reward_scale", 1.0))
         self._reward_offset = float(conf.get("reward_offset", 0.0))
-        clip = raw.get("env_reward_clip")
+        clip = raw.get(f"{prefix}reward_clip")
         self._reward_clip = None if clip is None else float(clip)
         self._vec: SyncVectorEnv | None = None
 
@@ -242,7 +245,7 @@ class MCMCEnvWrapper:
                 cs = self._preprocess(cs)
                 self.state_filter.register(cs)
                 raw_return += float(r)
-                r = self._shape_reward(r)
+                r = self._shape_reward(float(r))
                 self.reward_filter.register(np.asarray([r], dtype=np.float64))
 
                 t += 1

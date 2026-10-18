@@ -24,7 +24,14 @@ def project_positive(raw: torch.Tensor, floor: float) -> torch.Tensor:
         The projected multiplier, with the same shape as ``raw``.
     """
 
-    return torch.clamp(F.softplus(raw), min=floor)
+    projected = F.softplus(raw)
+    if floor <= 0.0:
+        return projected
+    # float32 cannot store 1e-8 exactly; step up to the next value that is still at least the floor
+    limit = torch.tensor(floor, device=raw.device, dtype=raw.dtype)
+    if float(limit) < floor:
+        limit = torch.nextafter(limit, limit.new_tensor(float("inf")))
+    return torch.maximum(projected, limit)
 
 
 def inverse_softplus(value: torch.Tensor) -> torch.Tensor:

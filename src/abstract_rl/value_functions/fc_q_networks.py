@@ -67,6 +67,7 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
             case "c51":
                 out_dim = self.n_atoms
                 atoms = torch.linspace(float(conf.get("v_min", -100.0)), float(conf.get("v_max", 100.0)), self.n_atoms)
+                self.atoms: torch.Tensor
                 self.register_buffer("atoms", atoms)
             case "mog":
                 out_dim = 3 * self.n_components

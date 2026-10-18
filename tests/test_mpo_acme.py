@@ -57,9 +57,11 @@ def test_normalized_weights_are_a_detached_softmax():
     assert not weights.requires_grad
     assert torch.allclose(weights.sum(dim=1), torch.ones(2), atol=1e-6)
     assert torch.allclose(weights, torch.softmax(q.detach() / eta.detach(), dim=1), atol=1e-6)
-    # the weight tensor itself is a constant, so a downstream loss cannot reach Q or η
-    weights.sum().backward()
+    # a weighted likelihood treats the weights as constants, so it cannot reach Q or eta
+    log_prob = torch.zeros_like(weights, requires_grad=True)
+    (-(weights * log_prob).sum()).backward()
     assert q.grad is None and eta.grad is None
+    assert log_prob.grad is not None
 
 
 def test_decoupled_kl_matches_the_mixed_gaussians_including_per_dimension():
@@ -75,9 +77,9 @@ def test_decoupled_kl_matches_the_mixed_gaussians_including_per_dimension():
     expected_std = kl_divergence(Normal(mu_t, sig_t), Normal(mu_t, sig_o)).sum(-1).mean()
     assert torch.allclose(kl_mean, expected_mean, atol=1e-6)
     assert torch.allclose(kl_std, expected_std, atol=1e-6)
-    # KL(π_old || π) is not the reverse direction once the means differ
-    reverse = kl_divergence(Normal(mu_o, sig_t), Normal(mu_t, sig_t)).sum(-1).mean()
-    assert not torch.allclose(kl_mean, reverse, atol=1e-4)
+    # equal variances make the mean KL symmetric; the covariance KL is not the reverse direction
+    reverse_std = kl_divergence(Normal(mu_t, sig_o), Normal(mu_t, sig_t)).sum(-1).mean()
+    assert not torch.allclose(kl_std, reverse_std, atol=1e-4)
 
     per_mean, per_std = decoupled_kl_diagonal(online, target, per_dim=True)
     assert per_mean.shape == per_std.shape == (2,)
@@ -134,10 +136,11 @@ def test_multiplier_grows_when_the_kl_exceeds_the_bound():
 
 def test_eta_and_multipliers_stay_above_their_floors():
     raw = torch.tensor(-80.0)
-    assert project_positive(raw, ETA_FLOOR).item() >= ETA_FLOOR
+    eta = project_positive(raw, ETA_FLOOR).item()
+    assert eta >= ETA_FLOOR
     assert project_positive(raw, ALPHA_FLOOR).item() >= ALPHA_FLOOR
-    # softplus(-80) underflows; the floor is what keeps η usable in the dual
-    assert math.isclose(project_positive(raw, ETA_FLOOR).item(), ETA_FLOOR)
+    # softplus(-80) underflows; the floor is what keeps eta usable in the dual
+    assert math.isclose(eta, ETA_FLOOR, rel_tol=1e-6)
 
 
 def _stack(conf):
@@ -188,9 +191,9 @@ def test_target_networks_and_e_step_weights_get_no_gradients(mpo_conf):
     alg.raw_eta.data.fill_(-80)
     alg.raw_alpha_mean.data.fill_(-80)
     alg.raw_alpha_std.data.fill_(-80)
-    assert float(alg.eta()) >= ETA_FLOOR
-    assert float(alg.alpha_mean().min()) >= ALPHA_FLOOR
-    assert float(alg.alpha_std().min()) >= ALPHA_FLOOR
+    assert float(alg.eta().detach()) >= ETA_FLOOR
+    assert float(alg.alpha_mean().detach().min()) >= ALPHA_FLOOR
+    assert float(alg.alpha_std().detach().min()) >= ALPHA_FLOOR
 
 
 def test_mpo_defaults_follow_the_acme_numbers():

@@ -114,6 +114,8 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             center, scale = (high + low) / 2, (high - low) / 2
         self.action_center: torch.Tensor
         self.action_scale: torch.Tensor
+        self.action_low: torch.Tensor
+        self.action_high: torch.Tensor
         self.register_buffer("action_center", torch.as_tensor(center, dtype=torch.float32))
         self.register_buffer("action_scale", torch.as_tensor(scale, dtype=torch.float32))
         self.register_buffer("action_low", torch.as_tensor(low, dtype=torch.float32))

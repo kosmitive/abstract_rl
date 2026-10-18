@@ -78,6 +78,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.action_scale = float(np.max(np.abs(mc.env.action_space.high)))
         low = float(np.min(mc.env.action_space.low))
         high = float(np.max(mc.env.action_space.high))
+        self.action_low: torch.Tensor
+        self.action_high: torch.Tensor
         self.register_buffer("action_low", torch.tensor([low], dtype=torch.float32))
         self.register_buffer("action_high", torch.tensor([high], dtype=torch.float32))
 
