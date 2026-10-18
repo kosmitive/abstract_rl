@@ -79,7 +79,7 @@ def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000) -> tuple[ndar
 def save_gif(run_dir: str, path: str, seed: int = 10_000, fps: int = 30) -> float:
     """Render one episode (rgb_array, no display needed) into a GIF."""
     env_wrapper, policy = load_policy(run_dir)
-    env = gym.make(env_wrapper.env_name, render_mode="rgb_array")
+    env = env_wrapper.frozen_eval_env("rgb_array")
     frames: list[Any] = []
     ret, _ = run_episode(env_wrapper, policy, env, seed, frames)
     env.close()

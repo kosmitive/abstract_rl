@@ -52,6 +52,7 @@
     0.02
    ],
    "num_epochs": 1200,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -108,13 +109,14 @@
    "filter_states": false,
    "gae_lambda": 0.95,
    "max_steps": 1000,
-   "num_epochs": 150,
+   "num_epochs": 600,
+   "obs_norm": true,
    "policy_act_fn": [
     "tanh",
     "tanh",
     "none"
    ],
-   "policy_batch_size": 8000,
+   "policy_batch_size": 4000,
    "policy_cov_type": "single",
    "policy_init": "xavier_gaussian",
    "policy_layer_norm": false,
@@ -137,7 +139,7 @@
     "none"
    ],
    "val_init": "xavier_gaussian",
-   "val_l2_reg": 0.001,
+   "val_l2_reg": 0.0,
    "val_layer_norm": false,
    "val_struct": [
     64,
@@ -168,6 +170,7 @@
     0.01
    ],
    "num_epochs": 600,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -224,13 +227,14 @@
    "filter_states": false,
    "gae_lambda": 0.95,
    "max_steps": 1000,
-   "num_epochs": 150,
+   "num_epochs": 75,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
     "none"
    ],
-   "policy_batch_size": 4000,
+   "policy_batch_size": 8000,
    "policy_cov_type": "single",
    "policy_init": "xavier_gaussian",
    "policy_layer_norm": false,
@@ -253,7 +257,7 @@
     "none"
    ],
    "val_init": "xavier_gaussian",
-   "val_l2_reg": 0.001,
+   "val_l2_reg": 0.0,
    "val_layer_norm": false,
    "val_struct": [
     64,
@@ -284,6 +288,7 @@
     0.01
    ],
    "num_epochs": 150,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -341,6 +346,7 @@
    "gae_lambda": 0.95,
    "max_steps": 1000,
    "num_epochs": 75,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -401,6 +407,7 @@
     0.01
    ],
    "num_epochs": 1000,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -458,6 +465,7 @@
    "gae_lambda": 0.95,
    "max_steps": 999,
    "num_epochs": 100,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -517,6 +525,7 @@
     0.01
    ],
    "num_epochs": 800,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",
@@ -574,6 +583,7 @@
    "gae_lambda": 0.95,
    "max_steps": 200,
    "num_epochs": 200,
+   "obs_norm": false,
    "policy_act_fn": [
     "tanh",
     "tanh",

@@ -1,10 +1,12 @@
 import threading
+from os.path import exists, join
 from typing import cast
 
 import gymnasium as gym
 import numpy as np
 import torch
 from gymnasium.spaces.box import Box
+from gymnasium.wrappers import NormalizeObservation
 from numpy import ndarray
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -37,6 +39,17 @@ class MCMCEnvWrapper:
         self.num_epochs = conf.get_root("num_epochs")
         self.env_name = conf["name"]
         self.env = gym.make(self.env_name, render_mode="human" if self.render else None)
+        # one env, so the running stats live on this wrapper; a saved run reloads them and freezes them
+        self._norm: NormalizeObservation | None = None
+        if conf.to_dict().get("obs_norm", False):
+            self.env = self._norm = NormalizeObservation(self.env)
+            path = join(self.mc.run_root, "model", "obs_rms.npz")
+            if exists(path):
+                stats = np.load(path)
+                self._norm.obs_rms.mean = stats["mean"].copy()
+                self._norm.obs_rms.var = stats["var"].copy()
+                self._norm.obs_rms.count = float(stats["count"])
+                self._norm.update_running_mean = False
         self._seed = conf.get_root("seed")
 
         self._normalize = conf.get("normalize", False)
@@ -131,6 +144,14 @@ class MCMCEnvWrapper:
             self.total_steps = getattr(self, "total_steps", 0) + t
 
         self.epoch += 1
+        if self._norm is not None and self._norm.update_running_mean:
+            rms = self._norm.obs_rms
+            np.savez(
+                join(self.mc.run_root, "model", "obs_rms.npz"),
+                mean=rms.mean,
+                var=rms.var,
+                count=np.float64(rms.count),
+            )
 
         tj = TrajectoryCollection(self, sum([len(tra) for tra in trajectories]))
         tj.extend(trajectories)
@@ -209,6 +230,18 @@ class MCMCEnvWrapper:
 
     def close(self) -> None:
         self.env.close()
+
+    def frozen_eval_env(self, render_mode: str) -> gym.Env:
+        """New env for greedy eval. Observation stats are the training ones and do not update."""
+        env: gym.Env = gym.make(self.env_name, render_mode=render_mode)
+        if self._norm is None:
+            return env
+        wrapped = NormalizeObservation(env)
+        wrapped.obs_rms.mean = np.array(self._norm.obs_rms.mean, copy=True)
+        wrapped.obs_rms.var = np.array(self._norm.obs_rms.var, copy=True)
+        wrapped.obs_rms.count = self._norm.obs_rms.count
+        wrapped.update_running_mean = False
+        return wrapped
 
     @property
     def observation_space(self) -> Box:
