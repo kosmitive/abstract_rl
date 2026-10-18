@@ -1,0 +1,5 @@
+# @package alg
+num_epochs: 1000
+max_env_steps: 400000
+policy_sigma: 2.0
+policy_cov_type: fixed

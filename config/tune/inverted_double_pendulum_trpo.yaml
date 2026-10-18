@@ -1,0 +1,3 @@
+# @package alg
+num_epochs: 150
+trpo_tr_eps: 0.005

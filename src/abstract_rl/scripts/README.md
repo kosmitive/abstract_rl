@@ -1,3 +1,21 @@
 # Scripts
 
-The Quanser and Cartpole entry scripts were removed with the unused experiment code.
+Benchmark runs with Hydra (`config/` selects the algorithm and environment groups, and `hydra_conf.py` turns the composed algorithm node into the training dictionary):
+
+```
+uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
+uv run python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=100 alg.policy_sigma=0.5
+uv run python -m abstract_rl.scripts.trpo_pendulum    # thin wrappers for Pendulum-v1
+uv run python -m abstract_rl.scripts.mpo_pendulum
+```
+
+MuJoCo environments need the `mujoco` extra (`uv sync --extra mujoco`).
+Every run writes to `data/<env>/<alg>/<timestamp>/` (configuration, logged returns, model checkpoints, a
+performance plot and per-epoch CLI logs).
+
+Evaluation:
+
+```
+uv run python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/*/<run> --out eval --gif   # Pendulum balance check
+uv run python -m abstract_rl.scripts.plot_learning_curve data/Pendulum-v1/trpo/<run> -o trpo.png
+```

@@ -1,0 +1,37 @@
+# Benchmark run configuration (Hydra). Example:
+#   uv run python -m abstract_rl.scripts.run env=mountaincar alg=mpo seed=3 alg.policy_sigma=1.5
+# ``alg`` and ``env`` are config groups. ``tune_all`` and ``tune`` are selected by interpolation and merged
+# into the algorithm node. Command line overrides of ``alg.*`` are applied by Hydra after that merge.
+defaults:
+  - alg: trpo
+  - env: pendulum
+  - optional tune_all: ${env}
+  - tune: ${env}_${alg}
+  - _self_
+
+seed: 1
+data_root: data
+# hard env-step budget (null: keep the value from the algorithm node, which is unset unless a tune file sets one)
+max_env_steps: null
+env_order:
+  - Pendulum-v1
+  - MountainCarContinuous-v0
+  - InvertedPendulum-v5
+  - InvertedDoublePendulum-v5
+  - HalfCheetah-v5
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: ${data_root}/.multirun
+    subdir: ${hydra.job.num}
+  output_subdir: null
+  job:
+    chdir: false
+  job_logging:
+    root:
+      level: WARN
+  hydra_logging:
+    root:
+      level: WARN

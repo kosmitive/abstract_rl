@@ -1,0 +1,3 @@
+# @package alg
+num_epochs: 800
+rnk_eps: 0.05

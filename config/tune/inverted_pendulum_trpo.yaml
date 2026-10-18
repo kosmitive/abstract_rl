@@ -1,0 +1,4 @@
+# @package alg
+num_epochs: 75
+policy_batch_size: 2000
+trpo_tr_eps: 0.02

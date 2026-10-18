@@ -1,0 +1,38 @@
+# TRPO defaults (tuned on Pendulum-v1)
+name: trpo
+reload: false
+seed: 1
+env_discount: 0.99
+env_normalize: true
+env_num_threads: 1
+env_render: false
+policy_structure: [64, 64]
+policy_act_fn: [tanh, tanh, none]
+policy_layer_norm: false
+policy_init: xavier_gaussian
+policy_sync_steps: 1
+policy_sigma: 1.0
+policy_cov_type: single
+policy_squash: true
+filter_states: false
+filter_rewards: false
+num_epochs: 200
+max_steps: 200
+# fully connected neural v function
+val_struct: [64, 64]
+val_layer_norm: false
+val_act_fn: [tanh, tanh, none]
+val_init: xavier_gaussian
+val_sync_steps: 1
+val_lr: 0.001
+val_opt_steps: 200
+val_batch_size: 256
+val_l2_reg: 0.001
+# advantage settings
+gae_lambda: 0.95
+policy_batch_size: 4000
+# trpo
+trpo_cg_max_k: 10
+trpo_cg_res_tol: 1.0e-10
+trpo_dvp_damping: 0.1
+trpo_tr_eps: 0.01

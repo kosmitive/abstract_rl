@@ -1,0 +1,4 @@
+# @package alg
+num_epochs: 100
+policy_sigma: 2.0
+env_discount: 0.999

@@ -1,0 +1,4 @@
+# @package alg
+num_epochs: 1200
+policy_sigma: 0.5
+mpo_trust_regions: [0.02]
