@@ -1,5 +1,3 @@
-import math
-
 import numpy as np
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -40,11 +38,10 @@ class VariationalRankingOperator(TrajectoryOperator):
 
         # call the super class
         q = self.b.build(trajectory)
-        _, N = q.samples.shape
-        max_q_samples = np.max(q.samples)
-
-        q_norm = np.log(np.sum(np.exp(q.samples - max_q_samples), 1)) + max_q_samples * math.log(N)
-        q.samples -= np.expand_dims(q_norm, 1)
+        # normalize per state, e.g. log q(a|s) = Q(s,a) / eta - log sum_a' exp(Q(s,a') / eta)
+        max_q_samples = np.max(q.samples, axis=1, keepdims=True)
+        q_norm = np.log(np.sum(np.exp(q.samples - max_q_samples), axis=1, keepdims=True)) + max_q_samples
+        q.samples = q.samples - q_norm
 
         # add a annotation to the trajectory
         trajectory["grad_ranking"] = q.samples

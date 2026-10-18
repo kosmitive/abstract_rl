@@ -235,10 +235,10 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             t_add_act = torch.Tensor(batch["add_act"])
             t_add_q = torch.Tensor(batch["grad_ranking"])
 
-            # sample sufficient statistics
+            # weighted maximum likelihood: E_s [ sum_a q(a|s) log pi(a|s) ], where q(a|s) is normalized per state
             ll = policy.log_prob(t_add_act, suff_stats=suff_stats)
             rew_vals = torch.exp(t_add_q) * ll
-            obj = torch.mean(rew_vals)
+            obj = torch.mean(torch.sum(rew_vals, dim=1))
 
         w = get_flat_params_from(policy)
         return obj - self.l2_reg * torch.norm(w)
