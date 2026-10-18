@@ -81,6 +81,7 @@ class TrustRegionGradient:
         exp_improv_rate: torch.Tensor,
         max_steps: int = 10,
         accept_ratio: float = 0.1,
+        max_kl_ratio: float = 1.5,
     ) -> tuple[bool, int, float, Any]:
         """Perform a line search.
 
@@ -89,12 +90,16 @@ class TrustRegionGradient:
         :param exp_improv_rate: The expected improvement rate for the line search.
         :param max_steps: The maximum number of steps for the line search.
         :param accept_ratio: The acceptance ratio between actual and expected improvement rate.
+        :param max_kl_ratio: Steps whose trust region distance exceeds max_kl_ratio * tr_eps are rejected, the
+            quadratic approximation of the distance can underestimate it.
         """
 
-        fmtstr = "%10i | %14.10f | %14.10f | %10.5f | %14.10f | %14.10f | %14.10f"
-        titlestr = "%10s | %14s | %14s | %10s | %14s | %14s | %14s"
+        fmtstr = "%10i | %14.10f | %14.10f | %10.5f | %14.10f | %14.10f | %14.10f | %10.6f"
+        titlestr = "%10s | %14s | %14s | %10s | %14s | %14s | %14s | %10s"
 
-        self.cli.print(titlestr % ("step", "old_obj", "obj", "lr", "ratio", "act_improv", "exp_improv")).line()
+        self.cli.print(
+            titlestr % ("step", "old_obj", "obj", "lr", "ratio", "act_improv", "exp_improv", "distance")
+        ).line()
 
         with torch.no_grad():
             old_obj = self.tr_obj(batch).detach().numpy()
@@ -114,10 +119,11 @@ class TrustRegionGradient:
                 act_improv = old_obj - new_obj
                 exp_improv = lr * exp_improv_rate
                 ratio = act_improv / exp_improv
+                distance = self.tr_distance(batch).item()
 
-                self.cli.print(fmtstr % (step, old_obj, new_obj, lr, ratio, act_improv, exp_improv))
+                self.cli.print(fmtstr % (step, old_obj, new_obj, lr, ratio, act_improv, exp_improv, distance))
 
-                if ratio > accept_ratio and act_improv > 0:
+                if ratio > accept_ratio and act_improv > 0 and distance <= max_kl_ratio * self.tr_eps:
                     return True, step, lr, new_obj
 
                 step += 1
@@ -126,7 +132,7 @@ class TrustRegionGradient:
             # if line search was not successful
             self.cli.line().print("FAILED")
             set_flat_params_to(self._model, x)
-            return False, step, lr, new_obj
+            return False, step, lr, old_obj
 
     def tr_distance(self, batch: Batch) -> torch.Tensor:
         """The training distance."""
