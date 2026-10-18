@@ -2,18 +2,19 @@ import numpy as np
 import torch
 
 
-def get_flat_grad_from(model):
+def get_flat_grad_from(model: torch.nn.Module) -> torch.Tensor:
     """Extract flat gradients form pytorch model."""
 
     params = []
     for param in model.parameters():
+        assert param.grad is not None
         params.append(param.grad.view(-1))
 
     flat_params = torch.cat(params)
     return flat_params
 
 
-def get_flat_params_from(model):
+def get_flat_params_from(model: torch.nn.Module) -> torch.Tensor:
     """Extract flat parameters form pytorch model."""
 
     params = []
@@ -24,7 +25,7 @@ def get_flat_params_from(model):
     return flat_params
 
 
-def set_flat_params_to(model, flat_params):
+def set_flat_params_to(model: torch.nn.Module, flat_params: torch.Tensor) -> None:
     """Set flat parameters to pytorch model."""
     prev_ind = 0
     for param in model.parameters():

@@ -1,5 +1,9 @@
+import torch
+
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
 from abstract_rl.algorithms.mixed.trust_region_gradient import TrustRegionGradient
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 
 
 class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
@@ -9,7 +13,7 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
     while full filling the kl constraint. See https://arxiv.org/abs/1502.05477 for more details.
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         PolicyOptimizationAlgorithm.__init__(self, mc)
         conf = mc.get("conf")
 
@@ -24,7 +28,7 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
             self, self.policy, trpo_eps, trpo_cg_max_k, trpo_cg_residual_tol, trpo_dvp_damping, "max"
         )
 
-    def tr_distance(self, batch):
+    def tr_distance(self, batch: Batch) -> torch.Tensor:
         """Pass back KL divergence for training divergence.
 
         :param batch: The batch to use.
@@ -32,7 +36,7 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
         """
         return self.policy.kl_divergence(batch, est="mean", mode="m-projection")
 
-    def tr_obj(self, batch):
+    def tr_obj(self, batch: Batch) -> torch.Tensor:
         """Pass back the likelihood ratio gradient.
 
         :param batch: The batch to use.

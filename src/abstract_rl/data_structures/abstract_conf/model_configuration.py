@@ -2,6 +2,7 @@ import json
 import time
 from os import mkdir
 from os.path import exists, join
+from typing import Any
 
 import numpy as np
 import torch
@@ -17,7 +18,7 @@ class ModelConfiguration:
     integrated a syncing mechanism due to the need of target and original data structures for more stable evaluations.
     """
 
-    def __init__(self, conf, root="data"):
+    def __init__(self, conf: dict[str, Any], root: str = "data") -> None:
         """
         Create a new model configuration with no syncables no data and no environment.
         """
@@ -26,8 +27,8 @@ class ModelConfiguration:
         reload = conf["reload"]
         conf["reload"] = True
 
-        self.syncables = {}
-        self.data = {}
+        self.syncables: dict[str, tuple[int, Any, Any]] = {}
+        self.data: dict[str, Any] = {}
         if not reload:
             # create folder structure
             self.env_name = conf["env_name"]
@@ -44,10 +45,9 @@ class ModelConfiguration:
                 mkdir(self.run_root)
 
             self.overall_step = 0
-            self.env = None
+            self.env: Any = None
             conf["reload_dir"] = self.run_root
-            conf = SharedConf(conf)
-            self.add_main("conf", conf)
+            self.add_main("conf", SharedConf(conf))
 
             self.model_root = join(self.run_root, "model")
             if not exists(self.model_root):
@@ -68,12 +68,9 @@ class ModelConfiguration:
             # load the config as a json file
             with open(join(self.run_root, "run.conf")) as file_conf:
                 file_str = file_conf.read()
+            self.add_main("conf", SharedConf(json.loads(file_str)))
 
-                conf = json.loads(file_str)
-            conf = SharedConf(conf)
-            self.add_main("conf", conf)
-
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Any:
         """
         Access elements using operator overloading.
         :param key: The key to extract.
@@ -81,7 +78,7 @@ class ModelConfiguration:
         """
         return self.get(key)
 
-    def load(self):
+    def load(self) -> int:
         """Load the model configuration."""
 
         conf = self["conf"]
@@ -93,7 +90,7 @@ class ModelConfiguration:
 
         return self.overall_step
 
-    def store(self, name):
+    def store(self, name: str) -> None:
         """Store the model configuration."""
 
         # store the config as a json file
@@ -112,7 +109,7 @@ class ModelConfiguration:
                 mkdir(torch_path)
             torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
 
-    def get(self, key, target=False):
+    def get(self, key: str, target: bool = False) -> Any:
         """
         Access a specific key. Solves internally for env, main and sync able keys to give access using only this
         function.
@@ -125,7 +122,7 @@ class ModelConfiguration:
         ti = 1 if not target else 2
         return self.data[key] if key in self.data else self.syncables[key][ti]
 
-    def add_environment(self, env):
+    def add_environment(self, env: MCMCEnvWrapper) -> None:
         """
         Adds an environment.
         :param env: The environment to add internally.
@@ -133,14 +130,14 @@ class ModelConfiguration:
         assert isinstance(env, MCMCEnvWrapper)
         self.env = env
 
-    def get_environment(self):
+    def get_environment(self) -> MCMCEnvWrapper:
         """
         Pass back an environment.
         :return: Return the internal instance of environment.
         """
         return self.env
 
-    def add_main(self, key, obj):
+    def add_main(self, key: str, obj: Any) -> None:
         """
         Adds an object as a main element.
         :param key: The key to use for this component.
@@ -149,7 +146,7 @@ class ModelConfiguration:
         assert key not in self.syncables
         self.data[key] = obj
 
-    def add_syncable(self, key, syncable, step):
+    def add_syncable(self, key: str, syncable: Syncable, step: int) -> None:
         """
         Adds a syncable object to the model configuration.
         :param key: The key for this sync able.
@@ -161,7 +158,7 @@ class ModelConfiguration:
         obj = syncable
         self.syncables[key] = (step, obj, obj.clone())
 
-    def sync(self):
+    def sync(self) -> None:
         """
         Calls copy to method on all sync ables.
         """

@@ -31,8 +31,10 @@ Source = "https://github.com/kosmitive/abstract_rl"
 [dependency-groups]
 dev = [
     "mypy>=2.4.0",
+    "pandas-stubs>=3.0.5.260914",
     "pytest>=8.3",
     "ruff>=0.7",
+    "scipy-stubs>=1.18.1.1",
 ]
 
 [build-system]
@@ -65,3 +67,24 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+# Dropped once the Gymnasium port replaces these imports.
+module = [
+    "gym",
+    "gym.*",
+    "quanser_robots",
+    "quanser_robots.*",
+]
+ignore_missing_imports = true

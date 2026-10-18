@@ -1,4 +1,5 @@
 import numpy as np
+from numpy import ndarray
 
 from abstract_rl.plots.plot import Plot
 
@@ -7,10 +8,10 @@ class RewardValueFunctionPlot(Plot):
     """A plot capable of displaying a graph along with the value function
     and the actions used in each state."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("Average Total Reward", None)
 
-    def update(self, stoch_rewards, num_evals):
+    def update(self, stoch_rewards: ndarray, num_evals: int) -> None:
 
         plt = super().get_axes()
         plt.cla()

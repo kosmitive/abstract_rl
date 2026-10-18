@@ -1,7 +1,11 @@
+from typing import Any
+
 import scipy as sp
 import scipy.optimize
 import torch
 
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_grad_from, get_flat_params_from, set_flat_params_to
 
@@ -9,7 +13,7 @@ from abstract_rl.misc.flat_params import get_flat_grad_from, get_flat_params_fro
 class VanillaGradient:
     """Simple vanilla gradient. Simply inherit from this class to add support"""
 
-    def __init__(self, model):
+    def __init__(self, model: torch.nn.Module) -> None:
         """
         Add vanilla gradient optimization.
         :param model: The pytorch model to use.
@@ -21,7 +25,7 @@ class VanillaGradient:
         self.titlestr = "%10s | %14s | %14s"
         self.opt = torch.optim.Adam(self._model.parameters())
 
-    def perform_mult_sgd(self, num_steps, tc, batch_size, fields):
+    def perform_mult_sgd(self, num_steps: int, tc: TrajectoryCollection, batch_size: int, fields: list[str]) -> None:
         """
         Performs multiple stochastic gradient descent steps.
 
@@ -37,7 +41,7 @@ class VanillaGradient:
             batch = tc.sample(batch_size, fields)
             self.perform_sgd(s, batch, 1)
 
-    def perform_sgd(self, curst, batch, maxiter=25):
+    def perform_sgd(self, curst: int, batch: Batch, maxiter: int = 25) -> None:
         """Performs a stochastic gradient descent step by using lbfgs.
 
         :param curst: The current step.
@@ -48,7 +52,7 @@ class VanillaGradient:
         # get v objective and the gradient
         old_obj = self.tr_obj(batch)
 
-        def closure(x):
+        def closure(x: Any) -> tuple[Any, Any]:
             set_flat_params_to(self._model, torch.Tensor(x))
             obj = self.tr_obj(batch)
             obj.backward()
@@ -64,5 +68,5 @@ class VanillaGradient:
         new_obj = self.tr_obj(batch)
         self.cli.print(self.fmtstr % (curst, old_obj, new_obj))
 
-    def tr_obj(self, batch):
-        pass
+    def tr_obj(self, batch: Batch) -> torch.Tensor:
+        raise NotImplementedError

@@ -1,4 +1,7 @@
+from typing import Any
+
 import numpy as np
+import pandas as pd
 
 from abstract_rl.misc.cli_printer import CliPrinter
 
@@ -8,7 +11,9 @@ class Trajectory:
     Represents a simple Trajectory, which can be used by the remaining software.
     """
 
-    def __init__(self, id, env, pandas_frame, annotations=None):
+    def __init__(
+        self, id: int, env: Any, pandas_frame: pd.DataFrame, annotations: dict[str, Any] | None = None
+    ) -> None:
         """Initialize a new trajectory, therefore a initial state s0
         has to be given.
 
@@ -25,22 +30,22 @@ class Trajectory:
         self._states = self.__data_frame.loc[:, "s_0" : f"s_{self._sd - 1}"].values
         self._rewards = self.__data_frame.loc[:, "r":"r"].values[:-1]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._trajectory.index) - 1
 
-    def __setitem__(self, key, item):
+    def __setitem__(self, key: str, item: Any) -> None:
         self._annotations[key] = item
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Any:
         return self._annotations[key]
 
-    def __contains__(self, value):
+    def __contains__(self, value: str) -> bool:
         return value in self._annotations
 
     # --- standard reinforcement learning fields
 
     @property
-    def states(self):
+    def states(self) -> np.ndarray:
         """
         States of trajectory.
         :return: All states of the trajectory.
@@ -48,7 +53,7 @@ class Trajectory:
         return self._states[:-1]
 
     @property
-    def actions(self):
+    def actions(self) -> np.ndarray:
         """
         Actions of trajectory.
         :return: All actions of the trajectory.
@@ -56,7 +61,7 @@ class Trajectory:
         return self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].values[:-1]
 
     @property
-    def dones(self):
+    def dones(self) -> np.ndarray:
         """
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
@@ -64,7 +69,7 @@ class Trajectory:
         return self.__data_frame.loc[:, "d":"d"].values[:-1]
 
     @property
-    def log_likelihoods(self):
+    def log_likelihoods(self) -> np.ndarray:
         """
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
@@ -72,7 +77,7 @@ class Trajectory:
         return self.__data_frame.loc[:, "ll":"ll"].values[:-1]
 
     @property
-    def rewards(self):
+    def rewards(self) -> np.ndarray:
         """
         Rewards of trajectory.
         :return: All rewards of the trajectory.
@@ -80,7 +85,7 @@ class Trajectory:
         return self._rewards
 
     @property
-    def next_states(self):
+    def next_states(self) -> np.ndarray:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.
@@ -88,7 +93,7 @@ class Trajectory:
         return self._states[1:]
 
     @property
-    def all_states(self):
+    def all_states(self) -> np.ndarray:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.
@@ -96,7 +101,7 @@ class Trajectory:
         return self._states
 
     @property
-    def __data_frame(self):
+    def __data_frame(self) -> pd.DataFrame:
         """
         Get internal data frame of trajectory.
         :return: Returns the internal saved pandas frame.
@@ -106,7 +111,7 @@ class Trajectory:
     # --- evaluate rewards
 
     @property
-    def average_reward(self):
+    def average_reward(self) -> float:
         """
         Cumulative reward of the trajectory.
         :return: Simply sum of all rewards.
@@ -115,14 +120,14 @@ class Trajectory:
         return np.sum(self.rewards / T)
 
     @property
-    def total_reward(self):
+    def total_reward(self) -> float:
         """
         Cumulative reward of the trajectory.
         :return: Simply sum of all rewards.
         """
         return np.sum(self.rewards)
 
-    def discounted_reward(self, discount):
+    def discounted_reward(self, discount: float) -> float:
         """
         Cumulative reward of the trajectory.
         :return: Simply sum of all rewards.
@@ -132,7 +137,7 @@ class Trajectory:
         return (1 - discount) * np.sum(discount ** np.arange(tl) * self.rewards)
 
     @property
-    def entropy(self):
+    def entropy(self) -> float:
         """Calculate entropy of policy.
         :return: The calculated entropy.
         """

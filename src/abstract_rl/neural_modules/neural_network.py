@@ -1,8 +1,12 @@
 import math as m
+from collections.abc import Sequence
+from typing import Any
 
 import torch
 import torch.nn as nn
+from numpy import ndarray
 
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.misc.mixed import select_activation
 
@@ -12,7 +16,14 @@ class MultilayerPerceptron(nn.Module, Syncable):
     Fully connected neural network
     """
 
-    def __init__(self, mc, hidden_neurons, act_fn="tanh", layer_norm=False, init="orthogonal"):
+    def __init__(
+        self,
+        mc: ModelConfiguration,
+        hidden_neurons: ndarray,
+        act_fn: str | Sequence[str | list[str]] = "tanh",
+        layer_norm: bool = False,
+        init: str = "orthogonal",
+    ) -> None:
         """
         Create a new neural network, whereas the structure is passed as a list of numbers, representing the size of
         each fully connected layer including the input as well as the output layer.
@@ -34,7 +45,7 @@ class MultilayerPerceptron(nn.Module, Syncable):
         self.init = init
 
         # select the correct activation functions.
-        self.act_fn = [
+        self.act_fn: list[Any] = [
             [select_activation(ae) for ae in a] if isinstance(a, list) else select_activation(a) for a in act_fn
         ]
 
@@ -44,7 +55,7 @@ class MultilayerPerceptron(nn.Module, Syncable):
             self.add_module(f"layer_{i}", self.layers[i])
         self.initialize_layers(init)
 
-    def initialize_layers(self, init):
+    def initialize_layers(self, init: str) -> None:
         """
         This method can be used to initialize a layer
         """
@@ -80,7 +91,7 @@ class MultilayerPerceptron(nn.Module, Syncable):
         else:
             raise NotImplementedError("initialization method not defined.")
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Apply represented function to x.
         :param x: The input to the network.
@@ -113,14 +124,14 @@ class MultilayerPerceptron(nn.Module, Syncable):
 
         return out
 
-    def num_params(self):
+    def num_params(self) -> int:
         """
         Count parameters of module.
         """
 
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    def sync(self, v):
+    def sync(self, v: "MultilayerPerceptron") -> "MultilayerPerceptron":
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.

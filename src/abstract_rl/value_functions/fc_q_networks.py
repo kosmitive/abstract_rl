@@ -18,14 +18,16 @@ import torch
 import torch.nn as nn
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
 class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
     """Fully connected neural network."""
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """Create a new neural network, whereas the structure is passed
         as a list of numbers, representing the size of each fully connected
         layer including the input as well as the output layer."""
@@ -58,7 +60,7 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         # set up trust regions
         VanillaGradient.__init__(self, self.fc_net)
 
-    def clone(self):
+    def clone(self) -> "FullyQNeuralNet":
         """Clones the Neural Network"""
 
         # first of all clone the module using the subclass and
@@ -67,18 +69,18 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.sync(v)
         return v
 
-    def sync(self, v):
+    def sync(self, v: "FullyQNeuralNet") -> "FullyQNeuralNet":
         """Clones the Neural Network"""
 
         self.fc_net.sync(v.fc_net)
         return v
 
-    def forward(self, states, actions):
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """Propagate the x in a forward fashion through the network."""
 
         return self.q_val(states, actions)
 
-    def v_val(self, states, exp_actions=10):
+    def v_val(self, states: torch.Tensor, exp_actions: int = 10) -> torch.Tensor:
 
         # use policy to estimate v values
         policy = self.mc.get("policy", True)
@@ -93,13 +95,13 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         v_vals = v_vals.view([-1, 1])
         return v_vals
 
-    def q_val(self, states, actions):
+    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
 
         comb = torch.cat([states, actions], dim=1)
         q_vals = self.fc_net.forward(comb)
         return q_vals
 
-    def tr_obj(self, batch):
+    def tr_obj(self, batch: Batch) -> torch.Tensor:
 
         # build up mse loss for q function
         t_states = torch.Tensor(batch.states)

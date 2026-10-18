@@ -1,6 +1,7 @@
 import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
@@ -9,7 +10,7 @@ class FilterOperator(TrajectoryOperator):
     Represents a simple filter operator using the integrated filter from the environment.
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new filter operator
         :param mc: The model configuration to use.
@@ -23,7 +24,7 @@ class FilterOperator(TrajectoryOperator):
         self.filter_states = conf["states"]
         self.filter_rewards = conf["rewards"]
 
-    def transform(self, trajectory):
+    def transform(self, trajectory: Trajectory) -> None:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param trajectory: trajectory to transform.

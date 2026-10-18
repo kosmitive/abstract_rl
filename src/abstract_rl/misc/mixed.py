@@ -1,21 +1,23 @@
+from typing import Any
+
 import numpy as np
 import torch.nn as nn
 
 
-def default_settings():
+def default_settings() -> None:
     """
     Apply default settings to all.
     :return:
     """
 
-    def float_formatter(x):
+    def float_formatter(x: Any) -> str:
         return f"{x: 10.4f}"
 
     np.set_printoptions(formatter={"float_kind": float_formatter})
     # torch.set_printoptions(profile='full')
 
 
-def select_activation(name):
+def select_activation(name: str | None) -> nn.Module:
     """
     Select a activation based on the name.
     :param name: The name of the activation, e.g. 'prelu'.
@@ -44,3 +46,5 @@ def select_activation(name):
 
     elif name == "sigmoid":
         return nn.Sigmoid()
+
+    raise NotImplementedError(f"unknown activation {name}")

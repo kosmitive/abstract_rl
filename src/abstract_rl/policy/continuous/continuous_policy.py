@@ -1,6 +1,9 @@
+from typing import Any
+
 import torch
 
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.policy.policy import Policy
 
 
@@ -9,7 +12,9 @@ class ContinuousPolicy(Policy, Syncable):
     Represents a continuous policy, e.g a gaussian policy
     """
 
-    def log_prob(self, actions, states=None, suff_stats=None):
+    def log_prob(
+        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Can be used to obtain log probability of actions relative to states.
         :param actions: A matrix of size [D, K] containing actions for each state.
@@ -21,7 +26,7 @@ class ContinuousPolicy(Policy, Syncable):
         """
         raise NotImplementedError
 
-    def clone(self):
+    def clone(self) -> "ContinuousPolicy":
         """
         Clones the current instance.
         :return: A new identical clones instance of the current.
@@ -29,14 +34,23 @@ class ContinuousPolicy(Policy, Syncable):
 
         raise NotImplementedError
 
-    def sync(self, v):
+    def sync(self, v: Any) -> Any:
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
         """
         raise NotImplementedError
 
-    def kl_divergence(self, batch, suff_stats=None, mode="i-projection", est="sum"):
+    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        The most likely action of each state.
+        :return: A matrix [D, A].
+        """
+        raise NotImplementedError
+
+    def kl_divergence(
+        self, batch: Batch, suff_stats: torch.Tensor | None = None, mode: str = "i-projection", est: str = "sum"
+    ) -> torch.Tensor:
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
@@ -79,7 +93,7 @@ class ContinuousPolicy(Policy, Syncable):
 
         return kl_est(kl)
 
-    def likelihood_ratio(self, batch):
+    def likelihood_ratio(self, batch: Batch) -> torch.Tensor:
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param batch: Use this batch to estimate objective.

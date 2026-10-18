@@ -1,4 +1,5 @@
 from os.path import join
+from typing import Any
 
 import numpy as np
 import torch
@@ -20,7 +21,7 @@ from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 
 
 # title of the script
-def run_trpo(conf):
+def run_trpo(conf: Any) -> None:
     """
     Runs the passed config off policy.
     :param conf: The run configuration.
@@ -108,7 +109,7 @@ def run_trpo(conf):
         with cli.header("store model & generate plots", 1):
             # make and store reward plot
             res_log = logger.get([stoch_reward], e + 1)
-            rew_plot.update(*res_log, len(tc))
+            rew_plot.update(*res_log, len(tc))  # type: ignore[call-arg]
             rew_plot.save(join(mc.plot_root, "performance.eps"))
 
             # save last model

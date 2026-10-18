@@ -1,9 +1,11 @@
+from collections.abc import Callable
+
 import torch
 
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
-def conjugate_gradient(A, b, max_k=10, tol=1e-10):
+def conjugate_gradient(A: Callable, b: torch.Tensor, max_k: int = 10, tol: float = 1e-10) -> torch.Tensor:
     """
     Implementation of conjugate gradient algorithm. It uses vector matrix products for efficient calculation. See
     https://en.wikipedia.org/wiki/Conjugate_gradient_method for more details of the algorithm. See also

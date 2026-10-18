@@ -1,9 +1,12 @@
+from typing import Any, cast
+
 import numpy as np
 import torch
 from torch.distributions import Normal
 from torch.nn import Parameter
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
@@ -14,7 +17,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
     Represents a univariate gaussian policy. This only supports one action dimension.
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new uni variate gaussian policy.
         :param mc: The model configuration to use.
@@ -28,8 +31,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.cov_type = run_conf["cov_type"]
         self.cli = CliPrinter().instance
 
-        self.num_output_net = None
-        self.cov_variable = None
+        self.num_output_net: int | None = None
+        self.cov_variable: torch.Tensor | None = None
         if self.cov_type == "state":
             self.num_output_net = 2
         elif self.cov_type == "fixed":
@@ -45,7 +48,9 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         # create policy network
         sd = mc.env.observation_dim
-        policy_net_structure = np.concatenate(([sd], run_conf["structure"], [self.num_output_net]))
+        policy_net_structure: np.ndarray = np.concatenate(
+            cast(Any, ([sd], run_conf["structure"], [self.num_output_net]))
+        )
 
         af = run_conf["act_fn"]
         self.network = MultilayerPerceptron(
@@ -53,7 +58,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         )
         self.add_module("nn", self.network)
 
-    def get_suff_stats_dim(self):
+    def get_suff_stats_dim(self) -> int:
         """
         Obtain the dimension of sufficient statistics vector for a univariate gaussian.
         :return: depending on the configuration 1 for mean-only and 2 for mean and covariance.
@@ -61,7 +66,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         return 2
 
-    def forward(self, states):
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
         """
         Simply produces sufficient statistics of the univariate gaussian policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
@@ -73,11 +78,16 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         elif self.cov_type == "fixed" or self.cov_type == "single":
             mu = self.network.forward(states)
+            assert self.cov_variable is not None
             fw = torch.exp(self.cov_variable)
             sigma = fw.expand_as(mu)
             return torch.cat([mu, sigma], 1)
 
-    def log_prob(self, actions, states=None, suff_stats=None):
+        raise NotImplementedError(self.cov_type)
+
+    def log_prob(
+        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Can be used to obtain log probability of actions relative to states.
         :param actions: A matrix of size [D, K] containing actions for each state.
@@ -94,6 +104,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         # get suff statistics
         if suff_stats is None:
+            assert states is not None
             suff_stats = self.forward(states)
 
         # extract mu and sigma depending on settings
@@ -102,7 +113,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         ll = std_normal.log_prob(actions.t())
         return ll.t().contiguous()
 
-    def mode(self, states=None, suff_stats=None):
+    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
 
         # check if it full fills a xor relation
         assert states is not None or suff_stats is not None
@@ -110,10 +121,13 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         # get suff statistics
         if suff_stats is None:
+            assert states is not None
             suff_stats = self.forward(states)
         return suff_stats[:, 0:1]
 
-    def sample_actions(self, states=None, suff_stats=None, num_actions=1):
+    def sample_actions(
+        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
+    ) -> torch.Tensor:
         """
         Can be used to obtain action samples for all states.
         :param states: A matrix of size [D, Ds]. If this None => suff_states not None
@@ -129,6 +143,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         # get suff statistics
         if suff_stats is None:
+            assert states is not None
             suff_stats = self.forward(states)
 
         # extract mu and sigma depending on settings
@@ -137,7 +152,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         samples = std_normal.rsample([num_actions])
         return samples.t().contiguous()
 
-    def clone(self):
+    def clone(self) -> "UnivariateGaussianPolicy":
         """
         Clones the current instance.
         :return: A new identical clones instance of the current.
@@ -149,7 +164,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.sync(v)
         return v
 
-    def sync(self, v):
+    def sync(self, v: "UnivariateGaussianPolicy") -> "UnivariateGaussianPolicy":
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
@@ -157,7 +172,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.network.sync(v.network)
         return v
 
-    def entropy(self, batch):
+    def entropy(self, batch: Batch) -> torch.Tensor:
         policy = self.mc.get("policy", False)
         t_states = torch.Tensor(batch.states)
         suff_stats = policy.forward(t_states)
@@ -167,7 +182,9 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         ent = std_normal.entropy().mean()
         return ent
 
-    def kl_divergence(self, batch, suff_stats=None, mode="i-projection", est="sum"):
+    def kl_divergence(
+        self, batch: Batch, suff_stats: torch.Tensor | None = None, mode: str = "i-projection", est: str = "sum"
+    ) -> torch.Tensor:
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
@@ -177,6 +194,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # calc sufficient statistics
         states = torch.Tensor(batch.states)
         if suff_stats is None:
+            assert states is not None
             suff_stats = self.forward(states)
 
         # create this distribution

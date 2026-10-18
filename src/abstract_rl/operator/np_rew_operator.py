@@ -2,6 +2,8 @@ import math
 
 import numpy as np
 
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 from abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder import (
     NonParametricVariationalPolicyBuilder,
@@ -13,10 +15,10 @@ class VariationalRankingOperator(TrajectoryOperator):
     Represents a variational reweighting operator see https://arxiv.org/abs/1806.06920.
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "reweighing"
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new variational reweighting operator.
         :param mc: The model configuration to use.
@@ -27,10 +29,10 @@ class VariationalRankingOperator(TrajectoryOperator):
         self.num_add_actions = self.conf.get_root("res_add_acts")
         self.b = NonParametricVariationalPolicyBuilder(self.mc)
 
-    def hook(self):
+    def hook(self) -> None:
         self.b.calc_eta()
 
-    def transform(self, trajectory):
+    def transform(self, trajectory: Trajectory) -> None:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param trajectory: trajectory to transform.

@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -11,7 +13,7 @@ class TrajectoryBuilder:
     finalized and a instance of Trajectory is returned.
     """
 
-    def __init__(self, id, env, s0):
+    def __init__(self, id: int, env: Any, s0: np.ndarray) -> None:
         """
         This method initializes the TrajectoryBuilder using a starting state s0.
         :param s0: Simply the starting state.
@@ -19,11 +21,11 @@ class TrajectoryBuilder:
 
         # one field plus reset to initial state.
         self.id = id
-        self._trajectory = None
+        self._trajectory: list[Any] = []
         self.env = env
         self.reset(s0)
 
-    def reset(self, s0):
+    def reset(self, s0: np.ndarray) -> None:
         """
         This method resets the TrajectoryBuilder using a starting state s0.
 
@@ -31,7 +33,7 @@ class TrajectoryBuilder:
         """
         self._trajectory = [s0]
 
-    def observe(self, act, rew, nxt_state, ll, done):
+    def observe(self, act: np.ndarray, rew: float, nxt_state: np.ndarray, ll: float, done: int) -> None:
         """
         Register internally a (state, action, reward, likelihood) tuple.
         :param act: the taken action a_t.
@@ -43,7 +45,7 @@ class TrajectoryBuilder:
         # extend the trajectory itself
         self._trajectory.extend([act, ll, rew, done, nxt_state])
 
-    def finalize(self):
+    def finalize(self) -> Trajectory:
         """
         Finalize the trajectory, e.g. create pandas __data frames from it.
         :return The built trajectory.

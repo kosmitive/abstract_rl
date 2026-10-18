@@ -20,36 +20,40 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
+from collections.abc import Iterator
+from typing import Any
+
 import numpy as np
 
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
 class TrajectoryCollection:
     """Represents a simple trajectory collection."""
 
-    def __init__(self, env, max_l=None):
+    def __init__(self, env: Any, max_l: int | None = None) -> None:
         self.max_l = max_l
         self.__num_data_points = 0
-        self.__trajectories = []
+        self.__trajectories: list[Trajectory] = []
         self._env = env
 
         self._sd = self._env.observation_dim
         self._ad = self._env.action_dim
         self.cli = CliPrinter().instance
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.__trajectories)
 
-    def merge(self, collection):
+    def merge(self, collection: "TrajectoryCollection") -> None:
         """Merges an existing collection into this object.
 
         :param collection: The collection to merge into
         """
         self.extend(collection.trajectories())
 
-    def print(self):
+    def print(self) -> None:
         """
         print information
         """
@@ -75,7 +79,7 @@ class TrajectoryCollection:
             )
             self.cli.print(print_str)
 
-    def extend(self, trajectories):
+    def extend(self, trajectories: list[Trajectory]) -> None:
         """
         Add an existing list of trajectories to the internal list.
         :param trajectories: The trajectories to add.
@@ -84,6 +88,7 @@ class TrajectoryCollection:
 
         k = 0
         i = len(trajectories)
+        assert self.max_l is not None
         while k < self.max_l and i > 0:
             i -= 1
             k += len(trajectories[i])
@@ -91,13 +96,13 @@ class TrajectoryCollection:
         self.__trajectories = self.__trajectories[i:]
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Trajectory]:
         return iter(self.__trajectories)
 
-    def trajectories(self):
+    def trajectories(self) -> list[Trajectory]:
         return self.__trajectories
 
-    def to_batch(self, copy_fields=None):
+    def to_batch(self, copy_fields: list[str] | None = None) -> Batch:
         """Convert the trajectory collection to a batch.
 
         :param copy_fields: The fields to copy into the batch.
@@ -105,15 +110,16 @@ class TrajectoryCollection:
         """
 
         # define basic lists
-        states = []
-        nxt_states = []
-        actions = []
-        rewards = []
-        lls = []
-        ds = []
+        states: Any = []
+        nxt_states: Any = []
+        actions: Any = []
+        rewards: Any = []
+        lls: Any = []
+        ds: Any = []
 
         # make space for annotations
-        annots = {a: [] for a in copy_fields}
+        fields = copy_fields if copy_fields is not None else []
+        annots: dict[str, Any] = {a: [] for a in fields}
 
         # if it should be continued
         for t in range(len(self.__trajectories)):
@@ -129,7 +135,7 @@ class TrajectoryCollection:
             ds.append(traj.dones)
 
             # append rest
-            for a in copy_fields:
+            for a in fields:
                 annots[a].append(traj[a])
 
         states = np.concatenate(states, 0)
@@ -138,29 +144,30 @@ class TrajectoryCollection:
         nxt_states = np.concatenate(nxt_states, 0)
         rewards = np.concatenate(rewards, 0)
         ds = np.concatenate(ds, 0)
-        for a in copy_fields:
+        for a in fields:
             annots[a] = np.concatenate(annots[a], 0)
 
         batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
         assert len(batch) > 0
         return batch
 
-    def sample(self, batch_size, copy_fields=None):
+    def sample(self, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
 
         batch_size = min(batch_size, self.__num_data_points)
         tindices = np.random.randint(0, batch_size, size=batch_size)  # noqa: NPY002
         tindices.sort()
 
         # define basic lists
-        states = []
-        nxt_states = []
-        actions = []
-        rewards = []
-        lls = []
-        ds = []
+        states: Any = []
+        nxt_states: Any = []
+        actions: Any = []
+        rewards: Any = []
+        lls: Any = []
+        ds: Any = []
 
         # make space for annotations
-        annots = {a: [] for a in copy_fields}
+        fields = [] if copy_fields is None else copy_fields
+        annots: dict[str, Any] = {a: [] for a in fields}
 
         # count independently for trajectories and indices
         i = 0
@@ -190,7 +197,7 @@ class TrajectoryCollection:
             i += j
 
             # append rest
-            for a in copy_fields:
+            for a in fields:
                 annots[a].append(traj[a][m_indices])
 
         states = np.concatenate(states, 0)
@@ -199,7 +206,7 @@ class TrajectoryCollection:
         nxt_states = np.concatenate(nxt_states, 0)
         rewards = np.concatenate(rewards, 0)
         ds = np.concatenate(ds, 0)
-        for a in copy_fields:
+        for a in fields:
             annots[a] = np.concatenate(annots[a], 0)
 
         batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)

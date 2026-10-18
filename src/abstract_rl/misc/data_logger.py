@@ -1,6 +1,8 @@
 from os.path import join
+from typing import Any
 
 import numpy as np
+from numpy import float64, ndarray
 
 
 class DataLogger:
@@ -8,13 +10,13 @@ class DataLogger:
     Logs data to a csv file during the epochs
     """
 
-    def __init__(self, fp):
+    def __init__(self, fp: str) -> None:
 
-        self._data = {}
+        self._data: dict[str, list[Any]] = {}
         self._filepath = fp
-        self._header = {}
+        self._header: dict[str, int] = {}
 
-    def create_field(self, name, dim):
+    def create_field(self, name: str, dim: int) -> None:
         """Create a new field internally for logging.
 
         :param name: The name of the field.
@@ -23,7 +25,7 @@ class DataLogger:
         self._header[name] = dim
         self._data[name] = []
 
-    def get(self, names, until):
+    def get(self, names: list[str], until: int) -> Any:
         """
         Obtain the given names until the given until value.
         :param names: The name to extract
@@ -36,7 +38,7 @@ class DataLogger:
             no_list = True
             names = []
 
-        res = []
+        res: Any = []
         for name in names:
             res.append(np.stack(self._data[name][:until], axis=0))
 
@@ -45,7 +47,7 @@ class DataLogger:
 
         return res
 
-    def log(self, vals):
+    def log(self, vals: dict[str, ndarray | list[float64] | list[int]]) -> None:
         """
         Log the given values.
         :param vals: The values to log

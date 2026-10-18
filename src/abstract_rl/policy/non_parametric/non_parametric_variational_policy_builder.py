@@ -1,7 +1,11 @@
+from typing import Any
+
 import numpy as np
 import torch
 
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy
 
 
@@ -11,7 +15,7 @@ class NonParametricVariationalPolicyBuilder:
     to a non parametric distribution by solving the optimization problem from REPS
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         self.mc = mc
         conf = mc["conf"]
         self.policy_config = conf
@@ -22,11 +26,11 @@ class NonParametricVariationalPolicyBuilder:
         self.max_steps = conf["max_steps"]
         self.tar_network = mc.get("q_network", True)
         self.tar_policy = mc.get("policy", True)
-        self.eta = [self.non_parametric_variational_init_eta]
+        self.eta: Any = [self.non_parametric_variational_init_eta]
         self.log = self.mc["log"]
         self.log.create_field("eta", 1)
 
-    def calc_eta(self):
+    def calc_eta(self) -> None:
         """
         Calculate the optimal eta using the find optimal temperature function.
         """
@@ -41,7 +45,7 @@ class NonParametricVariationalPolicyBuilder:
         self.eta = eta.detach().numpy()
         self.log.log({"eta": self.eta})
 
-    def build(self, trajectory):
+    def build(self, trajectory: Trajectory) -> NonParametricPolicy:
         """
         Takes a trajectory or batch data and builds the correct samples.
         :param trajectory: Tje trajectory to transform.

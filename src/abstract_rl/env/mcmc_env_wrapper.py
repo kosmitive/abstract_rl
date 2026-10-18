@@ -1,4 +1,5 @@
 import threading
+from typing import TYPE_CHECKING, Any
 
 import gym
 import numpy as np
@@ -10,6 +11,10 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
 
+if TYPE_CHECKING:
+    from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+    from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+
 
 class MCMCEnvWrapper:
     """
@@ -17,7 +22,7 @@ class MCMCEnvWrapper:
     instead of only giving a step based interface to the outside.
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: "ModelConfiguration") -> None:
         """
         Initialize a new environment.
         :param mc: The model configuration with everything important.
@@ -50,14 +55,14 @@ class MCMCEnvWrapper:
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
 
-    def discount(self):
+    def discount(self) -> float:
         """
         Discount factor of the environment.
         :return: The discount factor used.
         """
         return self._discount
 
-    def reset(self):
+    def reset(self) -> np.ndarray:
         """
         Resets the environment.
         :return: The state after the reset.
@@ -65,7 +70,15 @@ class MCMCEnvWrapper:
         cs = self.env.reset()
         return cs
 
-    def execute_policy(self, policy, max_steps, batch_size, exploration=True, render=False, rew_field_name=None):
+    def execute_policy(
+        self,
+        policy: Any,
+        max_steps: int | None,
+        batch_size: int,
+        exploration: bool = True,
+        render: bool = False,
+        rew_field_name: str | None = None,
+    ) -> TrajectoryCollection:
         """
         Executes a policy for a maximum number of steps multiple times. This work can be split onto multiple threads as
         well.
@@ -79,6 +92,7 @@ class MCMCEnvWrapper:
             k = 0
             trajectories = []
             while t < batch_size:
+                assert max_steps is not None
                 tr = self.execute_policy_once(
                     np.minimum(batch_size - t, max_steps), policy, render and k == 0, opt=not exploration
                 )
@@ -97,7 +111,9 @@ class MCMCEnvWrapper:
         tj.print()
         return tj
 
-    def execute_policy_once(self, max_steps, policy, render=False, opt=False):
+    def execute_policy_once(
+        self, max_steps: int | None, policy: Any, render: bool = False, opt: bool = False
+    ) -> "Trajectory":
         """
         Execute a policy once for the maximum number of steps or the environment sends done.
         :param max_steps: The maximum number of steps, if done not set.
@@ -163,7 +179,7 @@ class MCMCEnvWrapper:
         return traj
 
     @property
-    def observation_space(self):
+    def observation_space(self) -> gym.Space:
         """
         Bounds for the observation space.
         :return: Bound of the observation space.
@@ -172,7 +188,7 @@ class MCMCEnvWrapper:
         return self.obs_sp
 
     @property
-    def action_space(self):
+    def action_space(self) -> gym.Space:
         """
         Bounds for the action space.
         :return: Bound of the action space.
@@ -180,7 +196,7 @@ class MCMCEnvWrapper:
         return self.act_sp
 
     @property
-    def observation_dim(self):
+    def observation_dim(self) -> int:
         """
         Dimension of observation space.
         :return: Dimension of the observation space.
@@ -188,7 +204,7 @@ class MCMCEnvWrapper:
         return int(np.prod(self.observation_space.high.shape))
 
     @property
-    def action_dim(self):
+    def action_dim(self) -> int:
         """
         Dimension of action space.
         :return: Dimension of the action space.

@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import torch
 import torch.optim as optim
@@ -5,6 +7,9 @@ import torch.optim as optim
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
     PolicyOptimizationAlgorithm,
 )
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_params_from
 
@@ -18,10 +23,10 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
     one in a supervised fashion.
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "Maximum A Posteriori Policy Optimization"
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new maximum a posteriori policy optimization algorithm.
         :param mc: The model configuration, containing all important elements, like env or similar.
@@ -49,14 +54,14 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.fmtstr = "%10i | %10.5f" + num_params * " | %10.5f x %10.5f"
         self.titlestr = "%10s | %10s" + num_params * " | %23s"
 
-    def sample_v(self):
+    def sample_v(self) -> list[Any]:
         """Sample new trust regions.
 
         :return: the new sampled trust regions.
         """
 
         samp_trust_regions = self.trust_regions
-        v = [None] * len(samp_trust_regions)
+        v: list[Any] = [None] * len(samp_trust_regions)
         for d in range(len(samp_trust_regions)):
             if isinstance(samp_trust_regions[d], list):
                 v[d] = np.random.uniform(samp_trust_regions[d][0], samp_trust_regions[d][1])  # noqa: NPY002
@@ -66,7 +71,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.v = v
         return self.v
 
-    def shuffle_up_stats(self, batch):
+    def shuffle_up_stats(self, batch: Batch) -> list[torch.Tensor]:
         """Use this to create a list, where each sufficient statistic from the
         normal policy is mixed with the target ones, so the objective and
         constraint can be effectively splitted up.
@@ -99,7 +104,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         return l_suff_stats
 
-    def main_obj(self, batch, l_suff_stats):
+    def main_obj(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> torch.Tensor:
         """Obtain the objective based on the list of sufficient statistics.
 
         :param batch: The batch to use.
@@ -126,7 +131,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         return obj
 
-    def main_constraints(self, batch, l_suff_stats):
+    def main_constraints(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> list[torch.Tensor]:
         """Obtain all constraints using the list of sufficient statistics and the batch.
 
         :param batch: The batch to use.
@@ -153,7 +158,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         return constraints
 
-    def obj(self, batch):
+    def obj(self, batch: Batch) -> torch.Tensor:  # type: ignore[override]
         """
         Calculate the objective based on the objective and the splitted kl divergence constraints.
         :param batch: Batch to estimate objective and constraints
@@ -168,7 +173,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         return obj
 
-    def perform_mult_steps(self, num_steps, tc, batch_size):
+    def perform_mult_steps(self, num_steps: int, tc: TrajectoryCollection, batch_size: int) -> None:
         """
         Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
         constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
@@ -185,7 +190,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
             self.perform_step(s, batch)
 
-    def perform_step(self, step, batch):
+    def perform_step(self, step: int, batch: Batch) -> None:
         """
         Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
         constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
@@ -209,7 +214,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             )
         )
 
-    def __lagrange_obj(self, batch, suff_stats):
+    def __lagrange_obj(self, batch: Batch, suff_stats: torch.Tensor) -> torch.Tensor:
         """
         Calculated the reweighted objective needed for the min max problem. This is only partly
         the objective as the lagrange constraints are missing.
@@ -243,7 +248,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         w = get_flat_params_from(policy)
         return obj - self.l2_reg * torch.norm(w)
 
-    def __max_step(self, batch):
+    def __max_step(self, batch: Batch) -> None:
         """
         Solves the minimization problem targeting the policy parameters only.
         """
@@ -259,7 +264,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         obj.backward()
         opt_outer.step()
 
-    def __min_step(self, batch):
+    def __min_step(self, batch: Batch) -> None:
         """
         Solves the minimization problem targeting the lagrange multiplies. Note that they have to be
         positive.

@@ -1,6 +1,9 @@
+from collections.abc import Iterable
+
 import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 
 
 class PolicyOptimizationAlgorithm:
@@ -10,7 +13,7 @@ class PolicyOptimizationAlgorithm:
     trust region policy optimization or proximal policy optimization can be implemented efficiently.
     """
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new policy approximation algorithm. It makes the model config and from that also the running
         config available to the derived class itself.
@@ -20,7 +23,7 @@ class PolicyOptimizationAlgorithm:
         self.mc = mc
         self.conf = mc["conf"]
 
-    def obj(self, trajectories):
+    def obj(self, trajectories: Iterable[Trajectory]) -> torch.Tensor:
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param batch: Use this batch to estimate objective.

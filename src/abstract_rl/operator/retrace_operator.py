@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
@@ -10,10 +11,10 @@ class RetraceOperator(TrajectoryOperator):
     Represents the retrace operator from https://arxiv.org/abs/1606.02647.
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "retrace"
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new retrace operator.
         :param mc: The model configuration with env and so on.
@@ -33,13 +34,13 @@ class RetraceOperator(TrajectoryOperator):
         self.ret_bootstrap = self.conf.get_root("mem_bootstrap_steps")
         self.ret_add_acts = self.conf["add_acts"]
 
-    def train(self):
+    def train(self) -> None:
         """
         Train the operator, or more specifically the q network.
         """
         self.q_network.train()
 
-    def transform(self, trajectory):
+    def transform(self, trajectory: Trajectory) -> None:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param trajectory: trajectory to transform.
@@ -89,7 +90,7 @@ class RetraceOperator(TrajectoryOperator):
             trajectory["q"] = q_vals
             trajectory["tq"] = tq
 
-    def _def_bounded_importance_sampling_coefficients(self, trajectory):
+    def _def_bounded_importance_sampling_coefficients(self, trajectory: Trajectory) -> torch.Tensor:
         """
         Calculated the bounded importance sampling coefficients.
         :param trajectory: The trajectory for which the coefficients have to be calculated

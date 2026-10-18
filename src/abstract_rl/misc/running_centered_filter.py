@@ -1,4 +1,5 @@
 import numpy as np
+from numpy import ndarray
 
 # from https://github.com/joschu/modular_rl
 # http://www.johndcook.com/blog/standard_deviation/
@@ -7,7 +8,7 @@ from abstract_rl.misc.cli_printer import CliPrinter
 
 
 class RunningCenteredFilter:
-    def __init__(self, name, dim, std_dev_noise=1e-8, clip=5):
+    def __init__(self, name: str, dim: int, std_dev_noise: float = 1e-8, clip: int = 5) -> None:
 
         # build running variables
         self.cli = CliPrinter().instance
@@ -19,7 +20,7 @@ class RunningCenteredFilter:
         self._clip = clip
         self._std_dev_noise = std_dev_noise
 
-    def register(self, xs):
+    def register(self, xs: ndarray) -> None:
         if len(xs.shape) == 1:
             xs = xs.reshape([-1, self._dim])
 
@@ -38,7 +39,7 @@ class RunningCenteredFilter:
                 self._m[...] = old_mean + (s - old_mean) / self._n
                 self._s[...] = self._s + (s - old_mean) * (s - self._m)
 
-    def __call__(self, x, update=True):
+    def __call__(self, x: ndarray, update: bool = True) -> ndarray:
         if update:
             self.register(x)
         x = (x - self.mean) / (self.std + self._std_dev_noise)
@@ -46,13 +47,13 @@ class RunningCenteredFilter:
         return x
 
     @property
-    def mean(self):
+    def mean(self) -> ndarray:
         return self._m
 
     @property
-    def var(self):
+    def var(self) -> ndarray:
         return self._s / (self._n - 1) if self._n > 1 else self._m * self._m
 
     @property
-    def std(self):
+    def std(self) -> ndarray:
         return np.sqrt(self.var)

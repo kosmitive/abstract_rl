@@ -1,6 +1,7 @@
 import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
@@ -9,10 +10,10 @@ class ResampleOperator(TrajectoryOperator):
     Samples for each state additional actionsa and equips
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "resample"
 
-    def __init__(self, mc):
+    def __init__(self, mc: ModelConfiguration) -> None:
         """
         Initializes a new retrace operator.
         :param mc: The model configuration with env and so on.
@@ -28,7 +29,7 @@ class ResampleOperator(TrajectoryOperator):
         env = mc["env"]
         self.discount = env.discount()
 
-    def transform(self, trajectory):
+    def transform(self, trajectory: Trajectory) -> None:
         """
         Transform a trajectory with the current instance of the operator.
         """

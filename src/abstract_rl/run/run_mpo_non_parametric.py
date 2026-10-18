@@ -1,4 +1,5 @@
 from os.path import join
+from typing import Any
 
 import numpy as np
 import torch
@@ -22,10 +23,9 @@ from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
+
 # title of the script
-
-
-def run_mpo_non_parametric(conf):
+def run_mpo_non_parametric(conf: Any) -> None:
     """
     Runs the passed config off policy.
     :param conf: The run configuration.
@@ -135,7 +135,7 @@ def run_mpo_non_parametric(conf):
         with cli.header("store model & generate plots", 1):
             # make and store reward plot
             res_log = logger.get([stoch_reward], e + 1)
-            rew_plot.update(*res_log, num_traj)
+            rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
             rew_plot.save(join(mc.plot_root, "performance.eps"))
 
             # save last model

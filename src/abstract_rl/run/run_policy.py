@@ -12,7 +12,7 @@ from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
-def run_policy(dir):
+def run_policy(dir: str) -> None:
     """
     Runs the passed config off policy.
     :param conf: The run configuration.

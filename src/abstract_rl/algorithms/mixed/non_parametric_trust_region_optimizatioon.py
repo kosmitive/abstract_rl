@@ -7,7 +7,7 @@ from torch.autograd import Variable
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
-def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
+def find_optimal_temperature(q_tensor: torch.Tensor, eps: float, eta0: float = 1.0, lr: float = 0.005) -> torch.Tensor:
     """
     Uses a batch of data to find the optimal temperature eta for reweighting.
     :param q_tensor: A tensor of [NxA] with N states and A actions.
@@ -35,7 +35,6 @@ def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
         q_tensor = q_tensor - max_q_val
 
         # optimization specific
-        eps = torch.Tensor([eps])
         log_eta = Variable(torch.Tensor([np.log(eta0)]), requires_grad=True)
         eta = torch.exp(log_eta)
         optimizer = torch.optim.Adam([log_eta], lr)
@@ -58,7 +57,7 @@ def find_optimal_temperature(q_tensor, eps, eta0=1.0, lr=0.005):
             outer_integral = torch.mean(torch.log(inner_integral))
 
             # constrain objective
-            obj = eta * eps + eta * outer_integral + K * max_q_val * math.log(N)
+            obj = eta * torch.Tensor([eps]) + eta * outer_integral + K * max_q_val * math.log(N)
             obj.backward()
 
             if k % 20 == 0:
