@@ -52,6 +52,10 @@ class MCMCEnvWrapper:
         self.act_sp = cast(Box, self.env.action_space)
         self.thread_lock = threading.Lock()
 
+        # observations are scaled by the (finite) upper bound of the observation space if normalize is set
+        high = np.asarray(self.obs_sp.high, dtype=np.float64)
+        self._obs_scale = np.where(np.isfinite(high) & (high > 0), high, 1.0)
+
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
 
@@ -62,13 +66,17 @@ class MCMCEnvWrapper:
         """
         return self._discount
 
+    def _preprocess(self, obs: np.ndarray) -> np.ndarray:
+        obs = np.asarray(obs, dtype=np.float64)
+        return obs / self._obs_scale if self._normalize else obs
+
     def reset(self) -> np.ndarray:
         """
         Resets the environment.
         :return: The state after the reset.
         """
         cs, _info = self.env.reset()
-        return cs
+        return self._preprocess(cs)
 
     def execute_policy(
         self,
@@ -126,8 +134,7 @@ class MCMCEnvWrapper:
         # reset environment and create empty trajectory
         env = gym.make(self.env_name) if not self.render else self.env
         cs, _info = env.reset()
-        if self._normalize:
-            cs /= self.observation_space.high
+        cs = self._preprocess(cs)
         self.state_filter.register(cs)
 
         # create new trajectory builder
@@ -155,11 +162,9 @@ class MCMCEnvWrapper:
             a = a.detach().numpy()[0]
             cs, r, terminated, truncated, _info = env.step(a)
             done = terminated or truncated
+            cs = self._preprocess(cs)
             self.state_filter.register(cs)
-            self.reward_filter.register(cs)
-
-            # bug fix for quanser
-            cs /= self.observation_space.high
+            self.reward_filter.register(np.asarray([r], dtype=np.float64))
 
             t += 1
             # only punish if episode aborted
