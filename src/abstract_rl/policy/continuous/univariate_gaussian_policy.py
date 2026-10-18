@@ -245,7 +245,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         states = torch.Tensor(batch.states)
         if suff_stats is None:
             assert states is not None
-            suff_stats = self.forward(states)
+            suff_stats = self._forward(states)
 
         # create this distribution
         mu, sigma = torch.split(suff_stats, 1, dim=1)
@@ -255,7 +255,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # get the old sufficient statistics
         with torch.no_grad():
             t_policy = self.mc.get("policy", True)
-            t_suff_stats = t_policy.forward(states)
+            t_suff_stats = t_policy._forward(states)
             t_mu, t_sigma = torch.split(t_suff_stats, 1, dim=1)
             t_std_normal = Normal(t_mu[:, 0], t_sigma[:, 0])
 

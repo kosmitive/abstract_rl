@@ -6,6 +6,7 @@ from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.mixed import compile_attr, torch_compile_enabled
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
@@ -41,6 +42,9 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
 
         # set up trust regions
         VanillaGradient.__init__(self, self.net)
+        if torch_compile_enabled(mc.get("conf")):
+            # trajectory length and the update batch differ
+            compile_attr(self, "v_val", dynamic=True)
 
     def clone(self) -> "FullyVNeuralNet":
         """Clones the Neural Network"""

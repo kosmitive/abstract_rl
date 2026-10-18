@@ -18,6 +18,8 @@ policy_squash: true
 filter_states: false
 filter_rewards: false
 obs_norm: false
+# compile the policy forward and the Q forward
+torch_compile: false
 num_epochs: 150
 max_steps: 200
 alg: mpo

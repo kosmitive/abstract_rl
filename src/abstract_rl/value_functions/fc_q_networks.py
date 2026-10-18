@@ -22,6 +22,7 @@ from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.mixed import compile_attr, torch_compile_enabled
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
@@ -62,6 +63,8 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
 
         # set up trust regions
         VanillaGradient.__init__(self, self.fc_net, conf.get("optimizer", "lbfgs"), conf.get("lr", 1e-3))
+        if torch_compile_enabled(mc.get("conf")):
+            compile_attr(self, "q_val", dynamic=True)
 
     def clone(self) -> "FullyQNeuralNet":
         """Clones the Neural Network"""

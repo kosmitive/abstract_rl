@@ -329,11 +329,11 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         states = torch.Tensor(batch.states)
         if suff_stats is None:
             assert states is not None
-            suff_stats = self.forward(states)
+            suff_stats = self._forward(states)
         if self.cov_type == "full":
             mu, factor = self._mu_factor(suff_stats)
             with torch.no_grad():
-                t_mu, t_factor = self._mu_factor(self.mc.get("policy", True).forward(states))
+                t_mu, t_factor = self._mu_factor(self.mc.get("policy", True)._forward(states))
             current_full = MultivariateNormal(mu, scale_tril=factor)
             target_full = MultivariateNormal(t_mu, scale_tril=t_factor)
             if mode == "i-projection":
@@ -349,7 +349,7 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             raise NotImplementedError(est)
         mu, sigma = self._split(suff_stats)
         with torch.no_grad():
-            t_mu, t_sigma = self._split(self.mc.get("policy", True).forward(states))
+            t_mu, t_sigma = self._split(self.mc.get("policy", True)._forward(states))
 
         current, target = Normal(mu, sigma), Normal(t_mu, t_sigma)
         if mode == "i-projection":

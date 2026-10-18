@@ -18,6 +18,8 @@ policy_squash: true
 filter_states: false
 filter_rewards: false
 obs_norm: false
+# compile the policy forward, the value forward and the TRPO surrogate
+torch_compile: false
 num_epochs: 200
 max_steps: 200
 # fully connected neural v function

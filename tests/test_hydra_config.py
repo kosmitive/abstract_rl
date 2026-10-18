@@ -14,6 +14,7 @@ def test_hydra_configs_equal_legacy_tables(key):
     env, alg, seed = key.split("|")
     conf = hydra_conf.make_config(env, alg, int(seed))
     assert conf.pop("data_root") == "data"
+    assert conf.pop("torch_compile") is False
     expected = LEGACY["cfg"][key]
     assert set(conf) == set(expected)
     for k, v in expected.items():

@@ -1,9 +1,11 @@
+from collections.abc import Callable
 from typing import Any
 
 import torch
 
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.mixed import compile_attr, torch_compile_enabled
 from abstract_rl.policy.policy import Policy
 
 
@@ -11,6 +13,21 @@ class ContinuousPolicy(Policy, Syncable):
     """
     Represents a continuous policy, e.g a gaussian policy
     """
+
+    # eager forward kept for the KL, which TRPO double-backwards through
+    _forward: Callable[[torch.Tensor], torch.Tensor]
+
+    def __init__(self, mc: Any) -> None:
+        """Save an eager forward. ``torch_compile`` compiles the public forward and the surrogate."""
+        super().__init__(mc)
+        # the Fisher-vector product double-backwards through the KL, which torch.compile cannot do
+        self._forward = self.forward
+        if not torch_compile_enabled(mc.get("conf")):
+            return
+        # rollout batches have length 1 and the update does not, so the batch dim stays dynamic
+        compile_attr(self, "forward", dynamic=True)
+        # the surrogate sees one training batch size
+        compile_attr(self, "likelihood_ratio", dynamic=False)
 
     def log_prob(
         self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
@@ -66,7 +83,7 @@ class ContinuousPolicy(Policy, Syncable):
         # calc sufficient statistics
         states = torch.Tensor(batch.states)
         if suff_stats is None:
-            suff_stats = self.forward(states)
+            suff_stats = self._forward(states)
 
         actions = torch.Tensor(batch.actions)
         log_likelihoods = tp.log_prob(actions, states).detach()
@@ -107,11 +124,11 @@ class ContinuousPolicy(Policy, Syncable):
         policy = self.mc.get("policy", False)
 
         # calculate the objective
-        states = torch.Tensor(batch.states)
-        actions = torch.Tensor(batch.actions)
-        suff_stats = policy.forward(states)
+        states = torch.as_tensor(batch.states, dtype=torch.float32)
+        actions = torch.as_tensor(batch.actions, dtype=torch.float32)
+        suff_stats = policy._forward(states)
         ll = policy.log_prob(actions, suff_stats=suff_stats).view(-1)
-        old_ll = torch.Tensor(batch.log_likelihoods).view(-1)
+        old_ll = torch.as_tensor(batch.log_likelihoods, dtype=torch.float32).view(-1)
 
         # calculate the ratio term (all terms are flat vectors of length D)
         a_vals = torch.as_tensor(batch["a"], dtype=torch.float32).view(-1)
