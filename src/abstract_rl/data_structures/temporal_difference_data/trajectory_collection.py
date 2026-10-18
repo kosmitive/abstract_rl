@@ -81,19 +81,23 @@ class TrajectoryCollection:
 
     def extend(self, trajectories: list[Trajectory]) -> None:
         """
-        Add an existing list of trajectories to the internal list.
+        Add an existing list of trajectories to the internal list. If a maximum number of transitions is set, the
+        oldest trajectories are dropped until the collection fits again.
         :param trajectories: The trajectories to add.
         """
         self.__trajectories.extend(trajectories)
 
-        k = 0
-        i = len(trajectories)
-        assert self.max_l is not None
-        while k < self.max_l and i > 0:
-            i -= 1
-            k += len(trajectories[i])
+        if self.max_l is not None:
+            k = 0
+            i = len(self.__trajectories)
+            while i > 0 and k + len(self.__trajectories[i - 1]) <= self.max_l:
+                i -= 1
+                k += len(self.__trajectories[i])
 
-        self.__trajectories = self.__trajectories[i:]
+            # always keep at least the newest trajectory
+            i = min(i, len(self.__trajectories) - 1)
+            self.__trajectories = self.__trajectories[i:]
+
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
 
     def __iter__(self) -> Iterator[Trajectory]:
@@ -153,9 +157,9 @@ class TrajectoryCollection:
 
     def sample(self, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
 
+        fields = copy_fields if copy_fields is not None else []
         batch_size = min(batch_size, self.__num_data_points)
-        tindices = np.random.randint(0, batch_size, size=batch_size)  # noqa: NPY002
-        tindices.sort()
+        tindices = np.sort(np.random.randint(0, self.__num_data_points, size=batch_size))  # noqa: NPY002
 
         # define basic lists
         states: Any = []
@@ -166,26 +170,17 @@ class TrajectoryCollection:
         ds: Any = []
 
         # make space for annotations
-        fields = [] if copy_fields is None else copy_fields
         annots: dict[str, Any] = {a: [] for a in fields}
 
-        # count independently for trajectories and indices
-        i = 0
+        # map the global indices onto the trajectories
         traj_offset = 0
-
-        # if it should be continued
-        for t in range(len(self.__trajectories)):
-            # obtain possible length
-            traj = self.__trajectories[t]
-            traj_len = len(traj) - 7
-
-            # get all possible indices
-            j = 0
-            while j < traj_len and i + j < len(tindices) and tindices[i + j] - traj_offset < traj_len:
-                j += 1
-
-            # map indices to trajectory
-            m_indices = tindices[i : i + j] - traj_offset
+        for traj in self.__trajectories:
+            traj_len = len(traj)
+            lo, hi = np.searchsorted(tindices, [traj_offset, traj_offset + traj_len])
+            m_indices = tindices[lo:hi] - traj_offset
+            traj_offset += traj_len
+            if len(m_indices) == 0:
+                continue
 
             # append infos
             states.append(traj.states[m_indices])
@@ -194,7 +189,6 @@ class TrajectoryCollection:
             rewards.append(traj.rewards[m_indices])
             lls.append(traj.log_likelihoods[m_indices])
             ds.append(traj.dones[m_indices])
-            i += j
 
             # append rest
             for a in fields:
