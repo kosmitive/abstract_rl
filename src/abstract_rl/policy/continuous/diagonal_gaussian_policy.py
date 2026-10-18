@@ -114,13 +114,8 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             center, scale = (high + low) / 2, (high - low) / 2
         self.action_center: torch.Tensor
         self.action_scale: torch.Tensor
-        self.action_low: torch.Tensor
-        self.action_high: torch.Tensor
         self.register_buffer("action_center", torch.as_tensor(center, dtype=torch.float32))
         self.register_buffer("action_scale", torch.as_tensor(scale, dtype=torch.float32))
-        self.register_buffer("action_low", torch.as_tensor(low, dtype=torch.float32))
-        self.register_buffer("action_high", torch.as_tensor(high, dtype=torch.float32))
-        self.clip_actions = "clip_actions" in run_conf and bool(run_conf["clip_actions"])
 
         # create policy network, the activations of the mu / sigma outputs are applied inside of the network.
         # a full covariance keeps one activation name per layer and softplus-es only diag L
@@ -143,7 +138,6 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             act_fn=af,
             layer_norm=run_conf["layer_norm"],
             init=run_conf["init"],
-            layernorm_tanh="layernorm_tanh" in run_conf and bool(run_conf["layernorm_tanh"]),
         )
         self.add_module("nn", self.network)
         if self.cov_type in ("state", "full"):
@@ -200,15 +194,6 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         diagonal = torch.clamp(diagonal, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(diagonal) + SIGMA_MIN
         index = torch.tensor(idx, device=packed.device).view(1, -1).expand(packed.shape[0], -1)
         return packed.scatter(1, index, diagonal)
-
-    def cholesky(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Mean and the lower-triangular factor of a full-covariance statistic.
-
-        :param suff_stats: Rows ``[mu, packed L]`` produced by ``forward``.
-        :return: Mean of shape ``[batch, A]`` and factor of shape ``[batch, A, A]``.
-        """
-
-        return self._mu_factor(suff_stats)
 
     def _mu_factor(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Mean and the lower-triangular Cholesky factor ``L`` of a full-covariance statistic row."""
@@ -276,8 +261,6 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         mu, _ = self._split(self._suff_stats(states, suff_stats))
         if self.squash:
             return self.action_center + self.action_scale * torch.tanh(mu)
-        if self.clip_actions:
-            return torch.maximum(torch.minimum(mu, self.action_high), self.action_low)
         return mu
 
     def sample_actions(
@@ -299,8 +282,6 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             u = Normal(mu.unsqueeze(1), sigma.unsqueeze(1)).rsample([num_actions]).transpose(0, 1).squeeze(2)
         if self.squash:
             u = self.action_center + self.action_scale * torch.tanh(torch.clamp(u, -SQUASH_U_MAX, SQUASH_U_MAX))
-        elif self.clip_actions:
-            u = torch.maximum(torch.minimum(u, self.action_high), self.action_low)
         return u.contiguous()
 
     def clone(self) -> "DiagonalGaussianPolicy":

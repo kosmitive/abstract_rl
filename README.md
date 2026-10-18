@@ -127,12 +127,16 @@ A training loop is a sequence of operator applications on trajectory collections
   `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
 - **MPO** per epoch: collect `env_sample` steps into the replay collection. Each learner step (the count follows
   `mpo_samples_per_insert`) samples actions from the target policy, scores them with the target critic, reweights
-  them with a softmax of `Q / η` and takes a weighted maximum-likelihood step under a decoupled mean / covariance KL.
-  `η` and the multipliers descend their duals on the same step. The critic is fit to Retrace (or an n-step return).
-  `val_critic_type: mog` swaps that scalar fit for an optional mixture-of-Gaussians critic, off by default: the head
-  emits logits, means and softplus scales, and the loss is the negative log likelihood of samples from the target
-  mixture after the reward and discount backup. The E-step still reads the mixture mean.
-  Target networks are hard-copied every `policy_sync_steps` / `val_sync_steps` learner steps, or Polyak-averaged.
+  them with a softmax of `Q / eta` and takes a weighted maximum-likelihood step under a decoupled mean / covariance
+  KL. Eta and the multipliers descend their duals on the same step. The critic is fit to Retrace. A diagonal
+  covariance can constrain each action dimension; a full covariance uses one scalar KL for the mean and one for the
+  covariance. `val_critic_type: mog` swaps the scalar fit for an optional mixture-of-Gaussians critic, off by
+  default: the head emits logits, means and softplus scales, and the loss is the negative log likelihood of samples
+  from the target mixture after the reward and discount backup. Retrace targets are not computed in that mode. The
+  E-step still reads the mixture mean. The Acme torso is the existing `layer_norm` flag with `tanh` as the first
+  activation, not a separate switch.
+  Target networks are copied by `mc.sync()` once per learner step, which applies the existing every-N-steps rule
+  (`policy_sync_steps` / `val_sync_steps`, default 100).
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration`. TRPO still copies them with `mc.sync()`
 once per epoch.

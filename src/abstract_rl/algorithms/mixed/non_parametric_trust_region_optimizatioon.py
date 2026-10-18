@@ -55,9 +55,9 @@ def find_optimal_temperature(
         assert eta.grad is not None
         return obj.item(), np.array([eta.grad.item()])
 
-    eta0 = float(np.clip(np.asarray(eta0).reshape(-1)[0], 1e-8, None))
+    eta0 = float(np.clip(np.asarray(eta0).reshape(-1)[0], 1e-6, None))
     res = scipy.optimize.minimize(
-        fn, np.array([eta0]), jac=True, method="L-BFGS-B", bounds=[(1e-8, None)], options={"maxiter": max_steps}
+        fn, np.array([eta0]), jac=True, method="L-BFGS-B", bounds=[(1e-6, None)], options={"maxiter": max_steps}
     )
     eta = float(res.x[0])
 

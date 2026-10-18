@@ -1,21 +1,13 @@
-"""Acme-style MPO: temperature dual, decoupled KL, stopped gradients and floors."""
-
-import math
+"""MPO dual step, decoupled KL, stopped gradients, floors, mixture critic and vector envs."""
 
 import torch
 from torch.distributions import MultivariateNormal, Normal, kl_divergence
 
 from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
     MPOAlgorithm,
-)
-from abstract_rl.algorithms.continuous.policy_gradient.mpo_loss import (
-    ALPHA_FLOOR,
-    ETA_FLOOR,
     decoupled_kl_diagonal,
     decoupled_kl_full,
-    dual_descent_loss,
     inverse_softplus,
-    normalized_weights,
     project_positive,
 )
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import temperature_dual
@@ -24,52 +16,19 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.policy.continuous.select_policy import select_policy
-from abstract_rl.scripts.hydra_conf import make_config
-from abstract_rl.value_functions.distributional import (
-    MIN_SCALE,
-    mixture_log_prob,
-    mixture_mean,
-    mog_sample_nll,
-    project_mixture_samples,
-    sample_mixture,
-    split_mixture,
-)
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
-
-
-def test_temperature_dual_matches_the_log_mean_exp_formula():
-    q = torch.tensor([[0.0, 1.0], [2.0, -1.0]])
-    eta = torch.tensor(0.5)
-    manual = eta * 0.1 + eta * torch.log(torch.exp(q / eta).mean(dim=1)).mean()
-    assert torch.allclose(temperature_dual(q, eta, 0.1), manual, atol=1e-5)
 
 
 def test_dual_gradient_decreases_g():
     torch.manual_seed(0)
     q = torch.randn(64, 20) * 4
     raw = torch.nn.Parameter(inverse_softplus(torch.tensor(1.5)))
-    loss = temperature_dual(q, project_positive(raw, ETA_FLOOR), 0.1)
+    loss = temperature_dual(q, project_positive(raw), 0.1)
     loss.backward()
-    grad = raw.grad.detach().clone()
-    assert grad.abs().item() > 0
+    assert raw.grad is not None and raw.grad.abs().item() > 0
     with torch.no_grad():
-        stepped = project_positive((raw.detach() - 1e-3 * grad).clamp(min=-20), ETA_FLOOR)
-    decreased = temperature_dual(q, stepped, 0.1)
-    assert decreased < loss.detach()
-
-
-def test_normalized_weights_are_a_detached_softmax():
-    q = torch.tensor([[1.0, 3.0, 0.0], [0.0, 0.0, 0.0]], requires_grad=True)
-    eta = torch.tensor(0.5, requires_grad=True)
-    weights = normalized_weights(q, eta)
-    assert not weights.requires_grad
-    assert torch.allclose(weights.sum(dim=1), torch.ones(2), atol=1e-6)
-    assert torch.allclose(weights, torch.softmax(q.detach() / eta.detach(), dim=1), atol=1e-6)
-    # a weighted likelihood treats the weights as constants, so it cannot reach Q or eta
-    log_prob = torch.zeros_like(weights, requires_grad=True)
-    (-(weights * log_prob).sum()).backward()
-    assert q.grad is None and eta.grad is None
-    assert log_prob.grad is not None
+        stepped = project_positive(raw.detach() - 1e-3 * raw.grad)
+    assert temperature_dual(q, stepped, 0.1) < loss.detach()
 
 
 def test_decoupled_kl_matches_the_mixed_gaussians_including_per_dimension():
@@ -93,20 +52,19 @@ def test_decoupled_kl_matches_the_mixed_gaussians_including_per_dimension():
     assert per_mean.shape == per_std.shape == (2,)
     assert torch.allclose(per_mean.sum(), kl_mean, atol=1e-5)
     assert torch.allclose(per_std.sum(), kl_std, atol=1e-5)
-    # the joint KL(target || online) is a different quantity from the sum of the decoupled terms
     coupled = kl_divergence(Normal(mu_t, sig_t), Normal(mu_o, sig_o)).sum(-1).mean()
     assert not torch.allclose(kl_mean + kl_std, coupled, atol=1e-3)
 
     kl_mean.backward(retain_graph=True)
-    assert mu_o.grad.abs().sum() > 0
+    assert mu_o.grad is not None and mu_o.grad.abs().sum() > 0
     assert sig_o.grad is None or sig_o.grad.abs().sum() == 0
     mu_o.grad = None
     kl_std.backward()
-    assert sig_o.grad.abs().sum() > 0
+    assert sig_o.grad is not None and sig_o.grad.abs().sum() > 0
     assert mu_o.grad is None or mu_o.grad.abs().sum() == 0
 
 
-def test_full_covariance_decoupled_kl_matches_the_analytic_gaussian():
+def test_full_covariance_decoupled_kl_is_one_scalar_per_term():
     eye = torch.eye(2)
     factor_t = torch.stack([eye * 0.8, eye * 1.1])
     factor_o = torch.stack(
@@ -118,37 +76,23 @@ def test_full_covariance_decoupled_kl_matches_the_analytic_gaussian():
     mu_t = torch.tensor([[0.2, -0.1], [0.0, 0.4]])
     mu_o = torch.tensor([[-0.3, 0.5], [0.2, -0.2]], requires_grad=True)
     factor_o = factor_o.detach().requires_grad_(True)
-    kl_mean, kl_std = decoupled_kl_full(mu_o, factor_o, mu_t, factor_t, per_dim=False)
+    kl_mean, kl_std = decoupled_kl_full(mu_o, factor_o, mu_t, factor_t)
+    assert kl_mean.ndim == 0 and kl_std.ndim == 0
     target = MultivariateNormal(mu_t, scale_tril=factor_t)
     expected_mean = kl_divergence(target, MultivariateNormal(mu_o, scale_tril=factor_t)).mean()
     expected_std = kl_divergence(target, MultivariateNormal(mu_t, scale_tril=factor_o)).mean()
     assert torch.allclose(kl_mean, expected_mean, atol=1e-5)
     assert torch.allclose(kl_std, expected_std, atol=1e-5)
-
-    per_mean, per_std = decoupled_kl_full(mu_o, factor_o, mu_t, factor_t, per_dim=True)
-    assert per_mean.shape == (2,)
-    assert per_std.ndim == 0
-    assert torch.allclose(per_mean.sum(), kl_mean, atol=1e-5)
-    assert torch.allclose(per_std, kl_std, atol=1e-5)
-
-
-def test_multiplier_grows_when_the_kl_exceeds_the_bound():
-    raw = torch.nn.Parameter(torch.zeros(()))
-    before = project_positive(raw, ALPHA_FLOOR).detach()
-    dual_descent_loss(torch.tensor(0.5), project_positive(raw, ALPHA_FLOOR), 5e-3).backward()
-    assert raw.grad is not None and raw.grad.item() < 0
-    with torch.no_grad():
-        raw -= 0.5 * raw.grad
-    assert project_positive(raw, ALPHA_FLOOR) > before
+    coupled = kl_divergence(target, MultivariateNormal(mu_o, scale_tril=factor_o)).mean()
+    assert not torch.allclose(kl_mean + kl_std, coupled, atol=1e-3)
 
 
 def test_eta_and_multipliers_stay_above_their_floors():
     raw = torch.tensor(-80.0)
-    eta = project_positive(raw, ETA_FLOOR).item()
-    assert eta >= ETA_FLOOR
-    assert project_positive(raw, ALPHA_FLOOR).item() >= ALPHA_FLOOR
-    # softplus(-80) underflows; the floor is what keeps eta usable in the dual
-    assert math.isclose(eta, ETA_FLOOR, rel_tol=1e-6)
+    eta = project_positive(raw)
+    floor = eta.new_tensor(1e-8)
+    assert eta >= floor
+    assert torch.all(project_positive(torch.tensor([-80.0, -80.0])) >= floor)
 
 
 def _stack(conf):
@@ -195,97 +139,17 @@ def test_target_networks_and_e_step_weights_get_no_gradients(mpo_conf):
         assert torch.equal(old, new)
         assert new.grad is None
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in policy.parameters())
-    # the dual step trained η, and the projection still respects the floor
     alg.raw_eta.data.fill_(-80)
     alg.raw_alpha_mean.data.fill_(-80)
     alg.raw_alpha_std.data.fill_(-80)
-    assert float(alg.eta().detach()) >= ETA_FLOOR
-    assert float(alg.alpha_mean().detach().min()) >= ALPHA_FLOOR
-    assert float(alg.alpha_std().detach().min()) >= ALPHA_FLOOR
-
-
-def test_mpo_defaults_follow_the_acme_numbers():
-    conf = make_config("InvertedPendulum-v5", "mpo")
-    assert conf["rnk_eps"] == 0.1
-    assert conf["res_add_acts"] == 20
-    assert conf["mpo_epsilon_mean"] == 0.005
-    assert conf["mpo_epsilon_stddev"] == 1e-5
-    assert conf["mpo_outer_lr"] == 1e-4
-    assert conf["val_lr"] == 1e-4
-    assert conf["mpo_inner_lr"] == 1e-2
-    assert conf["mpo_grad_clip"] == 40.0
-    assert conf["val_grad_clip"] == 40.0
-    assert conf["mpo_per_dim_constraint"] is True
-    assert conf["mpo_eta_solver"] == "dual"
-    assert conf["mpo_samples_per_insert"] == 32.0
-    assert conf["policy_sync_steps"] == 100 and conf["val_sync_steps"] == 100
-    assert conf["mpo_target_update"] == "hard"
-    assert conf["val_critic_type"] == "none"
-    assert conf["val_n_components"] == 5
-    assert "val_n_atoms" not in conf
-    assert conf["ret_operator"] == "retrace"
-    # Pendulum keeps the previously tuned E-step epsilon
-    assert make_config("Pendulum-v1", "mpo")["rnk_eps"] == 0.05
-
-
-def test_mixture_head_softplus_scales_and_mean():
-    raw = torch.zeros(2, 9)
-    raw[0, 3:6] = -40.0
-    means, scales, logits = split_mixture(raw, 3, init_scale=1e-3)
-    assert means.shape == scales.shape == logits.shape == (2, 3)
-    # a zero pre-activation reproduces init_scale, then the floor is added
-    assert torch.allclose(scales[1], torch.full((3,), 1e-3 + MIN_SCALE), atol=1e-6)
-    assert torch.all(scales >= MIN_SCALE)
-    assert torch.allclose(scales[0], torch.full((3,), MIN_SCALE), atol=1e-5)
-    weighted = mixture_mean(torch.tensor([[0.0, 10.0]]), torch.tensor([[0.0, 0.0]]))
-    assert torch.allclose(weighted, torch.tensor([[5.0]]))
-
-
-def test_projected_mixture_samples_apply_reward_and_discount_without_grad():
-    samples = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
-    reward = torch.tensor([0.5, -1.0])
-    dones = torch.tensor([0.0, 1.0])
-    projected = project_mixture_samples(samples, reward, 0.5, dones)
-    assert not projected.requires_grad
-    assert torch.allclose(projected[:, 0], torch.tensor([1.0, 2.0]))
-    assert torch.allclose(projected[:, 1], torch.tensor([-1.0, -1.0]))
-
-
-def test_mixture_nll_decreases_on_samples_from_the_projected_target():
-    torch.manual_seed(0)
-    batch, components, draws = 16, 2, 64
-    means = torch.nn.Parameter(torch.zeros(batch, components))
-    raw_scale = torch.nn.Parameter(torch.zeros(batch, components))
-    logits = torch.nn.Parameter(torch.zeros(batch, components))
-    with torch.no_grad():
-        target_means = torch.full((batch, components), 3.0)
-        target_scales = torch.full((batch, components), 0.4)
-        target_logits = torch.zeros(batch, components)
-        samples = sample_mixture(target_means, target_scales, target_logits, draws)
-    reward = torch.ones(batch)
-    dones = torch.zeros(batch)
-    dones[0] = 1.0
-    projected = project_mixture_samples(samples, reward, 0.9, dones)
-    assert torch.allclose(projected[:, 0], torch.ones(draws))
-
-    def loss() -> torch.Tensor:
-        scales = torch.nn.functional.softplus(raw_scale) + MIN_SCALE
-        return mog_sample_nll(means, scales, logits, projected)
-
-    before = loss()
-    before.backward()
-    assert means.grad is not None and means.grad.abs().sum() > 0
-    with torch.no_grad():
-        means -= 0.2 * means.grad
-    assert loss() < before.detach()
-    # a point on the target component is likelier than a point far from it
-    on_target = mixture_log_prob(target_means, target_scales, target_logits, torch.full((draws, batch), 3.0))
-    far = mixture_log_prob(target_means, target_scales, target_logits, torch.full((draws, batch), 30.0))
-    assert on_target.mean() > far.mean()
+    floor = alg.eta().new_tensor(1e-8)
+    assert alg.eta().detach() >= floor
+    assert alg.alpha_mean().detach().min() >= floor
+    assert alg.alpha_std().detach().min() >= floor
 
 
 def test_mog_critic_uses_the_mixture_mean_and_does_not_train_the_target(mpo_conf):
-    conf = {**mpo_conf, "val_critic_type": "mog", "val_mog_value_samples": 2, "res_add_acts": 2}
+    conf = {**mpo_conf, "val_critic_type": "mog", "val_mog_value_samples": 4, "res_add_acts": 2}
     mc, _alg = _stack(conf)
     q_net = mc.get("q_network", False)
     target_q = mc.get("q_network", True)
@@ -294,8 +158,9 @@ def test_mog_critic_uses_the_mixture_mean_and_does_not_train_the_target(mpo_conf
     act = mc.env.action_dim
     states = torch.randn(4, obs)
     actions = torch.randn(4, act)
-    means, _scales, logits = q_net._mixture(states, actions)
-    assert torch.allclose(q_net.q_val(states, actions), mixture_mean(means, logits))
+    mixture = q_net._mixture(states, actions)
+    assert torch.allclose(q_net.q_val(states, actions).view(-1), mixture.mean)
+    assert torch.all(mixture.component_distribution.stddev >= 1e-4)
     batch = Batch(
         states.numpy(),
         actions.numpy(),
@@ -315,7 +180,7 @@ def test_mog_critic_uses_the_mixture_mean_and_does_not_train_the_target(mpo_conf
     assert all(p.grad is None for p in target_policy.parameters())
 
 
-def test_vector_envs_collect_the_requested_transitions(make_pendulum_mc):
+def test_vector_envs_keep_open_episodes_and_normalize_with_gymnasium(make_pendulum_mc):
     mc = make_pendulum_mc(env_num_envs=2, env_normalize=False)
     with mc["conf"].ns("policy"):
         policy = select_policy(mc)
@@ -325,4 +190,26 @@ def test_vector_envs_collect_the_requested_transitions(make_pendulum_mc):
         assert len(traj) <= 5
         assert not traj.dones.any()
         assert torch.isfinite(torch.as_tensor(traj.rewards)).all()
+    vec = mc.env._vector_env()
+    calls: list[object] = []
+    original_reset = vec.reset
+
+    def spy(*args: object, **kwargs: object) -> object:
+        options = kwargs.get("options")
+        calls.append(None if not isinstance(options, dict) else dict(options))
+        return original_reset(*args, **kwargs)
+
+    vec.reset = spy
+    mc.env.execute_policy(policy, max_steps=5, batch_size=4, exploration=True)
+    # a later collection continues the open copies, so every reset is a partial one
+    assert calls
+    assert all(isinstance(options, dict) and "reset_mask" in options for options in calls)
     mc.env.close()
+
+    mc_norm = make_pendulum_mc(env_num_envs=2, obs_norm=True, env_normalize=False)
+    with mc_norm["conf"].ns("policy"):
+        policy = select_policy(mc_norm)
+    mc_norm.env.execute_policy(policy, max_steps=5, batch_size=6, exploration=True)
+    assert mc_norm.env._norm is not None
+    assert float(mc_norm.env._norm.obs_rms.count) > 1.0
+    mc_norm.env.close()

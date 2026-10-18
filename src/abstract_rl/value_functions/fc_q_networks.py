@@ -14,9 +14,13 @@
 #  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Categorical, MixtureSameFamily, Normal
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -25,13 +29,11 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
-from abstract_rl.value_functions.distributional import (
-    mixture_mean,
-    mog_sample_nll,
-    project_mixture_samples,
-    sample_mixture,
-    split_mixture,
-)
+
+# Acme's Gaussian mixture keeps every scale at least this far above zero.
+_MIN_SCALE = 1e-4
+# softplus(0) = log(2). Dividing by it makes a zero pre-activation reproduce the init scale.
+_SOFTPLUS_AT_ZERO = math.log(2.0)
 
 
 class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
@@ -51,16 +53,14 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
 
         # neural nets
         layer_norm = conf.get("layer_norm", False)
-        layernorm_tanh = bool(conf.get("layernorm_tanh", False))
         init = conf.get("init", "orthogonal")
         def_fn = conf["act_fn"]
         # critic_type "mog" is the optional mixture-of-Gaussians head; "none" is the scalar critic
-        self.critic_type = str(conf.get("critic_type", "none"))
-        self.n_components = int(conf.get("n_components", 5))
-        self.mog_init_scale = float(conf.get("mog_init_scale", 1e-3))
-        self.value_samples = int(conf.get("mog_value_samples", 128))
-        raw_conf = mc["conf"].to_dict()
-        self.bootstrap_actions = int(raw_conf.get("res_add_acts", 20))
+        self.critic_type = str(conf["critic_type"]) if "critic_type" in conf else "none"
+        self.n_components = int(conf["n_components"]) if "n_components" in conf else 5
+        self.mog_init_scale = float(conf["mog_init_scale"]) if "mog_init_scale" in conf else 1e-3
+        self.value_samples = int(conf["mog_value_samples"]) if "mog_value_samples" in conf else 16
+        self.bootstrap_actions = int(mc["conf"].get_root("res_add_acts")) if self.critic_type == "mog" else 0
         grad_clip = conf.get("grad_clip", None)
 
         # shortcut for state and action dim
@@ -86,7 +86,6 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
             def_fn,
             layer_norm,
             init,
-            layernorm_tanh=layernorm_tanh,
         )
         self.add_module("neural_net", self.fc_net)
 
@@ -153,10 +152,23 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
     def _features(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         return self.fc_net.forward(torch.cat([states, actions], dim=1))
 
-    def _mixture(self, states: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Means, softplus scales and logits of the mixture at each state-action pair."""
+    def _mixture(self, states: torch.Tensor, actions: torch.Tensor) -> MixtureSameFamily:
+        """Mixture of Gaussians at each state-action pair.
 
-        return split_mixture(self._features(states, actions), self.n_components, self.mog_init_scale)
+        The head is means, raw scales and logits. Scales are ``init_scale / softplus(0) * softplus(raw) + 1e-4``.
+
+        Args:
+            states: States, shape ``[batch, state_dim]``.
+            actions: Actions, shape ``[batch, action_dim]``.
+
+        Returns:
+            A ``MixtureSameFamily`` of a categorical and a normal, batched over the state-action pairs.
+        """
+
+        raw = self._features(states, actions)
+        means, raw_scale, logits = raw.split(self.n_components, dim=-1)
+        scales = self.mog_init_scale / _SOFTPLUS_AT_ZERO * F.softplus(raw_scale) + _MIN_SCALE
+        return MixtureSameFamily(Categorical(logits=logits), Normal(means, scales))
 
     def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """Scalar Q. The mixture head returns the mean of its components."""
@@ -165,8 +177,7 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
             case "none":
                 return self._features(states, actions)
             case "mog":
-                means, _, logits = self._mixture(states, actions)
-                return mixture_mean(means, logits)
+                return self._mixture(states, actions).mean.unsqueeze(-1)
             case _:
                 raise ValueError(f"unknown critic type {self.critic_type}")
 
@@ -185,19 +196,25 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
                 raise ValueError(f"unknown critic type {self.critic_type}")
 
     def _mog_loss(self, batch: Batch) -> torch.Tensor:
-        """Sample-based cross-entropy of the reward-and-discount projection of the target mixture.
+        """Negative log likelihood of the reward-and-discount projection of the target mixture.
 
-        Actions at the next state are drawn from the target policy. Samples from the target critic at those actions
-        are projected by ``reward + discount * (1 - done) * sample`` and scored by the online mixture. Neither the
-        target critic nor the target policy receives a gradient.
+        Next actions come from the target policy. Samples from the target critic at those actions are projected by
+        ``reward + discount * (1 - done) * sample`` and scored by the online mixture. The target critic and the
+        target policy receive no gradient.
+
+        Args:
+            batch: Transitions. Retrace targets are not read.
+
+        Returns:
+            Scalar negative log likelihood.
         """
 
         states = torch.as_tensor(batch.states, dtype=torch.float32)
         actions = torch.as_tensor(batch.actions, dtype=torch.float32)
-        rewards = torch.as_tensor(batch.rewards, dtype=torch.float32)
+        rewards = torch.as_tensor(batch.rewards, dtype=torch.float32).view(-1)
         next_states = torch.as_tensor(batch.next_states, dtype=torch.float32)
-        dones = torch.as_tensor(batch.dones, dtype=torch.float32)
-        means, scales, logits = self._mixture(states, actions)
+        dones = torch.as_tensor(batch.dones, dtype=torch.float32).view(-1)
+        online = self._mixture(states, actions)
 
         with torch.no_grad():
             target_policy = self.mc.get("policy", True)
@@ -206,10 +223,9 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
             count = int(next_actions.shape[1])
             flat_next = next_states.repeat_interleave(count, dim=0)
             flat_actions = next_actions.reshape(next_states.shape[0] * count, -1)
-            target_means, target_scales, target_logits = target_q._mixture(flat_next, flat_actions)
-            draws = sample_mixture(target_means, target_scales, target_logits, self.value_samples)
+            draws = target_q._mixture(flat_next, flat_actions).sample((self.value_samples,))
             draws = draws.reshape(self.value_samples, next_states.shape[0], count)
             draws = draws.permute(2, 0, 1).reshape(count * self.value_samples, next_states.shape[0])
+            projected = rewards + self.env.discount() * (1.0 - dones) * draws
 
-        projected = project_mixture_samples(draws, rewards, self.env.discount(), dones)
-        return mog_sample_nll(means, scales, logits, projected)
+        return -online.log_prob(projected).mean()

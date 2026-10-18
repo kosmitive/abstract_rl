@@ -24,7 +24,6 @@ class MultilayerPerceptron(nn.Module, Syncable):
         act_fn: Sequence[str | list[str]] = "tanh",
         layer_norm: bool = False,
         init: str = "orthogonal",
-        layernorm_tanh: bool = False,
     ) -> None:
         """
         Create a new neural network, whereas the structure is passed as a list of numbers, representing the size of
@@ -34,7 +33,6 @@ class MultilayerPerceptron(nn.Module, Syncable):
         :param act_fn: A string encoding the activation function.
         :param layer_norm: Activate layer normalization in between.
         :param init: A string representing the initialization method.
-        :param layernorm_tanh: Replace the first layer's activation by LayerNorm followed by tanh (the Acme torso).
 
         """
         nn.Module.__init__(self)
@@ -45,7 +43,6 @@ class MultilayerPerceptron(nn.Module, Syncable):
         self.mc = mc
         self.structure = [int(n) for n in hidden_neurons]
         self.layer_norm = layer_norm
-        self.layernorm_tanh = layernorm_tanh
         self.init = init
 
         # select the correct activation functions.
@@ -102,15 +99,13 @@ class MultilayerPerceptron(nn.Module, Syncable):
         :return: The outputted values of the network.
         """
 
-        # apply layer norm if wanted. the Acme torso normalizes the first linear layer and squashes it with tanh
+        # apply layer norm if wanted
         out = x
         out = self.layers[0](out)
-        if self.layernorm_tanh:
-            out = torch.tanh(F.layer_norm(out, out.shape[-1:]))
-        else:
-            if self.layer_norm:
-                out = F.layer_norm(out, out.shape[-1:])
-            out = self.act_fn[0](out)
+        if self.layer_norm:
+            out = F.layer_norm(out, out.shape[-1:])
+
+        out = self.act_fn[0](out)
 
         # iteratively complete the graph in the middle
         num_layers = len(self.layers)

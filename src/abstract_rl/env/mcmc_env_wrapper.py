@@ -42,7 +42,7 @@ class MCMCEnvWrapper:
         self.env = gym.make(self.env_name, render_mode="human" if self.render else None)
         # one env, so the running stats live on this wrapper; a saved run reloads them and freezes them
         self._norm: NormalizeObservation | None = None
-        if conf.to_dict().get("obs_norm", False):
+        if bool(conf.get_root("obs_norm")):
             self.env = self._norm = NormalizeObservation(self.env)
             path = join(self.mc.run_root, "model", "obs_rms.npz")
             if exists(path):
@@ -74,16 +74,17 @@ class MCMCEnvWrapper:
         # affine reward transform r' = reward_scale * r + reward_offset used for training only (evaluation scripts
         # report the raw environment return). reward_clip, when set, clips that transformed reward to [-c, c].
         # num_envs above 1 collects with a gymnasium SyncVectorEnv; the default of one keeps the serial rollout.
-        # to_dict, not conf.get: a missing key must not be written into a TRPO config
-        namespace = conf.get_namespace()
-        prefix = f"{namespace}_" if namespace else ""
-        raw = conf.to_dict()
-        self.num_envs = int(raw.get(f"{prefix}num_envs", 1))
+        # membership, not conf.get: a missing key must not be written into a TRPO config
+        self.num_envs = int(conf["num_envs"]) if "num_envs" in conf else 1
         self._reward_scale = float(conf.get("reward_scale", 1.0))
         self._reward_offset = float(conf.get("reward_offset", 0.0))
-        clip = raw.get(f"{prefix}reward_clip")
+        clip = conf["reward_clip"] if "reward_clip" in conf else None  # noqa: SIM401
         self._reward_clip = None if clip is None else float(clip)
         self._vec: SyncVectorEnv | None = None
+        self._open_obs: ndarray | None = None
+        self._open_builders: list[TrajectoryBuilder] | None = None
+        self._open_taken: ndarray | None = None
+        self._open_return: ndarray | None = None
 
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
@@ -106,23 +107,6 @@ class MCMCEnvWrapper:
         if self._reward_clip is not None:
             shaped = float(np.clip(shaped, -self._reward_clip, self._reward_clip))
         return shaped
-
-    def _normalize_raw(self, obs: ndarray) -> ndarray:
-        """Normalise raw vector-env observations with the shared running statistics, then scale bounds.
-
-        The serial rollout normalises inside ``NormalizeObservation`` and only calls ``_preprocess``. This path is for
-        the vector env, whose sub-environments are unwrapped.
-        """
-
-        values = np.asarray(obs, dtype=np.float64)
-        single = values.ndim == 1
-        batch = values.reshape(1, -1) if single else values
-        if self._norm is not None:
-            if self._norm.update_running_mean:
-                self._norm.obs_rms.update(batch)
-            batch = (batch - self._norm.obs_rms.mean) / np.sqrt(self._norm.obs_rms.var + self._norm.epsilon)
-        processed = self._preprocess(batch)
-        return processed[0] if single else processed
 
     def reset(self) -> ndarray:
         """
@@ -272,41 +256,69 @@ class MCMCEnvWrapper:
         if self._vec is not None:
             self._vec.close()
 
+    def _make_sub_env(self) -> gym.Env:
+        """One copy inside the vector env. Observation stats are Gymnasium's, shared with the serial wrapper."""
+
+        env = gym.make(self.env_name)
+        if self._norm is None:
+            return env
+        wrapped = NormalizeObservation(env)
+        wrapped.obs_rms = self._norm.obs_rms
+        wrapped.update_running_mean = self._norm.update_running_mean
+        return wrapped
+
     def _vector_env(self) -> SyncVectorEnv:
-        """Lazy gymnasium vector env. Sub-environments are raw; observation stats stay on this wrapper."""
+        """Lazy vector env. Created once and left running so later calls continue open episodes.
+
+        Gymnasium's vector ``NormalizeObservation`` requires next-step autoreset and rejects a partial reset, so it
+        cannot keep one copy mid-episode while another copy ends. Each sub-environment is wrapped with the same
+        scalar ``NormalizeObservation`` the serial rollout uses, and those wrappers share one running statistic.
+        """
 
         if self._vec is None:
-            name = self.env_name
-
-            def make() -> gym.Env:
-                return gym.make(name)
-
-            self._vec = SyncVectorEnv([make for _ in range(self.num_envs)], autoreset_mode=AutoresetMode.DISABLED)
+            self._vec = SyncVectorEnv(
+                [self._make_sub_env for _ in range(self.num_envs)], autoreset_mode=AutoresetMode.DISABLED
+            )
         return self._vec
 
     def _collect_vector(
         self, policy: ContinuousPolicy, max_steps: int, batch_size: int, exploration: bool
     ) -> list[Trajectory]:
-        """Collect transitions from ``num_envs`` copies stepped together until ``batch_size`` is reached."""
+        """Collect transitions from ``num_envs`` copies stepped together until ``batch_size`` is reached.
+
+        The vector env is reset only on the first call. An episode that is still running is stored and continued
+        the next time this method is called.
+        """
 
         vec = self._vector_env()
-        if self._seed is not None:
-            obs, _ = vec.reset(seed=int(self._seed))
-            self._seed = None
+        if (
+            self._open_obs is None
+            or self._open_builders is None
+            or self._open_taken is None
+            or self._open_return is None
+        ):
+            if self._seed is not None:
+                obs, _ = vec.reset(seed=int(self._seed))
+                self._seed = None
+            else:
+                obs, _ = vec.reset()
+            obs = self._preprocess(np.asarray(obs))
+            builders = [self._new_builder(row) for row in obs]
+            taken = np.zeros(self.num_envs, dtype=np.int64)
+            raw_return = np.zeros(self.num_envs, dtype=np.float64)
         else:
-            obs, _ = vec.reset()
-        obs = self._normalize_raw(np.asarray(obs))
-        builders = [self._new_builder(row) for row in obs]
+            obs = self._open_obs
+            builders = self._open_builders
+            taken = self._open_taken
+            raw_return = self._open_return
 
-        taken = np.zeros(self.num_envs, dtype=np.int64)
-        raw_return = np.zeros(self.num_envs, dtype=np.float64)
         trajectories: list[Trajectory] = []
         total = 0
         with torch.no_grad():
             while total < batch_size:
                 actions, log_prob = self._vector_actions(policy, obs, not exploration)
                 nxt, rewards, terminated, truncated, _ = vec.step(actions)
-                nxt = self._normalize_raw(np.asarray(nxt))
+                nxt = self._preprocess(np.asarray(nxt))
                 ended = np.zeros(self.num_envs, dtype=bool)
                 for i in range(self.num_envs):
                     raw_return[i] += float(rewards[i])
@@ -327,7 +339,7 @@ class MCMCEnvWrapper:
                     obs = nxt
                     continue
                 reset_obs, _ = vec.reset(options={"reset_mask": ended})
-                fresh = self._normalize_raw(np.asarray(reset_obs)[ended])
+                fresh = self._preprocess(np.asarray(reset_obs)[ended])
                 obs = nxt.copy()
                 obs[ended] = fresh
                 cursor = 0
@@ -336,6 +348,10 @@ class MCMCEnvWrapper:
                         continue
                     builders[i] = self._new_builder(fresh[cursor])
                     cursor += 1
+        self._open_obs = obs
+        self._open_builders = builders
+        self._open_taken = taken
+        self._open_return = raw_return
         return trajectories
 
     def _new_builder(self, state: ndarray) -> TrajectoryBuilder:

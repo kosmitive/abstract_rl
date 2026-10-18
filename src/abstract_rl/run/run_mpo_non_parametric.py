@@ -17,8 +17,6 @@ from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
 from abstract_rl.operator.filter_operator import FilterOperator
-from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
-from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
 from abstract_rl.policy.continuous.select_policy import select_policy
@@ -86,20 +84,13 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         filter = FilterOperator(mc)
         mc.add_main("fil", filter)
 
-    # push retrace
+    # push retrace. A mixture critic trains on its own backup and does not read these targets.
     with run_conf.ns("ret"):
         ret = RetraceOperator(mc)
         mc.add_main("ret", ret)
 
-    # push resample
-    with run_conf.ns("res"):
-        res = ResampleOperator(mc)
-        mc.add_main("res", res)
-
-    # push resample
-    with run_conf.ns("rnk"):
-        rnk = VariationalRankingOperator(mc)
-        mc.add_main("rnk", rnk)
+    critic_type = run_conf["val_critic_type"]
+    q_period = mc.syncables["q_network"][0]
 
     # names for rewards
     stoch_reward = "sreward"
@@ -158,25 +149,20 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
 
         alg.sample_constraints()
         n_updates = alg.num_updates(num_new_steps, policy_batch_size)
-        if alg.eta_solver == "scipy":
-            with cli.header("e-step (scipy temperature)", 1):
-                res.transform_all(tc)
-                rnk.hook()
-                alg.set_eta(float(np.reshape(np.asarray(rnk.b.eta), -1)[0]))
+        fields = [] if critic_type == "mog" else ["tq"]
 
         with cli.header(f"policy / critic updates x {n_updates}", 1):
-            # the critic target is stale until the first backup of this epoch
-            need_backup = True
             for step in range(n_updates):
-                if alg.prepare_targets() or need_backup:
+                # mc.sync copies a target when overall_step hits its period, then advances the counter.
+                # New transitions at the start of an epoch need a backup even when the target did not move.
+                copied = mc.overall_step % q_period == 0
+                mc.sync()
+                if critic_type != "mog" and (step == 0 or copied):
                     ret.transform_all(tc)
-                    need_backup = False
-                batch = tc.sample(policy_batch_size, ["tq"])
+                batch = tc.sample(policy_batch_size, fields)
                 q_network.perform_adam_step(step, batch)
                 alg.perform_step(step, batch)
 
-        # the learner steps above own the target copy; keep the saved step counter moving once per epoch
-        mc.overall_step += 1
         e += 1
 
     env.close()

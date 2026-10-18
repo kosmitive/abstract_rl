@@ -55,8 +55,6 @@ def mpo_conf(tmp_path):
         {
             "num_epochs": 2,
             "env_sample": 400,
-            "val_opt_steps": 5,
-            "policy_opt_steps": 5,
             "mpo_samples_per_insert": 2.0,
             "data_root": str(tmp_path),
         }
