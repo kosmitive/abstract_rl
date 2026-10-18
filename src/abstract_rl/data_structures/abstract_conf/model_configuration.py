@@ -117,7 +117,7 @@ class ModelConfiguration:
         :param target: If this is True, a prefix 't_' is appended to the key.
         :return: The extracted object.
         """
-        if key is 'env': return self.get_environment()
+        if key == 'env': return self.get_environment()
         ti = 1 if not target else 2
         return self.data[key] if key in self.data else self.syncables[key][ti]
 
