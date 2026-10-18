@@ -187,7 +187,8 @@ class MCMCEnvWrapper:
             self.reward_filter.register(np.asarray([r], dtype=np.float64))
 
             t += 1
-            traj_builder.observe(a, float(r), cs, ll, int(done))
+            # only true terminations are stored as done, so truncated episodes can be bootstrapped
+            traj_builder.observe(a, float(r), cs, ll, int(terminated))
 
             # render if needed
             if render:

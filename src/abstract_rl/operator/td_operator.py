@@ -42,10 +42,16 @@ class TemporalDifferenceOperator(TrajectoryOperator):
             v = self.v_net.forward(t_states)
             mask = 1 - dones
 
+            # bootstrap from the last observed state if the trajectory was truncated (e.g. time limit) instead of
+            # treating the end of the trajectory as terminal
+            last_state = torch.Tensor(trajectory.all_states[-1:])
+            last_v = self.v_net.forward(last_state)[0, 0] * mask[-1, 0]
+
             tl = len(trajectory)
             tv = torch.zeros(tl + 1)
+            tv[tl] = last_v
             td_errors = torch.zeros_like(dones)
-            prev_value = 0
+            prev_value = last_v
 
             for t in reversed(range(tl)):
                 tv[t] = t_rewards[t] + discount * mask[t] * tv[t + 1]

@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -57,38 +56,30 @@ class RetraceOperator(TrajectoryOperator):
             # obtain q and v value estimates
             states = torch.Tensor(trajectory.states)
             actions = torch.Tensor(trajectory.actions)
-            q_vals = self.q_network.q_val(states, actions)
+            q_vals = self.q_network.q_val(states, actions).view(-1)
 
-            # calculate expectation of next state
+            # expectation of the next state under the evaluated (current) policy, the same policy defines the trace
+            # coefficients c; terminal states have no value
             nxt_states = torch.Tensor(trajectory.next_states)
-            dones = torch.Tensor(trajectory.dones)
-            nxt_v_vals = self.q_network.v_val(nxt_states)
-            nxt_v_vals[-1] *= 1 - dones[-1]
+            dones = torch.Tensor(trajectory.dones).view(-1)
+            nxt_v_vals = self.q_network.v_val(nxt_states, policy=self.policy).view(-1) * (1 - dones)
 
             # get import. sampling coefficients
-            c = self._def_bounded_importance_sampling_coefficients(trajectory)
+            c = self._def_bounded_importance_sampling_coefficients(trajectory).view(-1)
 
             # calc td errors for all t
-            r = torch.Tensor(trajectory.rewards).view([-1, 1])
-            td_errors = r + discount * nxt_v_vals
+            r = torch.Tensor(trajectory.rewards).view(-1)
+            td_errors_q = r + discount * nxt_v_vals - q_vals
+            # Q_ret(s_t, a_t) = Q(s_t, a_t) + sum_{j=t}^{t+B-1} gamma^(j-t) (prod_{i=t+1}^{j} c_i) delta_j,
+            # computed vectorized over t by iterating over the offset j - t.
+            tq = q_vals + td_errors_q
+            coeff = torch.ones(tl)
+            for k in range(1, min(self.ret_bootstrap, tl)):
+                coeff = coeff[: tl - k] * discount * c[k:]
+                tq[: tl - k] += coeff * td_errors_q[k:]
 
-            td_errors_q = td_errors - q_vals
-            gammas = torch.Tensor(self.discount ** np.arange(self.ret_bootstrap))
-
-            # backwards iterate for all q values
-            tq = q_vals
-            for t in range(tl - self.ret_bootstrap + 1):
-                # extract coefficients and build up
-                extracted_c = c[t : t + self.ret_bootstrap - 1, 0]
-                one_c = torch.cat([torch.ones(1), extracted_c])
-                cum_c = torch.cumprod(one_c, 0)
-
-                # get all fields
-                coeff = cum_c * gammas * td_errors_q[t : t + self.ret_bootstrap]
-                tq[t] += torch.sum(coeff)
-
-            trajectory["q"] = q_vals
-            trajectory["tq"] = tq
+            trajectory["q"] = q_vals.view(-1, 1)
+            trajectory["tq"] = tq.view(-1, 1)
 
     def _def_bounded_importance_sampling_coefficients(self, trajectory: Trajectory) -> torch.Tensor:
         """

@@ -22,6 +22,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
+from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
 class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
@@ -80,20 +81,36 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
 
         return self.q_val(states, actions)
 
-    def v_val(self, states: torch.Tensor, exp_actions: int = 10) -> torch.Tensor:
+    def v_val(
+        self,
+        states: torch.Tensor,
+        exp_actions: int = 10,
+        policy: UnivariateGaussianPolicy | None = None,
+    ) -> torch.Tensor:
+        """Estimate v values by averaging q values of actions sampled from the target policy.
 
-        # use policy to estimate v values
-        policy = self.mc.get("policy", True)
-        rep_states = states.repeat([exp_actions, 1])
+        :param states: A matrix [D, Ds] of states.
+        :param exp_actions: The number of sampled actions K per state.
+        :param policy: The policy to evaluate, defaults to the target policy.
+        :return: A matrix [D, 1] of v values.
+        """
+
+        policy = policy if policy is not None else self.mc.get("policy", True)
         samp_actions = policy.sample_actions(states, num_actions=exp_actions)
-        lin_actions = samp_actions.view([-1, 1])
+        q_vals = self.q_val_multi(states, samp_actions)
+        return torch.mean(q_vals, dim=1, keepdim=True)
 
-        # calculate q values and
-        q_vals = self.q_val(rep_states, lin_actions)
-        q_vals = q_vals.view([-1, exp_actions])
-        v_vals = torch.mean(q_vals, dim=1)
-        v_vals = v_vals.view([-1, 1])
-        return v_vals
+    def q_val_multi(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Evaluate K actions per state.
+
+        :param states: A matrix [D, Ds] of states.
+        :param actions: A matrix [D, K] of (univariate) actions or a tensor [D, K, A] for A action dimensions.
+        :return: A matrix [D, K] of q values.
+        """
+        d, k = actions.shape[:2]
+        rep_states = states.repeat_interleave(k, dim=0)
+        q_vals = self.q_val(rep_states, actions.reshape([d * k, -1]))
+        return q_vals.view([d, k])
 
     def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
 
@@ -106,6 +123,6 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         # build up mse loss for q function
         t_states = torch.Tensor(batch.states)
         t_actions = torch.Tensor(batch.actions)
-        q_vals = self.q_val(t_states, t_actions)
+        q_vals = self.q_val(t_states, t_actions).view(-1)
         q_targets = torch.Tensor(batch["tq"]).view(-1)
         return self.loss(q_vals, q_targets)

@@ -106,14 +106,14 @@ class ContinuousPolicy(Policy, Syncable):
         states = torch.Tensor(batch.states)
         actions = torch.Tensor(batch.actions)
         suff_stats = policy.forward(states)
-        ll = policy.log_prob(actions, suff_stats=suff_stats)
-        old_ll = torch.Tensor(batch.log_likelihoods)
+        ll = policy.log_prob(actions, suff_stats=suff_stats).view(-1)
+        old_ll = torch.Tensor(batch.log_likelihoods).view(-1)
 
         # calculate the ratio term
         a_vals = torch.Tensor(batch["a"])
         mean_a = a_vals.mean()
         std_a = a_vals.std()
-        advantages = (a_vals - mean_a) / std_a
+        advantages = (a_vals - mean_a) / (std_a + 1e-8)
         r = torch.exp(ll - old_ll)
         obj = torch.mean(r * advantages)
         return -obj
