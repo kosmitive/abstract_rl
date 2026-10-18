@@ -66,7 +66,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
 
     # policy neural_modules
     with run_conf.ns("policy"):
-        policy_opt_size = run_conf["opt_steps"]
         policy_batch_size = run_conf["batch_size"]
         sync_steps = run_conf["sync_steps"]
         policy = select_policy(mc)
@@ -79,8 +78,6 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         mc.add_main("alg", alg)
 
     with run_conf.ns("val"):
-        q_opt_steps = run_conf["opt_steps"]
-        q_batch_size = run_conf["batch_size"]
         sync_steps = run_conf["sync_steps"]
         q_network = FullyQNeuralNet(mc)
         mc.add_syncable("q_network", q_network, sync_steps)
@@ -159,21 +156,27 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         # calc value fns and policies
         # --------------------------------
 
-        with cli.header("e-step", 1):
-            # resample extra actions and q values
-            res.transform_all(tc)
-            rnk.hook()
-            rnk.transform_all(tc)
+        alg.sample_constraints()
+        n_updates = alg.num_updates(num_new_steps, policy_batch_size)
+        if alg.eta_solver == "scipy":
+            with cli.header("e-step (scipy temperature)", 1):
+                res.transform_all(tc)
+                rnk.hook()
+                alg.set_eta(float(np.reshape(np.asarray(rnk.b.eta), -1)[0]))
 
-        with cli.header("m-step", 1):
-            alg.perform_mult_steps(policy_opt_size, tc, policy_batch_size)
+        with cli.header(f"policy / critic updates x {n_updates}", 1):
+            # the critic target is stale until the first backup of this epoch
+            need_backup = True
+            for step in range(n_updates):
+                if alg.prepare_targets() or need_backup:
+                    ret.transform_all(tc)
+                    need_backup = False
+                batch = tc.sample(policy_batch_size, ["tq"])
+                q_network.perform_adam_step(step, batch)
+                alg.perform_step(step, batch)
 
-        with cli.header("v-step", 1):
-            ret.transform_all(tc)
-            q_network.perform_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
-
-        # copy target_networks
-        mc.sync()
+        # the learner steps above own the target copy; keep the saved step counter moving once per epoch
+        mc.overall_step += 1
         e += 1
 
     env.close()

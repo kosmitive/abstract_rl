@@ -125,11 +125,14 @@ A training loop is a sequence of operator applications on trajectory collections
 
 - **TRPO** per epoch: collect `policy_batch_size` steps → `TD` operator (returns, bootstrapped at time limits) →
   `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
-- **MPO** per epoch: collect `env_sample` steps into the replay collection → `Resample` operator (actions from the
-  target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric
-  E-step) → KL constrained weighted maximum likelihood (M-step) → `Retrace` operator → Q function fit (Adam).
+- **MPO** per epoch: collect `env_sample` steps into the replay collection. Each learner step (the count follows
+  `mpo_samples_per_insert`) samples actions from the target policy, scores them with the target critic, reweights
+  them with a softmax of `Q / η` and takes a weighted maximum-likelihood step under a decoupled mean / covariance KL.
+  `η` and the multipliers descend their duals on the same step. The critic is fit to Retrace (or an n-step return).
+  Target networks are hard-copied every `policy_sync_steps` / `val_sync_steps` learner steps, or Polyak-averaged.
 
-Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
+Target networks are registered as `Syncable`s in the `ModelConfiguration`. TRPO still copies them with `mc.sync()`
+once per epoch.
 
 ## Development
 

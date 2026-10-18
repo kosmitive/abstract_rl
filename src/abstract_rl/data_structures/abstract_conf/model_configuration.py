@@ -178,3 +178,29 @@ class ModelConfiguration:
                 o.sync(to)
 
         self.overall_step += 1
+
+    def copy_targets(self, keys: list[str] | None = None) -> None:
+        """Hard-copy the online weights onto the target weights.
+
+        :param keys: Syncables to copy. ``None`` copies every registered target.
+        """
+
+        for key, (_, online, target) in self.syncables.items():
+            if keys is None or key in keys:
+                online.sync(target)
+
+    def polyak_targets(self, tau: float, keys: list[str] | None = None) -> None:
+        """Exponential moving average of the online weights into the targets.
+
+        :param tau: Mix of the online weights. One is a hard copy.
+        :param keys: Syncables to average. ``None`` averages every registered target.
+        """
+
+        for key, (_, online, target) in self.syncables.items():
+            if keys is not None and key not in keys:
+                continue
+            with torch.no_grad():
+                for src, dst in zip(online.parameters(), target.parameters()):
+                    dst.mul_(1.0 - tau).add_(src, alpha=tau)
+                for src, dst in zip(online.buffers(), target.buffers()):
+                    dst.copy_(src)

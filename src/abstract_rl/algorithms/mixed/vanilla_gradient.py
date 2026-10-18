@@ -15,16 +15,20 @@ class VanillaGradient:
     Two optimizers are supported: full-batch L-BFGS (scipy) and Adam on mini batches.
     """
 
-    def __init__(self, model: nn.Module, optimizer: str = "lbfgs", lr: float = 1e-3) -> None:
+    def __init__(
+        self, model: nn.Module, optimizer: str = "lbfgs", lr: float = 1e-3, grad_clip: float | None = None
+    ) -> None:
         """
         Add vanilla gradient optimization.
         :param model: The pytorch model to use.
         :param optimizer: Either 'lbfgs' or 'adam'.
         :param lr: The learning rate used by adam.
+        :param grad_clip: Global-norm clip applied after an Adam backward. ``None`` leaves the gradient unchanged.
         """
         self._model = model
         self.cli = CliPrinter().instance
         self.optimizer = optimizer
+        self.grad_clip = grad_clip
 
         self.fmtstr = "%10i | %14.10f | %14.10f"
         self.titlestr = "%10s | %14s | %14s"
@@ -58,6 +62,8 @@ class VanillaGradient:
         self.opt.zero_grad()
         obj = self.tr_obj(batch)
         obj.backward()
+        if self.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self._model.parameters(), self.grad_clip)
         self.opt.step()
         if curst % 10 == 0:
             with torch.no_grad():

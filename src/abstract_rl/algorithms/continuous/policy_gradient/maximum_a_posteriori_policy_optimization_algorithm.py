@@ -4,21 +4,49 @@ import numpy as np
 import torch
 import torch.optim as optim
 
+from abstract_rl.algorithms.continuous.policy_gradient.mpo_loss import (
+    ALPHA_FLOOR,
+    ETA_FLOOR,
+    decoupled_kl_diagonal,
+    decoupled_kl_full,
+    dual_descent_loss,
+    dual_shapes,
+    inverse_softplus,
+    lagrangian_penalty,
+    normalized_weights,
+    project_positive,
+    weighted_log_likelihood,
+)
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
+from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import (
+    find_optimal_temperature,
+    temperature_dual,
+)
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_params_from
+from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
+
+
+def _constraint_value(spec: Any) -> float:
+    """A fixed bound, or one draw from a ``[low, high]`` range."""
+
+    if isinstance(spec, list | tuple):
+        return float(np.random.uniform(float(spec[0]), float(spec[1])))
+    return float(spec)
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
     """
-    Implementation of Maximum A Posteriori Policy optimization (mpo), e.g. see the original paper for more
-    information https://arxiv.org/abs/1806.06920. It estimates the q values using a critic based on retrace, which
-    is not inherent to this algorithm, so it is not defined in this class. From these q values a variational
-    distribution is fitted. This 'reweighted' policy is then used to fit the current iterated policy to the optimal
-    one in a supervised fashion.
+    Maximum a posteriori policy optimization with a non-parametric E-step and a decoupled Gaussian M-step.
+
+    Each update samples actions from the target policy, scores them with the target critic and reweights them with a
+    per-state softmax of ``Q / eta``. ``eta`` and the mean / covariance multipliers are trained by descending their
+    duals alongside the policy. The policy loss is the weighted log likelihood of those actions, with no gradient
+    through the critic or the sampled actions. Set ``eta_solver`` to ``scipy`` to freeze ``eta`` at the L-BFGS dual
+    solution instead of learning it by gradient steps.
     """
 
     def __repr__(self) -> str:
@@ -31,240 +59,194 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         """
         PolicyOptimizationAlgorithm.__init__(self, mc)
 
-        # create lagrange multiplier
         policy = self.mc.get("policy", target=False)
-        num_lagrange_multipliers = policy.get_suff_stats_dim()
+        self.policy_lr = float(self.conf["outer_lr"])
+        self.dual_lr = float(self.conf["inner_lr"])
+        self.l2_reg = float(self.conf.get("l2_reg", 0.0))
+        self.num_actions = int(self.conf.get_root("res_add_acts"))
+        self.eps_eta = float(self.conf.get_root("rnk_eps"))
+        self.eta_solver = str(self.conf.get("eta_solver", "dual"))
+        self.per_dim = bool(self.conf.get("per_dim_constraint", True))
+        grad_clip = self.conf.get("grad_clip", 40.0)
+        self.grad_clip = None if grad_clip is None else float(grad_clip)
+        ratio = self.conf.get("samples_per_insert", None)
+        self.samples_per_insert = None if ratio is None else float(ratio)
+        self.fallback_steps = int(self.conf.get_root("policy_opt_steps"))
+        self._eps_mean_spec = self.conf.get("epsilon_mean", 5e-3)
+        self._eps_std_spec = self.conf.get("epsilon_stddev", 1e-5)
+        self.scipy_steps = int(self.conf.get_root("rnk_max_steps"))
+        self.target_update = str(self.conf.get("target_update", "hard"))
+        self.polyak_tau = float(self.conf.get("polyak_tau", 0.005))
+        self.policy_period = int(self.conf.get_root("policy_sync_steps"))
+        self.critic_period = int(self.conf.get_root("val_sync_steps"))
+        self.cov_type = str(policy.cov_type)
+        self.action_dim = int(mc.env.action_dim)
+        self.learner_steps = 0
+        self.eps_mean = _constraint_value(self._eps_mean_spec)
+        self.eps_std = _constraint_value(self._eps_std_spec)
 
-        # inner and outer learning rated, trust regions and batch size shortcuts
-        self.outer_lr = self.conf["outer_lr"]
-        self.inner_lr = self.conf["inner_lr"]
-        self.mode = self.conf["mode"]
-        self.trust_regions = self.conf["trust_regions"]
-        self.split_objective = self.conf["coordinate_ascent_objective"]
-        self.split_constraint = self.conf["coordinate_ascent_constraint"]
+        init_eta = float(self.conf.get_root("rnk_init_eta"))
+        mean_shape, std_shape = dual_shapes(self.action_dim, self.cov_type, self.per_dim)
+        raw_one = inverse_softplus(torch.tensor(1.0))
+        self.raw_eta = torch.nn.Parameter(inverse_softplus(torch.tensor(init_eta)))
+        self.raw_alpha_mean = torch.nn.Parameter(raw_one.expand(mean_shape).clone())
+        self.raw_alpha_std = torch.nn.Parameter(raw_one.expand(std_shape).clone())
+
+        self.opt_policy = optim.Adam(policy.parameters(), lr=self.policy_lr)
+        dual_params = [self.raw_alpha_mean, self.raw_alpha_std]
+        if self.eta_solver == "dual":
+            dual_params.append(self.raw_eta)
+        self.opt_dual = optim.Adam(dual_params, lr=self.dual_lr)
         self.cli = CliPrinter().instance
-        self.l2_reg = self.conf.get("l2_reg", 0.0)
 
-        num_params = 1 if not self.split_constraint else num_lagrange_multipliers
-        self.lagrange_mults = [torch.nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(num_params)]
-        self.v = self.sample_v()
+    def eta(self) -> torch.Tensor:
+        """Temperature ``eta = max(softplus(raw), 1e-8)``."""
 
-        # optimizers are persistent over all steps, so adam can accumulate its moment estimates
-        self.opt_outer = optim.Adam(policy.parameters(), lr=self.outer_lr)
-        self.opt_inner = optim.Adam(self.lagrange_mults, lr=self.inner_lr)
+        return project_positive(self.raw_eta, ETA_FLOOR)
 
-        self.fmtstr = "%10i | %10.5f" + num_params * " | %10.5f x %10.5f"
-        self.titlestr = "%10s | %10s" + num_params * " | %23s"
+    def alpha_mean(self) -> torch.Tensor:
+        """Mean-constraint multiplier, ``softplus`` clamped at zero."""
 
-    def sample_v(self) -> list[Any]:
-        """Sample new trust regions.
+        return project_positive(self.raw_alpha_mean, ALPHA_FLOOR)
 
-        :return: the new sampled trust regions.
+    def alpha_std(self) -> torch.Tensor:
+        """Covariance-constraint multiplier, ``softplus`` clamped at zero."""
+
+        return project_positive(self.raw_alpha_std, ALPHA_FLOOR)
+
+    def sample_constraints(self) -> None:
+        """Draw this epoch's mean and covariance bounds when the config gives a range."""
+
+        self.eps_mean = _constraint_value(self._eps_mean_spec)
+        self.eps_std = _constraint_value(self._eps_std_spec)
+
+    def set_eta(self, eta: float) -> None:
+        """Freeze the temperature at a solved value (the scipy E-step).
+
+        :param eta: The positive temperature to install.
         """
 
-        samp_trust_regions = self.trust_regions
-        v: list[Any] = [None] * len(samp_trust_regions)
-        for d in range(len(samp_trust_regions)):
-            if isinstance(samp_trust_regions[d], list):
-                v[d] = np.random.uniform(samp_trust_regions[d][0], samp_trust_regions[d][1])
-            else:
-                v[d] = samp_trust_regions[d]
+        raw = inverse_softplus(torch.tensor(max(float(eta), ETA_FLOOR)))
+        with torch.no_grad():
+            self.raw_eta.copy_(raw)
 
-        self.v = v
-        return self.v
+    def solve_eta_scipy(self, q_values: torch.Tensor) -> None:
+        """Minimize the temperature dual with L-BFGS and install the solution.
 
-    def shuffle_up_stats(self, batch: Batch) -> list[torch.Tensor]:
-        """Use this to create a list, where each sufficient statistic from the
-        normal policy is mixed with the target ones, so the objective and
-        constraint can be effectively splitted up.
-
-        :param batch: The batch to use for obtaining the sufficient statistics
-        :return:
+        :param q_values: Q values of shape ``[batch, num_actions]``.
         """
 
-        # get target and correct policy
-        t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get("policy", target=True)
-        policy = self.mc.get("policy", target=False)
+        solved = find_optimal_temperature(
+            q_values.detach(), self.eps_eta, float(self.eta().detach()), max_steps=self.scipy_steps
+        )
+        self.set_eta(float(solved.reshape(-1)[0]))
 
-        # target stats
-        target_suff_stats = t_policy.forward(t_states).detach()
-        suff_stats = policy.forward(t_states)
-        l_suff_stats = []
-        l_suff_stats.append(suff_stats)
+    def num_updates(self, num_inserts: int, batch_size: int) -> int:
+        """How many learner steps to take for the transitions inserted this epoch.
 
-        # for each dimension
-        num_dims = target_suff_stats.size()[1]
-        for d in range(num_dims):
-            lst_els = []
-            if d > 0:
-                lst_els.append(target_suff_stats[:, :d])
-            lst_els.append(suff_stats[:, d : d + 1].view([-1, 1]))
-            if d < num_dims - 1:
-                lst_els.append(target_suff_stats[:, d + 1 :])
-            l_suff_stats.append(torch.cat(lst_els, dim=1))
-
-        return l_suff_stats
-
-    def main_obj(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> torch.Tensor:
-        """Obtain the objective based on the list of sufficient statistics.
-
-        :param batch: The batch to use.
-        :param l_suff_stats: A list of sufficient statistics.
-        :return A list of constraints
+        :param num_inserts: Transitions added to the replay.
+        :param batch_size: Transitions drawn per learner step.
+        :return: The step count. ``samples_per_insert`` wins over the fixed ``policy_opt_steps``.
         """
 
-        # split objective if wanted
-        t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get("policy", target=True)
+        if self.samples_per_insert is None:
+            return self.fallback_steps
+        return max(1, round(num_inserts * self.samples_per_insert / max(batch_size, 1)))
 
-        target_suff_stats = t_policy.forward(t_states).detach()
-        if self.split_objective:
-            # build the objective in a coordinate ascent fashion
-            # iterate over the dimensions
-            num_dims = target_suff_stats.size()[1]
-            obj = torch.zeros(1)
-            for d in range(num_dims):
-                part_obj = self.__lagrange_obj(batch, l_suff_stats[d + 1])
-                obj = obj + part_obj
+    def prepare_targets(self) -> bool:
+        """Hard-copy or Polyak-average the target networks. Returns whether the critic target changed."""
 
-        else:
-            obj = self.__lagrange_obj(batch, l_suff_stats[0])
-
-        return obj
-
-    def main_constraints(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Obtain all constraints using the list of sufficient statistics and the batch.
-
-        :param batch: The batch to use.
-        :param l_suff_stats: A list of sufficient statistics.
-        :return A list of constraints
-        """
-
-        kl = "i-projection" if self.mode == "parametric" else "m-projection"
-        policy = self.mc.get("policy", target=False)
-        t_states = torch.Tensor(batch.states)
-        t_policy = self.mc.get("policy", target=True)
-        target_suff_stats = t_policy.forward(t_states).detach()
-
-        # split constraint if wanted
-        if self.split_constraint:
-            num_dims = target_suff_stats.size()[1]
-            constraints = []
-            for d in range(num_dims):
-                c = self.v[d] - policy.kl_divergence(batch, l_suff_stats[d + 1], kl, "mean")
-                constraints.append(c)
-
-        else:
-            constraints = [(self.v[0] - policy.kl_divergence(batch, l_suff_stats[0], kl, "mean"))]
-
-        return constraints
-
-    def obj(self, batch: Batch) -> torch.Tensor:  # type: ignore[override]
-        """
-        Calculate the objective based on the objective and the splitted kl divergence constraints.
-        :param batch: Batch to estimate objective and constraints
-        :return: A un-detached version of the objective
-        """
-
-        l_suff_stats = self.shuffle_up_stats(batch)
-        obj = self.main_obj(batch, l_suff_stats)
-        constraints = self.main_constraints(batch, l_suff_stats)
-        for lm, c in zip(self.lagrange_mults, constraints):
-            obj = obj + torch.exp(lm) * c
-
-        return obj
+        step = self.learner_steps
+        critic_changed = False
+        match self.target_update:
+            case "polyak":
+                self.mc.polyak_targets(self.polyak_tau)
+                critic_changed = True
+            case "hard":
+                if step % self.policy_period == 0:
+                    self.mc.copy_targets(["policy"])
+                if step % self.critic_period == 0:
+                    self.mc.copy_targets(["q_network"])
+                    critic_changed = True
+            case _:
+                raise ValueError(f"unknown target update {self.target_update}")
+        self.learner_steps = step + 1
+        return critic_changed
 
     def perform_mult_steps(self, num_steps: int, tc: TrajectoryCollection, batch_size: int) -> None:
         """
         Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
-        constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
-        objective is created based on lagrangian multipliers and the theory of min max optimization.
+        constrain is effectively decoupled, so convergence of mean and variance can be controlled separately.
         """
 
-        self.sample_v()
-        self.cli.empty().print(
-            self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
-        )
-
-        # perform a min step
-        for s in range(num_steps):
-            batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
-            self.perform_step(s, batch)
+        self.sample_constraints()
+        for step in range(num_steps):
+            batch = tc.sample(batch_size)
+            self.perform_step(step, batch)
 
     def perform_step(self, step: int, batch: Batch) -> None:
-        """
-        Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
-        constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
-        objective is created based on lagrangian multipliers and the theory of min max optimization.
+        """One policy step and one dual step on a batch of states.
+
+        Actions are drawn from the target policy and scored by the target critic. Neither the weights nor the target
+        networks receive gradients.
         """
 
-        # perform a min step
-        self.__max_step(batch)
-        self.__min_step(batch)
+        states = torch.as_tensor(batch.states, dtype=torch.float32)
+        policy = self.mc.get("policy", target=False)
+        target_policy = self.mc.get("policy", target=True)
+        target_q = self.mc.get("q_network", target=True)
 
-        l_suff_stats = self.shuffle_up_stats(batch)
-        obj = self.main_obj(batch, l_suff_stats)
-        constraints = self.main_constraints(batch, l_suff_stats)
+        with torch.no_grad():
+            target_stats = target_policy.forward(states)
+            actions = target_policy.sample_actions(suff_stats=target_stats, num_actions=self.num_actions)
+            q_values = target_q.q_val_multi(states, actions)
+
+        eta = self.eta().detach() if self.eta_solver == "scipy" else self.eta()
+        weights = normalized_weights(q_values, eta)
+        online_stats = policy.forward(states)
+        log_prob = policy.log_prob(actions, suff_stats=online_stats)
+        likelihood = weighted_log_likelihood(log_prob, weights)
+        kl_mean, kl_std = self._decoupled_kl(policy, online_stats, target_stats)
+
+        policy_loss = -likelihood
+        policy_loss = policy_loss + lagrangian_penalty(kl_mean, self.alpha_mean())
+        policy_loss = policy_loss + lagrangian_penalty(kl_std, self.alpha_std())
+        if self.l2_reg:
+            policy_loss = policy_loss + self.l2_reg * torch.norm(get_flat_params_from(policy))
+
+        match self.eta_solver:
+            case "dual":
+                temperature_loss = temperature_dual(q_values.detach(), self.eta(), self.eps_eta)
+            case "scipy":
+                temperature_loss = online_stats.new_zeros(())
+            case _:
+                raise ValueError(f"unknown eta solver {self.eta_solver}")
+        dual_loss = temperature_loss + dual_descent_loss(kl_mean, self.alpha_mean(), self.eps_mean)
+        dual_loss = dual_loss + dual_descent_loss(kl_std, self.alpha_std(), self.eps_std)
+
+        self.opt_policy.zero_grad()
+        self.opt_dual.zero_grad()
+        policy_loss.backward()
+        dual_loss.backward()
+        if self.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), self.grad_clip)
+        self.opt_policy.step()
+        self.opt_dual.step()
 
         if step % 10 == 0:
-            vals = [float(v.detach()) for pair in zip(self.lagrange_mults, constraints) for v in pair]
-            self.cli.print(self.fmtstr % (step, obj.item(), *vals))
+            self.cli.print(
+                f"{step:6d} | ll {float(likelihood.detach()): .4f} | eta {float(self.eta().detach()): .4f}"
+                f" | kl_mu {float(kl_mean.detach().mean()): .5f} | kl_std {float(kl_std.detach().mean()): .6f}"
+                f" | a_mu {float(self.alpha_mean().detach().mean()): .4f}"
+                f" | a_std {float(self.alpha_std().detach().mean()): .4f}"
+            )
 
-    def __lagrange_obj(self, batch: Batch, suff_stats: torch.Tensor) -> torch.Tensor:
-        """
-        Calculated the reweighted objective needed for the min max problem. This is only partly
-        the objective as the lagrange constraints are missing.
-        :param batch: The batch to use for estimating the objective.
-        :param suff_stats: A matrix containing for each element of the batch a vector of the
-               sufficient statistics.
-        :return: The calculated objective.
-        """
-
-        policy = self.mc.get("policy", target=False)
-
-        # build regularization for mean
-        if self.mode == "parametric":
-            act = torch.Tensor(batch.actions)
-            adv = torch.Tensor(batch["a"])
-
-            # sample sufficient statistics
-            ll = policy.log_prob(act, suff_stats=suff_stats)
-            rew_vals = torch.exp(ll) * adv
-            obj = torch.mean(rew_vals)
-
-        else:
-            t_add_act = torch.Tensor(batch["add_act"])
-            t_add_q = torch.Tensor(batch["grad_ranking"])
-
-            # sample sufficient statistics
-            # weighted maximum likelihood: E_s [ sum_a q(a|s) log pi(a|s) ], where q(a|s) is normalized per state
-            ll = policy.log_prob(t_add_act, suff_stats=suff_stats)
-            rew_vals = torch.exp(t_add_q) * ll
-            obj = torch.mean(torch.sum(rew_vals, dim=1))
-
-        w = get_flat_params_from(policy)
-        return obj - self.l2_reg * torch.norm(w)
-
-    def __max_step(self, batch: Batch) -> None:
-        """
-        Solves the minimization problem targeting the policy parameters only.
-        """
-
-        # optimize
-        self.opt_outer.zero_grad()
-        obj = -self.obj(batch)
-        obj.backward()
-        self.opt_outer.step()
-
-    def __min_step(self, batch: Batch) -> None:
-        """
-        Solves the minimization problem targeting the lagrange multiplies. Note that they have to be
-        positive.
-        """
-
-        # training step
-        self.opt_inner.zero_grad()
-        obj = self.obj(batch)
-        obj.backward()
-        self.opt_inner.step()
+    def _decoupled_kl(
+        self, policy: Any, online_stats: torch.Tensor, target_stats: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.cov_type == "full":
+            assert isinstance(policy, DiagonalGaussianPolicy)
+            mu_online, factor_online = policy.cholesky(online_stats)
+            mu_target, factor_target = policy.cholesky(target_stats)
+            return decoupled_kl_full(mu_online, factor_online, mu_target, factor_target, self.per_dim)
+        return decoupled_kl_diagonal(online_stats, target_stats, self.per_dim)

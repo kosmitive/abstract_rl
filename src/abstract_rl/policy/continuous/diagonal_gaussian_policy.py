@@ -116,6 +116,9 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         self.action_scale: torch.Tensor
         self.register_buffer("action_center", torch.as_tensor(center, dtype=torch.float32))
         self.register_buffer("action_scale", torch.as_tensor(scale, dtype=torch.float32))
+        self.register_buffer("action_low", torch.as_tensor(low, dtype=torch.float32))
+        self.register_buffer("action_high", torch.as_tensor(high, dtype=torch.float32))
+        self.clip_actions = "clip_actions" in run_conf and bool(run_conf["clip_actions"])
 
         # create policy network, the activations of the mu / sigma outputs are applied inside of the network.
         # a full covariance keeps one activation name per layer and softplus-es only diag L
@@ -133,7 +136,12 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             af, sigma_acts = head_activations(run_conf["act_fn"], a_dim)
         self._sigma_is_softplus = sigma_is_softplus(sigma_acts)
         self.network = MultilayerPerceptron(
-            mc, hidden_neurons=structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
+            mc,
+            hidden_neurons=structure,
+            act_fn=af,
+            layer_norm=run_conf["layer_norm"],
+            init=run_conf["init"],
+            layernorm_tanh="layernorm_tanh" in run_conf and bool(run_conf["layernorm_tanh"]),
         )
         self.add_module("nn", self.network)
         if self.cov_type in ("state", "full"):
@@ -176,7 +184,7 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             sigma = torch.clamp(sigma, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(sigma) + SIGMA_MIN
         else:
             mu = self.network.forward(states)
-            sigma = torch.exp(self.cov).expand_as(mu)
+            sigma = torch.clamp(torch.exp(self.cov), min=SIGMA_MIN).expand_as(mu)
         return torch.cat([mu, sigma], dim=1)
 
     def _diag_index(self) -> list[int]:
@@ -190,6 +198,15 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         diagonal = torch.clamp(diagonal, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(diagonal) + SIGMA_MIN
         index = torch.tensor(idx, device=packed.device).view(1, -1).expand(packed.shape[0], -1)
         return packed.scatter(1, index, diagonal)
+
+    def cholesky(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Mean and the lower-triangular factor of a full-covariance statistic.
+
+        :param suff_stats: Rows ``[mu, packed L]`` produced by ``forward``.
+        :return: Mean of shape ``[batch, A]`` and factor of shape ``[batch, A, A]``.
+        """
+
+        return self._mu_factor(suff_stats)
 
     def _mu_factor(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Mean and the lower-triangular Cholesky factor ``L`` of a full-covariance statistic row."""
@@ -255,7 +272,11 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         :return: A matrix [D, A] with the most likely (mean) action of each state.
         """
         mu, _ = self._split(self._suff_stats(states, suff_stats))
-        return self.action_center + self.action_scale * torch.tanh(mu) if self.squash else mu
+        if self.squash:
+            return self.action_center + self.action_scale * torch.tanh(mu)
+        if self.clip_actions:
+            return torch.maximum(torch.minimum(mu, self.action_high), self.action_low)
+        return mu
 
     def sample_actions(
         self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
@@ -276,6 +297,8 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             u = Normal(mu.unsqueeze(1), sigma.unsqueeze(1)).rsample([num_actions]).transpose(0, 1).squeeze(2)
         if self.squash:
             u = self.action_center + self.action_scale * torch.tanh(torch.clamp(u, -SQUASH_U_MAX, SQUASH_U_MAX))
+        elif self.clip_actions:
+            u = torch.maximum(torch.minimum(u, self.action_high), self.action_low)
         return u.contiguous()
 
     def clone(self) -> "DiagonalGaussianPolicy":

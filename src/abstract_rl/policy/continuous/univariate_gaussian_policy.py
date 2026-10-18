@@ -74,7 +74,12 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # optionally squash the gaussian with tanh into the (symmetric) action bounds of the environment, so the
         # policy and the q function only ever see actions which the environment actually executes
         self.squash = bool(run_conf.get("squash", False))
+        self.clip_actions = "clip_actions" in run_conf and bool(run_conf["clip_actions"])
         self.action_scale = float(np.max(np.abs(mc.env.action_space.high)))
+        low = float(np.min(mc.env.action_space.low))
+        high = float(np.max(mc.env.action_space.high))
+        self.register_buffer("action_low", torch.tensor([low], dtype=torch.float32))
+        self.register_buffer("action_high", torch.tensor([high], dtype=torch.float32))
 
         # create policy network
         sd = mc.env.observation_dim
@@ -83,7 +88,12 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         af = run_conf["act_fn"]
         self._sigma_is_softplus = _sigma_head_is_softplus(af)
         self.network = MultilayerPerceptron(
-            mc, hidden_neurons=policy_net_structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
+            mc,
+            hidden_neurons=policy_net_structure,
+            act_fn=af,
+            layer_norm=run_conf["layer_norm"],
+            init=run_conf["init"],
+            layernorm_tanh="layernorm_tanh" in run_conf and bool(run_conf["layernorm_tanh"]),
         )
         self.add_module("nn", self.network)
         if self.cov_type == "state":
@@ -118,8 +128,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         else:
             mu = self.network.forward(states)
-            fw = torch.exp(self.cov_variable)
-            sigma = fw.expand_as(mu)
+            sigma = torch.clamp(torch.exp(self.cov_variable), min=SIGMA_MIN).expand_as(mu)
             return torch.cat([mu, sigma], 1)
 
     def log_prob(
@@ -168,7 +177,11 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             assert states is not None
             suff_stats = self.forward(states)
         mu = suff_stats[:, 0:1]
-        return self.action_scale * torch.tanh(mu) if self.squash else mu
+        if self.squash:
+            return self.action_scale * torch.tanh(mu)
+        if self.clip_actions:
+            return torch.maximum(torch.minimum(mu, self.action_high), self.action_low)
+        return mu
 
     def sample_actions(
         self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
@@ -197,6 +210,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         samples = std_normal.rsample([num_actions]).t().contiguous()
         if self.squash:
             samples = self.action_scale * torch.tanh(torch.clamp(samples, -SQUASH_U_MAX, SQUASH_U_MAX))
+        elif self.clip_actions:
+            samples = torch.maximum(torch.minimum(samples, self.action_high), self.action_low)
         return samples
 
     def clone(self) -> "UnivariateGaussianPolicy":

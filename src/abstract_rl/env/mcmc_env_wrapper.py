@@ -6,6 +6,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from gymnasium.spaces.box import Box
+from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from gymnasium.wrappers import NormalizeObservation
 from numpy import ndarray
 
@@ -71,9 +72,15 @@ class MCMCEnvWrapper:
         self._obs_scale = np.where(np.isfinite(high) & (high > 0), high, 1.0)
 
         # affine reward transform r' = reward_scale * r + reward_offset used for training only (evaluation scripts
-        # report the raw environment return)
+        # report the raw environment return). reward_clip, when set, clips that transformed reward to [-c, c].
+        # num_envs above 1 collects with a gymnasium SyncVectorEnv; the default of one keeps the serial rollout.
+        raw = conf.to_dict()
+        self.num_envs = int(raw["num_envs"]) if "env_num_envs" in raw else 1
         self._reward_scale = float(conf.get("reward_scale", 1.0))
         self._reward_offset = float(conf.get("reward_offset", 0.0))
+        clip = raw.get("env_reward_clip")
+        self._reward_clip = None if clip is None else float(clip)
+        self._vec: SyncVectorEnv | None = None
 
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
@@ -88,6 +95,31 @@ class MCMCEnvWrapper:
     def _preprocess(self, obs: ndarray) -> ndarray:
         obs = np.asarray(obs, dtype=np.float64)
         return obs / self._obs_scale if self._normalize else obs
+
+    def _shape_reward(self, reward: float) -> float:
+        """Training reward: scale, shift, then optional symmetric clip."""
+
+        shaped = self._reward_scale * float(reward) + self._reward_offset
+        if self._reward_clip is not None:
+            shaped = float(np.clip(shaped, -self._reward_clip, self._reward_clip))
+        return shaped
+
+    def _normalize_raw(self, obs: ndarray) -> ndarray:
+        """Normalise raw vector-env observations with the shared running statistics, then scale bounds.
+
+        The serial rollout normalises inside ``NormalizeObservation`` and only calls ``_preprocess``. This path is for
+        the vector env, whose sub-environments are unwrapped.
+        """
+
+        values = np.asarray(obs, dtype=np.float64)
+        single = values.ndim == 1
+        batch = values.reshape(1, -1) if single else values
+        if self._norm is not None:
+            if self._norm.update_running_mean:
+                self._norm.obs_rms.update(batch)
+            batch = (batch - self._norm.obs_rms.mean) / np.sqrt(self._norm.obs_rms.var + self._norm.epsilon)
+        processed = self._preprocess(batch)
+        return processed[0] if single else processed
 
     def reset(self) -> ndarray:
         """
@@ -123,14 +155,18 @@ class MCMCEnvWrapper:
         :return: A trajectory collection.
         """
 
-        t = 0
-        k = 0
-        trajectories = []
-        while t < batch_size:
-            tr = self.execute_policy_once(max_steps, policy, render and k == 0, opt=not exploration)
-            trajectories.append(tr)
-            t += len(tr)
-            k += 1
+        if self.num_envs > 1:
+            trajectories = self._collect_vector(policy, max_steps, batch_size, exploration)
+            t = sum(len(traj) for traj in trajectories)
+        else:
+            t = 0
+            k = 0
+            trajectories = []
+            while t < batch_size:
+                tr = self.execute_policy_once(max_steps, policy, render and k == 0, opt=not exploration)
+                trajectories.append(tr)
+                t += len(tr)
+                k += 1
 
         if rew_field_name is not None:
             # the logged return is the one of the environment, not of the (optionally scaled) training reward
@@ -206,7 +242,7 @@ class MCMCEnvWrapper:
                 cs = self._preprocess(cs)
                 self.state_filter.register(cs)
                 raw_return += float(r)
-                r = self._reward_scale * float(r) + self._reward_offset
+                r = self._shape_reward(r)
                 self.reward_filter.register(np.asarray([r], dtype=np.float64))
 
                 t += 1
@@ -230,6 +266,95 @@ class MCMCEnvWrapper:
 
     def close(self) -> None:
         self.env.close()
+        if self._vec is not None:
+            self._vec.close()
+
+    def _vector_env(self) -> SyncVectorEnv:
+        """Lazy gymnasium vector env. Sub-environments are raw; observation stats stay on this wrapper."""
+
+        if self._vec is None:
+            name = self.env_name
+
+            def make() -> gym.Env:
+                return gym.make(name)
+
+            self._vec = SyncVectorEnv([make for _ in range(self.num_envs)], autoreset_mode=AutoresetMode.DISABLED)
+        return self._vec
+
+    def _collect_vector(
+        self, policy: ContinuousPolicy, max_steps: int, batch_size: int, exploration: bool
+    ) -> list[Trajectory]:
+        """Collect transitions from ``num_envs`` copies stepped together until ``batch_size`` is reached."""
+
+        vec = self._vector_env()
+        if self._seed is not None:
+            obs, _ = vec.reset(seed=int(self._seed))
+            self._seed = None
+        else:
+            obs, _ = vec.reset()
+        obs = self._normalize_raw(np.asarray(obs))
+        builders = [self._new_builder(row) for row in obs]
+
+        taken = np.zeros(self.num_envs, dtype=np.int64)
+        raw_return = np.zeros(self.num_envs, dtype=np.float64)
+        trajectories: list[Trajectory] = []
+        total = 0
+        with torch.no_grad():
+            while total < batch_size:
+                actions, log_prob = self._vector_actions(policy, obs, not exploration)
+                nxt, rewards, terminated, truncated, _ = vec.step(actions)
+                nxt = self._normalize_raw(np.asarray(nxt))
+                ended = np.zeros(self.num_envs, dtype=bool)
+                for i in range(self.num_envs):
+                    raw_return[i] += float(rewards[i])
+                    shaped = self._shape_reward(float(rewards[i]))
+                    self.reward_filter.register(np.asarray([shaped], dtype=np.float64))
+                    self.state_filter.register(nxt[i])
+                    builders[i].observe(actions[i], shaped, nxt[i], float(log_prob[i]), int(terminated[i]))
+                    taken[i] += 1
+                    if terminated[i] or truncated[i] or taken[i] >= max_steps:
+                        traj = builders[i].finalize()
+                        traj.raw_return = float(raw_return[i])
+                        trajectories.append(traj)
+                        total += len(traj)
+                        ended[i] = True
+                        raw_return[i] = 0.0
+                        taken[i] = 0
+                if not np.any(ended):
+                    obs = nxt
+                    continue
+                reset_obs, _ = vec.reset(options={"reset_mask": ended})
+                fresh = self._normalize_raw(np.asarray(reset_obs)[ended])
+                obs = nxt.copy()
+                obs[ended] = fresh
+                cursor = 0
+                for i in range(self.num_envs):
+                    if not ended[i]:
+                        continue
+                    builders[i] = self._new_builder(fresh[cursor])
+                    cursor += 1
+        return trajectories
+
+    def _new_builder(self, state: ndarray) -> TrajectoryBuilder:
+        self.state_filter.register(state)
+        with self.thread_lock:
+            new_id = self.created_trajectories
+            self.created_trajectories += 1
+        return TrajectoryBuilder(new_id, self, state)
+
+    def _vector_actions(self, policy: ContinuousPolicy, obs: ndarray, opt: bool) -> tuple[ndarray, ndarray]:
+        """Actions and log probabilities for a batch of observations. Actions have shape ``[num_envs, action_dim]``."""
+
+        states = torch.as_tensor(obs, dtype=torch.float32)
+        stats = policy.forward(states)
+        if opt:
+            chosen = policy.mode(suff_stats=stats)
+        else:
+            sampled = policy.sample_actions(suff_stats=stats, num_actions=1)
+            chosen = sampled if sampled.ndim == 2 else sampled[:, 0]
+        log_prob = policy.log_prob(chosen, suff_stats=stats).reshape(-1)
+        actions = chosen.reshape(states.shape[0], self.action_dim).detach().cpu().numpy().astype(np.float64)
+        return actions, log_prob.detach().cpu().numpy()
 
     def frozen_eval_env(self, render_mode: str) -> gym.Env:
         """New env for greedy eval. Observation stats are the training ones and do not update."""

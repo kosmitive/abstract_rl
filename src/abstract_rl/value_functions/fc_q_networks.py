@@ -25,6 +25,7 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
+from abstract_rl.value_functions.distributional import c51_expectation, c51_loss, mixture_mean, mog_nll
 
 
 class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
@@ -44,8 +45,13 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
 
         # neural nets
         layer_norm = conf.get("layer_norm", False)
+        layernorm_tanh = bool(conf.get("layernorm_tanh", False))
         init = conf.get("init", "orthogonal")
         def_fn = conf["act_fn"]
+        self.distributional = str(conf.get("distributional", "none"))
+        self.n_atoms = int(conf.get("n_atoms", 51))
+        self.n_components = int(conf.get("n_components", 5))
+        grad_clip = conf.get("grad_clip", None)
 
         # shortcut for state and action dim
         sd = mc.env.observation_dim
@@ -55,13 +61,37 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.env = mc.env
         self.mc = mc
         self.loss = torch.nn.MSELoss()
+        match self.distributional:
+            case "none":
+                out_dim = 1
+            case "c51":
+                out_dim = self.n_atoms
+                atoms = torch.linspace(float(conf.get("v_min", -100.0)), float(conf.get("v_max", 100.0)), self.n_atoms)
+                self.register_buffer("atoms", atoms)
+            case "mog":
+                out_dim = 3 * self.n_components
+            case _:
+                raise ValueError(f"unknown distributional critic {self.distributional}")
 
         # neural nets
-        self.fc_net = MultilayerPerceptron(mc, np.concatenate(([sd + ad], struct, [1])), def_fn, layer_norm, init)
+        self.fc_net = MultilayerPerceptron(
+            mc,
+            np.concatenate(([sd + ad], struct, [out_dim])),
+            def_fn,
+            layer_norm,
+            init,
+            layernorm_tanh=layernorm_tanh,
+        )
         self.add_module("neural_net", self.fc_net)
 
         # set up trust regions
-        VanillaGradient.__init__(self, self.fc_net, conf.get("optimizer", "lbfgs"), conf.get("lr", 1e-3))
+        VanillaGradient.__init__(
+            self,
+            self.fc_net,
+            conf.get("optimizer", "lbfgs"),
+            conf.get("lr", 1e-3),
+            None if grad_clip is None else float(grad_clip),
+        )
 
     def clone(self) -> "FullyQNeuralNet":
         """Clones the Neural Network"""
@@ -114,17 +144,35 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         q_vals = self.q_val(rep_states, actions.reshape([d * k, -1]))
         return q_vals.view([d, k])
 
-    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def _features(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return self.fc_net.forward(torch.cat([states, actions], dim=1))
 
-        comb = torch.cat([states, actions], dim=1)
-        q_vals = self.fc_net.forward(comb)
-        return q_vals
+    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Scalar Q. A distributional head returns the mean of its distribution."""
+
+        raw = self._features(states, actions)
+        match self.distributional:
+            case "none":
+                return raw
+            case "c51":
+                return c51_expectation(raw, self.atoms)
+            case "mog":
+                return mixture_mean(raw, self.n_components)
+            case _:
+                raise ValueError(f"unknown distributional critic {self.distributional}")
 
     def tr_obj(self, batch: Batch) -> torch.Tensor:
+        """Mean squared error, or the distributional loss when that head is enabled."""
 
-        # build up mse loss for q function
-        t_states = torch.Tensor(batch.states)
-        t_actions = torch.Tensor(batch.actions)
-        q_vals = self.q_val(t_states, t_actions).view(-1)
+        t_states = torch.as_tensor(batch.states, dtype=torch.float32)
+        t_actions = torch.as_tensor(batch.actions, dtype=torch.float32)
         q_targets = torch.as_tensor(batch["tq"], dtype=torch.float32).view(-1)
-        return self.loss(q_vals, q_targets)
+        match self.distributional:
+            case "none":
+                return self.loss(self.q_val(t_states, t_actions).view(-1), q_targets)
+            case "c51":
+                return c51_loss(self._features(t_states, t_actions), q_targets, self.atoms)
+            case "mog":
+                return mog_nll(self._features(t_states, t_actions), q_targets, self.n_components)
+            case _:
+                raise ValueError(f"unknown distributional critic {self.distributional}")

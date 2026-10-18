@@ -1,20 +1,25 @@
-# MPO defaults (tuned on Pendulum-v1)
+# MPO defaults, aligned with the Acme control-suite agent where that agent is specific.
+# ε_μ is usually tuned in [1e-2, 5e-3] and ε_Σ in [1e-5, 1e-6]; a two-element list is sampled uniformly each epoch.
 name: mpo
 reload: false
 seed: 1
 env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
+env_num_envs: 1
 env_render: false
+env_reward_clip: null
 policy_structure: [64, 64]
 policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false
+policy_layernorm_tanh: false
 policy_init: xavier_gaussian
-policy_sync_steps: 1
+policy_sync_steps: 100
 policy_sigma: 1.0
 # single (default), fixed, state, or full: state-dependent Cholesky L(s)
 policy_cov_type: single
 policy_squash: true
+policy_clip_actions: false
 filter_states: false
 filter_rewards: false
 obs_norm: false
@@ -26,34 +31,47 @@ env_sample: 1000
 # off policy memory (number of transitions)
 tc_size: 50000
 mem_bootstrap_steps: 5
-# retrace
+# retrace (ret_operator: retrace | nstep). ret_add_acts is the critic's action sample for V(s)
+ret_operator: retrace
 ret_lambda: 1.0
 ret_add_acts: 20
 res_add_acts: 20
-# non-parametric e-step
+# non-parametric e-step. eta_solver dual learns η with the network step; scipy keeps the L-BFGS solve
 rnk_eps: 0.1
 rnk_lr: 0.0003
 rnk_init_eta: 1.0
 rnk_max_steps: 200
-# fully connected neural q function
+# fully connected neural q function. distributional: none | c51 | mog
 val_struct: [256, 256]
 val_optimizer: adam
-val_lr: 0.001
+val_lr: 0.0001
 val_opt_steps: 1000
 val_batch_size: 256
 val_layer_norm: false
+val_layernorm_tanh: false
 val_act_fn: [elu, elu, none]
 val_init: xavier_gaussian
-val_sync_steps: 1
+val_sync_steps: 100
 val_ret_lambda: 1.0
 val_l2_reg: 0.0
+val_grad_clip: 40.0
+val_distributional: none
+val_n_atoms: 51
+val_v_min: -100.0
+val_v_max: 100.0
+val_n_components: 5
 policy_opt_steps: 100
 policy_batch_size: 256
-# m-step
+# m-step. outer_lr is the policy, inner_lr the dual variables
 mpo_inner_lr: 0.01
-mpo_outer_lr: 0.0003
+mpo_outer_lr: 0.0001
 mpo_mode: non-parametric
-mpo_trust_regions: [0.01]
-mpo_coordinate_ascent_objective: false
-mpo_coordinate_ascent_constraint: false
+mpo_epsilon_mean: 0.005
+mpo_epsilon_stddev: 1.0e-5
+mpo_per_dim_constraint: true
+mpo_eta_solver: dual
+mpo_grad_clip: 40.0
+mpo_samples_per_insert: 32.0
+mpo_target_update: hard
+mpo_polyak_tau: 0.005
 mpo_l2_reg: 0.0
