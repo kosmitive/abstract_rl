@@ -184,6 +184,9 @@ class MCMCEnvWrapper:
         env.close()
         return traj
 
+    def close(self) -> None:
+        self.env.close()
+
     @property
     def observation_space(self) -> Box:
         """
