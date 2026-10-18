@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 
-from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
+from abstract_rl.data_structures.abstract_conf.hierarchical_conf import NamespacedConfig
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 
 if TYPE_CHECKING:
-    from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+    from abstract_rl.env.env_runner import EnvRunner
 
 
 class ModelConfiguration:
@@ -53,7 +53,7 @@ class ModelConfiguration:
             self.overall_step = 0
             self.env: Any = None
             conf["reload_dir"] = self.run_root
-            self.add_main("conf", SharedConf(conf))
+            self.add_main("conf", NamespacedConfig(conf))
 
             self.model_root = join(self.run_root, "model")
             if not exists(self.model_root):
@@ -76,7 +76,7 @@ class ModelConfiguration:
                 file_str = file_conf.read()
 
                 stored_conf = json.loads(file_str)
-            self.add_main("conf", SharedConf(stored_conf))
+            self.add_main("conf", NamespacedConfig(stored_conf))
 
     def __getitem__(self, key: str) -> Any:
         """
@@ -130,17 +130,17 @@ class ModelConfiguration:
         ti = 1 if not target else 2
         return self.data[key] if key in self.data else self.syncables[key][ti]
 
-    def add_environment(self, env: "MCMCEnvWrapper") -> None:
+    def add_environment(self, env: "EnvRunner") -> None:
         """
         Adds an environment.
         :param env: The environment to add internally.
         """
-        from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper  # local, the wrapper imports this module
+        from abstract_rl.env.env_runner import EnvRunner  # local, the wrapper imports this module
 
-        assert isinstance(env, MCMCEnvWrapper)
+        assert isinstance(env, EnvRunner)
         self.env = env
 
-    def get_environment(self) -> "MCMCEnvWrapper":
+    def get_environment(self) -> "EnvRunner":
         """
         Pass back an environment.
         :return: Return the internal instance of environment.

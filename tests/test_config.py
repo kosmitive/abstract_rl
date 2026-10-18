@@ -1,9 +1,9 @@
-from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
+from abstract_rl.data_structures.abstract_conf.hierarchical_conf import NamespacedConfig
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 
 
 def test_namespaces():
-    conf = SharedConf({"policy_lr": 0.1, "seed": 3})
+    conf = NamespacedConfig({"policy_lr": 0.1, "seed": 3})
     assert conf["seed"] == 3
     with conf.ns("policy"):
         assert conf["lr"] == 0.1

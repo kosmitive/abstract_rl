@@ -8,7 +8,7 @@ from abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder
 )
 
 
-class VariationalRankingOperator(TrajectoryOperator):
+class VariationalReweightingOperator(TrajectoryOperator):
     """
     Represents a variational reweighting operator see https://arxiv.org/abs/1806.06920.
     """

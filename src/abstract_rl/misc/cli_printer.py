@@ -77,19 +77,19 @@ class CliPrinter:
             self.print_and_write("")
             return self
 
-        def indent(self, num: int = 1) -> "CliClosure":
-            return CliClosure("indent", self.ver_stack[-1][1], num)
+        def indent(self, num: int = 1) -> "CliSection":
+            return CliSection("indent", self.ver_stack[-1][1], num)
 
-        def big_header(self, title: str, verbose: bool = True) -> "CliClosure":
+        def big_header(self, title: str, verbose: bool = True) -> "CliSection":
             if verbose:
                 self.empty().line(title).dbl_line()
             assert len(self.ver_stack) == 1
-            return CliClosure(title, verbose, 0)
+            return CliSection(title, verbose, 0)
 
-        def header(self, title: str, verbose: bool = True) -> "CliClosure":
+        def header(self, title: str, verbose: bool = True) -> "CliSection":
             if verbose:
                 self.empty().line(title).line()
-            return CliClosure(title, verbose, 1)
+            return CliSection(title, verbose, 1)
 
         def line(self, header: str | None = None) -> Any:
             """
@@ -127,7 +127,7 @@ class CliPrinter:
         return self._instance
 
 
-class CliClosure:
+class CliSection:
     def __init__(self, closure_name: str, verbose: bool = True, indent: int = 0) -> None:
         self.closure_name = closure_name
         self.verbose = verbose

@@ -5,20 +5,20 @@ import numpy as np
 import torch
 from numpy import ndarray
 
-from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
+from abstract_rl.algorithms.continuous.policy_gradient.trpo import TRPOAlgorithm
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.env_runner import EnvRunner
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
 from abstract_rl.operator.filter_operator import FilterOperator
-from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
+from abstract_rl.operator.gae_operator import GAEOperator
 from abstract_rl.operator.td_operator import TemporalDifferenceOperator
-from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.plots.return_plot import ReturnPlot
 from abstract_rl.policy.continuous.select_policy import select_policy
-from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
+from abstract_rl.value_functions.value_network import ValueNetwork
 
 
 # title of the script
@@ -48,13 +48,13 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     # create an environment wrapper
     with run_conf.ns("env"):
         render = run_conf["render"]
-        env = MCMCEnvWrapper(mc)
+        env = EnvRunner(mc)
         mc.add_environment(env)
 
     # define namespace for v
     with run_conf.ns("val"):
         sync_steps = run_conf["sync_steps"]
-        v_network = FullyVNeuralNet(mc)
+        v_network = ValueNetwork(mc)
         mc.add_syncable("v_network", v_network, sync_steps)
 
     # policy neural_modules
@@ -74,7 +74,7 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
         mc.add_main("td", td_op)
 
     with run_conf.ns("gae"):
-        gae = GeneralizedAdvantagesEstimationOperator(mc)
+        gae = GAEOperator(mc)
         mc.add_main("gae", gae)
 
     alg_name = run_conf["alg"]
@@ -86,7 +86,7 @@ def run_trpo(conf: dict[str, Any]) -> ndarray:
     stoch_reward = "sreward"
 
     # create a new reward plot
-    rew_plot = RewardValueFunctionPlot()
+    rew_plot = ReturnPlot()
     logger.create_field(stoch_reward, 2)
     # number of environment steps collected in each epoch (for plotting learning curves over samples)
     logger.create_field("steps", 1)

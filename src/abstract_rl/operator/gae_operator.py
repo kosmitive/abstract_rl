@@ -5,7 +5,7 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory import Traj
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
-class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
+class GAEOperator(TrajectoryOperator):
     """
     Represents a generalized advantage estimation operator based upon https://arxiv.org/abs/1506.02438.
     """

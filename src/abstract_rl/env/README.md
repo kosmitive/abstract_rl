@@ -10,7 +10,7 @@ gymnasium environments is introduced it can be used to execute a policy for a gi
 # create an environment wrapper
 with conf.ns('env'):
     num_traj = conf['traj_evaluations']
-    env = MCMCEnvWrapper(mc)
+    env = EnvRunner(mc)
     mc.add_environment(env)
 
 [...]

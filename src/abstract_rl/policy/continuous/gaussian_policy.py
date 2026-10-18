@@ -54,7 +54,7 @@ def sigma_is_softplus(sigma_acts: Sequence[Any]) -> bool:
     return flags.pop()
 
 
-class DiagonalGaussianPolicy(ContinuousPolicy):
+class GaussianPolicy(ContinuousPolicy):
     """
     Gaussian policy with a diagonal covariance for action spaces of any dimension A. The sufficient statistics are
     ``[mu_1..mu_A, sigma_1..sigma_A]``. Optionally the sample is squashed with a tanh into the per dimension bounds
@@ -73,7 +73,7 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
 
     def __init__(self, mc: ModelConfiguration) -> None:
         """
-        Initializes a new diagonal gaussian policy.
+        Initializes a new Gaussian policy.
         :param mc: The model configuration to use.
         """
         super().__init__(mc)
@@ -278,16 +278,16 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             u = self.action_center + self.action_scale * torch.tanh(torch.clamp(u, -SQUASH_U_MAX, SQUASH_U_MAX))
         return u.contiguous()
 
-    def clone(self) -> "DiagonalGaussianPolicy":
+    def clone(self) -> "GaussianPolicy":
         """
         Clones the current instance.
         :return: A new identical clones instance of the current.
         """
-        v = DiagonalGaussianPolicy(self.mc)
+        v = GaussianPolicy(self.mc)
         self.sync(v)
         return v
 
-    def sync(self, v: "DiagonalGaussianPolicy") -> "DiagonalGaussianPolicy":
+    def sync(self, v: "GaussianPolicy") -> "GaussianPolicy":
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.

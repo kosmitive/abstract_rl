@@ -5,7 +5,7 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory import Traj
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
-class ResampleOperator(TrajectoryOperator):
+class ActionSamplingOperator(TrajectoryOperator):
     """
     Samples for each state additional actionsa and equips
     """
@@ -15,7 +15,7 @@ class ResampleOperator(TrajectoryOperator):
 
     def __init__(self, mc: ModelConfiguration) -> None:
         """
-        Initializes a new retrace operator.
+        Initializes a new action sampling operator.
         :param mc: The model configuration with env and so on.
         """
         assert isinstance(mc, ModelConfiguration)

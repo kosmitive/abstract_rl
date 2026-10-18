@@ -8,8 +8,8 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 
 class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
     """
-    Represents a trust region policy optimization algorithm, where it uses v-trace and generalized advantage
-    estimation for providing off policy advantages and then used these values to maximize the estimated objective,
+    Represents a trust region policy optimization algorithm, where it uses generalized advantage
+    estimation for providing advantages and then used these values to maximize the estimated objective,
     while full filling the kl constraint. See https://arxiv.org/abs/1502.05477 for more details.
     """
 

@@ -13,7 +13,7 @@ c = {
     'res_add_acts': 20,
 }
 
-sc = SharedConf(c)
+sc = NamespacedConfig(c)
 print(sc['env_name']) # Pendulum-v1
 
 with sc.ns('env'):
@@ -32,7 +32,7 @@ given rate, when sync() is called.
     # create an environment wrapper
     with conf.ns('env'):
         num_traj = conf['traj_evaluations']
-        env = MCMCEnvWrapper(mc)
+        env = EnvRunner(mc)
         mc.add_environment(env)
 
     # create the memory and get some settings

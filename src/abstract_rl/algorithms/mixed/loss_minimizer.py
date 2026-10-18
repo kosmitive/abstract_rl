@@ -9,15 +9,15 @@ from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_grad_from, get_flat_params_from, set_flat_params_to
 
 
-class VanillaGradient:
-    """Simple vanilla gradient. Simply inherit from this class to add support.
+class LossMinimizer:
+    """Simple loss minimizer. Simply inherit from this class to add support.
 
     Two optimizers are supported: full-batch L-BFGS (scipy) and Adam on mini batches.
     """
 
     def __init__(self, model: nn.Module, optimizer: str = "lbfgs", lr: float = 1e-3) -> None:
         """
-        Add vanilla gradient optimization.
+        Add loss minimization.
         :param model: The pytorch model to use.
         :param optimizer: Either 'lbfgs' or 'adam'.
         :param lr: The learning rate used by adam.

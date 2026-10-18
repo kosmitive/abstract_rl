@@ -25,18 +25,18 @@ from numpy import ndarray
 from PIL import Image
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.env_runner import EnvRunner
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
-def load_policy(run_dir: str) -> tuple[MCMCEnvWrapper, ContinuousPolicy]:
+def load_policy(run_dir: str) -> tuple[EnvRunner, ContinuousPolicy]:
     """Rebuild environment wrapper and policy of a stored run and load the last policy parameters."""
     mc = ModelConfiguration({"reload": True, "reload_dir": run_dir})
     conf = mc["conf"]
     conf["env_render"] = False
     with conf.ns("env"):
-        env = MCMCEnvWrapper(mc)
+        env = EnvRunner(mc)
         mc.add_environment(env)
     with conf.ns("policy"):
         policy = select_policy(mc)
@@ -46,7 +46,7 @@ def load_policy(run_dir: str) -> tuple[MCMCEnvWrapper, ContinuousPolicy]:
 
 
 def run_episode(
-    env_wrapper: MCMCEnvWrapper, policy: ContinuousPolicy, env: gym.Env, seed: int, frames: list[Any] | None = None
+    env_wrapper: EnvRunner, policy: ContinuousPolicy, env: gym.Env, seed: int, frames: list[Any] | None = None
 ) -> tuple[float, ndarray]:
     """Run one episode with the policy mean. Returns the episodic return and the angle at each step."""
     obs, _ = env.reset(seed=seed)

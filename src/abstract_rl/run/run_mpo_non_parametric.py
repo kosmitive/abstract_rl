@@ -5,24 +5,24 @@ import numpy as np
 import torch
 from numpy import ndarray
 
-from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
+from abstract_rl.algorithms.continuous.policy_gradient.mpo import (
     MPOAlgorithm,
 )
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.env_runner import EnvRunner
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
 from abstract_rl.operator.filter_operator import FilterOperator
-from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
-from abstract_rl.operator.resample_actions_operator import ResampleOperator
+from abstract_rl.operator.resample_actions_operator import ActionSamplingOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
-from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.operator.reweighting_operator import VariationalReweightingOperator
+from abstract_rl.plots.return_plot import ReturnPlot
 from abstract_rl.policy.continuous.select_policy import select_policy
-from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
+from abstract_rl.value_functions.q_network import QNetwork
 
 # title of the script
 
@@ -55,7 +55,7 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         render = run_conf["render"]
         num_new_steps = run_conf["sample"]
         num_traj = run_conf["traj_evaluations"]
-        env = MCMCEnvWrapper(mc)
+        env = EnvRunner(mc)
         mc.add_environment(env)
 
     # create the memory and get some settings
@@ -82,7 +82,7 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
         q_opt_steps = run_conf["opt_steps"]
         q_batch_size = run_conf["batch_size"]
         sync_steps = run_conf["sync_steps"]
-        q_network = FullyQNeuralNet(mc)
+        q_network = QNetwork(mc)
         mc.add_syncable("q_network", q_network, sync_steps)
 
     with run_conf.ns("filter"):
@@ -96,19 +96,19 @@ def run_mpo_non_parametric(conf: dict[str, Any]) -> ndarray:
 
     # push resample
     with run_conf.ns("res"):
-        res = ResampleOperator(mc)
+        res = ActionSamplingOperator(mc)
         mc.add_main("res", res)
 
     # push resample
     with run_conf.ns("rnk"):
-        rnk = VariationalRankingOperator(mc)
+        rnk = VariationalReweightingOperator(mc)
         mc.add_main("rnk", rnk)
 
     # names for rewards
     stoch_reward = "sreward"
 
     # create a new reward plot
-    rew_plot = RewardValueFunctionPlot()
+    rew_plot = ReturnPlot()
     logger.create_field(stoch_reward, 2)
     # number of environment steps collected in each epoch (for plotting learning curves over samples)
     logger.create_field("steps", 1)

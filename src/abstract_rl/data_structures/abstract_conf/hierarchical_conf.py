@@ -1,7 +1,7 @@
 from typing import Any
 
 
-class SharedConf:
+class NamespacedConfig:
     """
     Represents a hierarchical namespace based configuration. One can push names and pop names.
     """
@@ -72,10 +72,10 @@ class SharedConf:
         s = self.__to_prefix_identifier(self.names)
         self.__data[f"{s}{key}"] = item
 
-    def ns(self, name: str) -> "HConfWrapper":
-        return HConfWrapper(self, name)
+    def ns(self, name: str) -> "ConfigNamespace":
+        return ConfigNamespace(self, name)
 
-    def push(self, name: str) -> "SharedConf":
+    def push(self, name: str) -> "NamespacedConfig":
         """
         Push a new namespace internally.
         :param name: The new namespace to push.
@@ -84,7 +84,7 @@ class SharedConf:
         self.names.append(name)
         return self
 
-    def pop(self) -> "SharedConf":
+    def pop(self) -> "NamespacedConfig":
         """
         Pops the last namespace, if one is available..
         :return: The object itself.
@@ -112,8 +112,8 @@ class SharedConf:
         return self.__data
 
 
-class HConfWrapper:
-    def __init__(self, hconf: SharedConf, name: str) -> None:
+class ConfigNamespace:
+    def __init__(self, hconf: NamespacedConfig, name: str) -> None:
         self.name = [name]
         self.hconf = hconf
 
@@ -123,6 +123,6 @@ class HConfWrapper:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         [self.hconf.pop() for name in self.name]
 
-    def add(self, name: str) -> "HConfWrapper":
+    def add(self, name: str) -> "ConfigNamespace":
         self.name.append(name)
         return self

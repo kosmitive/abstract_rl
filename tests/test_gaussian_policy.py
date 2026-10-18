@@ -5,8 +5,8 @@ import pytest
 import torch
 from torch.distributions import MultivariateNormal, Normal
 
-from abstract_rl.policy.continuous.diagonal_gaussian_policy import (
-    DiagonalGaussianPolicy,
+from abstract_rl.policy.continuous.gaussian_policy import (
+    GaussianPolicy,
     head_activations,
     sigma_is_softplus,
 )
@@ -21,7 +21,7 @@ class _Batch:
         self.states = states
 
 
-def _policy(make_pendulum_mc, env="TestPointMass-v0", cls=DiagonalGaussianPolicy, **overrides):
+def _policy(make_pendulum_mc, env="TestPointMass-v0", cls=GaussianPolicy, **overrides):
     mc = make_pendulum_mc(env_name=env, **overrides)
     with mc["conf"].ns("policy"):
         return cls(mc)
@@ -36,13 +36,11 @@ def _force_head(policy, mu_pre, sigma_pre):
 
 
 def test_select_policy_uses_the_diagonal_policy_for_multi_dimensional_actions(make_pendulum_mc):
-    assert isinstance(_policy(make_pendulum_mc, cls=select_policy), DiagonalGaussianPolicy)
+    assert isinstance(_policy(make_pendulum_mc, cls=select_policy), GaussianPolicy)
     assert isinstance(_policy(make_pendulum_mc, "Pendulum-v1", select_policy), UnivariateGaussianPolicy)
-    assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_type="diagonal"), DiagonalGaussianPolicy)
-    assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_cov_type="full"), DiagonalGaussianPolicy)
-    assert isinstance(
-        _policy(make_pendulum_mc, "Pendulum-v1", select_policy, policy_cov_type="full"), DiagonalGaussianPolicy
-    )
+    assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_type="diagonal"), GaussianPolicy)
+    assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_cov_type="full"), GaussianPolicy)
+    assert isinstance(_policy(make_pendulum_mc, "Pendulum-v1", select_policy, policy_cov_type="full"), GaussianPolicy)
 
 
 def test_shapes(make_pendulum_mc):
@@ -155,7 +153,7 @@ def test_squashed_log_prob_matches_the_change_of_variables(make_pendulum_mc):
 def test_kl_divergence_matches_the_per_dimension_sum_and_monte_carlo(make_pendulum_mc):
     mc = make_pendulum_mc(env_name="TestPointMass-v0", policy_cov_type="state", policy_squash=True)
     with mc["conf"].ns("policy"):
-        policy = DiagonalGaussianPolicy(mc)
+        policy = GaussianPolicy(mc)
         mc.add_syncable("policy", policy, 1)
     states = torch.randn(3, 4)
     batch = _Batch(states.numpy())
@@ -189,7 +187,7 @@ def test_kl_divergence_matches_the_per_dimension_sum_and_monte_carlo(make_pendul
 def test_one_dimensional_diagonal_policy_equals_the_univariate_policy(make_pendulum_mc):
     mc = make_pendulum_mc(policy_cov_type="state", policy_squash=True)
     with mc["conf"].ns("policy"):
-        diag, uni = DiagonalGaussianPolicy(mc), UnivariateGaussianPolicy(mc)
+        diag, uni = GaussianPolicy(mc), UnivariateGaussianPolicy(mc)
     uni.network.load_state_dict(diag.network.state_dict())
     states = torch.randn(6, 3)
     sd, su = diag.forward(states), uni.forward(states)
@@ -231,7 +229,7 @@ def test_full_covariance_log_prob_matches_multivariate_normal(make_pendulum_mc):
 def test_full_covariance_kl_of_a_policy_with_itself_is_zero(make_pendulum_mc):
     mc = make_pendulum_mc(env_name="TestPointMass-v0", policy_cov_type="full", policy_squash=True)
     with mc["conf"].ns("policy"):
-        policy = DiagonalGaussianPolicy(mc)
+        policy = GaussianPolicy(mc)
         mc.add_syncable("policy", policy, 1)
     batch = _Batch(np.random.default_rng(0).normal(size=(6, 4)).astype(np.float32))
     # TRPO uses the m-projection mean, MPO the same total KL

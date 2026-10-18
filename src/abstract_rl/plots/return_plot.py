@@ -4,9 +4,8 @@ from numpy import ndarray
 from abstract_rl.plots.plot import Plot
 
 
-class RewardValueFunctionPlot(Plot):
-    """A plot capable of displaying a graph along with the value function
-    and the actions used in each state."""
+class ReturnPlot(Plot):
+    """A plot of the average episodic return and its confidence band."""
 
     def __init__(self) -> None:
         super().__init__("Average Total Reward", None)

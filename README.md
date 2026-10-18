@@ -107,11 +107,11 @@ src/abstract_rl/
 ├── algorithms/
 │   ├── continuous/policy_gradient/   TRPO and MPO (policy update rules)
 │   └── mixed/                        conjugate gradient, trust region gradient (natural gradient + line search),
-│                                     vanilla gradient (L-BFGS / Adam), non-parametric temperature dual
+│                                     loss minimizer (L-BFGS / Adam), non-parametric temperature dual
 ├── data_structures/
-│   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
+│   ├── abstract_conf/                NamespacedConfig (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryBuilder, TrajectoryCollection (replay), Batch
-├── env/                              MCMCEnvWrapper: runs whole episodes of a policy in a Gymnasium env
+├── env/                              EnvRunner: runs whole episodes of a policy in a Gymnasium env
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
 ├── policy/                           univariate and diagonal Gaussian policy (+ select_policy), non-parametric policy
 ├── value_functions/                  fully connected V and Q networks
@@ -125,8 +125,8 @@ A training loop is a sequence of operator applications on trajectory collections
 
 - **TRPO** per epoch: collect `policy_batch_size` steps → `TD` operator (returns, bootstrapped at time limits) →
   `GAE` operator → natural gradient step with KL trust region → V function fit (L-BFGS).
-- **MPO** per epoch: collect `env_sample` steps into the replay collection → `Resample` operator (actions from the
-  target policy, evaluated by the target Q) → temperature dual + `VariationalRanking` operator (non-parametric
+- **MPO** per epoch: collect `env_sample` steps into the replay collection → `ActionSampling` operator (actions from the
+  target policy, evaluated by the target Q) → temperature dual + `VariationalReweighting` operator (non-parametric
   E-step) → KL constrained weighted maximum likelihood (M-step) → `Retrace` operator → Q function fit (Adam).
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
@@ -148,7 +148,7 @@ module layout and operator design. In short:
   (`terminated`/`truncated`); modern PyTorch APIs.
 - Removed (still in the history of `main`): the experimental SAC, the dueling Q network, the circular tail
   memory, the robot specific scripts, unused helpers.
-- Added: `DiagonalGaussianPolicy` for multi-dimensional actions, tanh action squashing, table driven benchmark
+- Added: `GaussianPolicy` for multi-dimensional actions, tanh action squashing, table driven benchmark
   configs, return based evaluation, SB3 baselines.
 - Bug fixes needed for both algorithms to learn (see the commit history):
   TRPO surrogate broadcast (`[D,1]*[D]`), target-policy sync without sigma, time-limit episodes treated as terminal,

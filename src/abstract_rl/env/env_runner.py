@@ -14,11 +14,11 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory import Traj
 from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
-from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
+from abstract_rl.misc.running_standardizer import RunningStandardizer
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 
 
-class MCMCEnvWrapper:
+class EnvRunner:
     """
     Environment wrapper for gymnasium environments. Adds support for executing a whole trajectory based on a policy,
     instead of only giving a step based interface to the outside.
@@ -75,8 +75,8 @@ class MCMCEnvWrapper:
         self._reward_scale = float(conf.get("reward_scale", 1.0))
         self._reward_offset = float(conf.get("reward_offset", 0.0))
 
-        self.state_filter = RunningCenteredFilter("states", self.observation_dim)
-        self.reward_filter = RunningCenteredFilter("rewards", 1)
+        self.state_filter = RunningStandardizer("states", self.observation_dim)
+        self.reward_filter = RunningStandardizer("rewards", 1)
 
     def discount(self) -> float:
         """

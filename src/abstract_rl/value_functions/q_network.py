@@ -18,16 +18,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
+from abstract_rl.algorithms.mixed.loss_minimizer import LossMinimizer
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
-from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
+from abstract_rl.policy.continuous.gaussian_policy import GaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
-class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
+class QNetwork(nn.Module, Syncable, LossMinimizer):
     """Fully connected neural network."""
 
     def __init__(self, mc: ModelConfiguration) -> None:
@@ -61,18 +61,18 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.add_module("neural_net", self.fc_net)
 
         # set up trust regions
-        VanillaGradient.__init__(self, self.fc_net, conf.get("optimizer", "lbfgs"), conf.get("lr", 1e-3))
+        LossMinimizer.__init__(self, self.fc_net, conf.get("optimizer", "lbfgs"), conf.get("lr", 1e-3))
 
-    def clone(self) -> "FullyQNeuralNet":
+    def clone(self) -> "QNetwork":
         """Clones the Neural Network"""
 
         # first of all clone the module using the subclass and
         # then fill all hierarchically lower elements.
-        v = FullyQNeuralNet(self.mc)
+        v = QNetwork(self.mc)
         self.sync(v)
         return v
 
-    def sync(self, v: "FullyQNeuralNet") -> "FullyQNeuralNet":
+    def sync(self, v: "QNetwork") -> "QNetwork":
         """Clones the Neural Network"""
 
         self.fc_net.sync(v.fc_net)
@@ -87,7 +87,7 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self,
         states: torch.Tensor,
         exp_actions: int = 10,
-        policy: DiagonalGaussianPolicy | UnivariateGaussianPolicy | None = None,
+        policy: GaussianPolicy | UnivariateGaussianPolicy | None = None,
     ) -> torch.Tensor:
         """Estimate v values by averaging q values of actions sampled from the target policy.
 

@@ -1,9 +1,9 @@
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
+from abstract_rl.policy.continuous.gaussian_policy import GaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
-def select_policy(mc: ModelConfiguration) -> UnivariateGaussianPolicy | DiagonalGaussianPolicy:
+def select_policy(mc: ModelConfiguration) -> UnivariateGaussianPolicy | GaussianPolicy:
     """
     Creates the gaussian policy configured in the current namespace of the model configuration.
 
@@ -14,12 +14,12 @@ def select_policy(mc: ModelConfiguration) -> UnivariateGaussianPolicy | Diagonal
     :return: The new policy.
     """
     if mc["conf"].get("cov_type", "single") == "full":
-        return DiagonalGaussianPolicy(mc)
+        return GaussianPolicy(mc)
     kind = mc["conf"].get("type", "auto")
     if kind == "auto":
         kind = "univariate" if mc.env.action_dim == 1 else "diagonal"
     if kind == "univariate":
         return UnivariateGaussianPolicy(mc)
     if kind == "diagonal":
-        return DiagonalGaussianPolicy(mc)
+        return GaussianPolicy(mc)
     raise NotImplementedError(f"unknown policy type {kind}")

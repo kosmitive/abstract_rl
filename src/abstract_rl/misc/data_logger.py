@@ -7,7 +7,7 @@ from numpy import float64, ndarray
 
 class DataLogger:
     """
-    Logs data to a csv file during the epochs
+    Logs data during the epochs, one text file per field.
     """
 
     def __init__(self, fp: str) -> None:

@@ -3,7 +3,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+from abstract_rl.algorithms.mixed.temperature_dual import find_optimal_temperature
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy

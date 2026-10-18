@@ -2,14 +2,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
+from abstract_rl.algorithms.mixed.loss_minimizer import LossMinimizer
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
-class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
+class ValueNetwork(nn.Module, Syncable, LossMinimizer):
     """Fully connected neural network."""
 
     def __init__(self, mc: ModelConfiguration) -> None:
@@ -40,18 +40,18 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.add_module("neural_net", self.net)
 
         # set up trust regions
-        VanillaGradient.__init__(self, self.net)
+        LossMinimizer.__init__(self, self.net)
 
-    def clone(self) -> "FullyVNeuralNet":
+    def clone(self) -> "ValueNetwork":
         """Clones the Neural Network"""
 
         # first of all clone the module using the subclass and
         # then fill all hierarchically lower elements.
-        v = FullyVNeuralNet(self.mc)
+        v = ValueNetwork(self.mc)
         self.sync(v)
         return v
 
-    def sync(self, v: "FullyVNeuralNet") -> "FullyVNeuralNet":
+    def sync(self, v: "ValueNetwork") -> "ValueNetwork":
         """Clones the Neural Network"""
 
         self.net.sync(v.net)

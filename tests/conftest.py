@@ -65,10 +65,10 @@ def mpo_conf(tmp_path):
 
 @pytest.fixture
 def make_pendulum_mc(trpo_conf):
-    """Factory for a model configuration with a Pendulum-v1 MCMCEnvWrapper registered, built like run_trpo does.
+    """Factory for a model configuration with a Pendulum-v1 EnvRunner registered, built like run_trpo does.
     Keyword arguments override entries of the tiny TRPO configuration, e.g. ``policy_cov_type="state"``."""
     from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-    from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+    from abstract_rl.env.env_runner import EnvRunner
     from abstract_rl.misc.data_logger import DataLogger
 
     def make(**overrides):
@@ -76,7 +76,7 @@ def make_pendulum_mc(trpo_conf):
         mc = ModelConfiguration(conf)
         mc.add_main("log", DataLogger(mc.data_dir))
         with mc["conf"].ns("env"):
-            mc.add_environment(MCMCEnvWrapper(mc))
+            mc.add_environment(EnvRunner(mc))
         return mc
 
     return make

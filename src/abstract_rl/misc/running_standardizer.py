@@ -7,7 +7,7 @@ from numpy import ndarray
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
-class RunningCenteredFilter:
+class RunningStandardizer:
     def __init__(self, name: str, dim: int, std_dev_noise: float = 1e-8, clip: int = 5) -> None:
 
         # build running variables

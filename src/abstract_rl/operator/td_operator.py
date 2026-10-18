@@ -7,7 +7,8 @@ from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 class TemporalDifferenceOperator(TrajectoryOperator):
     """
-    Represents a generalized advantage estimation operator based upon https://arxiv.org/abs/1506.02438.
+    Represents a temporal-difference operator. It writes the discounted return and the one-step TD error,
+    bootstrapping from the value of the last state when the trajectory was truncated.
     """
 
     def __repr__(self) -> str:
@@ -15,7 +16,7 @@ class TemporalDifferenceOperator(TrajectoryOperator):
 
     def __init__(self, mc: ModelConfiguration) -> None:
         """
-        Initializes a new generalized advantage estimator.
+        Initializes a new temporal-difference operator.
         :param mc: The model configuration to use.
         """
         assert isinstance(mc, ModelConfiguration)
