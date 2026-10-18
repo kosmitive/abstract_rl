@@ -44,7 +44,7 @@ def select_activation(name: str | None) -> nn.Module:
     elif name.lower() == "tanh":
         return nn.Tanh()
 
-    elif name == "sigmoid":
+    elif name.lower() == "sigmoid":
         return nn.Sigmoid()
 
     raise NotImplementedError(f"unknown activation {name}")

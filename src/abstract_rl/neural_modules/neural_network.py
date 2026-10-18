@@ -112,7 +112,7 @@ class MultilayerPerceptron(nn.Module, Syncable):
         for layer_idx in range(1, num_layers):
             # assemble linear part, layer norm and activation for each layer
             linear_f = self.layers[layer_idx](out)
-            act = self.act_fn[layer_idx] if len(self.act_fn) > 0 else self.act_fn[0]
+            act = self.act_fn[layer_idx] if len(self.act_fn) > 1 else self.act_fn[0]
             if isinstance(act, list):
                 splitted_ts = list(torch.split(linear_f, 1, dim=1))
                 for i in range(len(splitted_ts)):
