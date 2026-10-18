@@ -22,6 +22,7 @@ from abstract_rl.data_structures.abstract_conf.model_configuration import ModelC
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
+from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
@@ -85,7 +86,7 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self,
         states: torch.Tensor,
         exp_actions: int = 10,
-        policy: UnivariateGaussianPolicy | None = None,
+        policy: DiagonalGaussianPolicy | UnivariateGaussianPolicy | None = None,
     ) -> torch.Tensor:
         """Estimate v values by averaging q values of actions sampled from the target policy.
 

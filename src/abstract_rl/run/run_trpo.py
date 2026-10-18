@@ -16,7 +16,7 @@ from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
 from abstract_rl.operator.td_operator import TemporalDifferenceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
-from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
+from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 
 
@@ -62,7 +62,7 @@ def run_trpo(conf: Any) -> np.ndarray:
     with conf.ns("policy"):
         policy_batch_size = conf["batch_size"]
         sync_steps = conf["sync_steps"]
-        policy = UnivariateGaussianPolicy(mc)
+        policy = select_policy(mc)
         mc.add_syncable("policy", policy, sync_steps)
 
     with conf.ns("filter"):

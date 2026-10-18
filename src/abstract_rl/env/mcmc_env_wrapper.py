@@ -177,7 +177,7 @@ class MCMCEnvWrapper:
 
             # prepare for usage
             ll = float(ll.detach().reshape(-1)[0])
-            a = a.detach().numpy()[0]
+            a = a.detach().reshape(-1).numpy().astype(np.float64)
             cs, r, terminated, truncated, _info = env.step(a)
             done = terminated or truncated
             cs = self._preprocess(cs)

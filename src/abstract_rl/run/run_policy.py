@@ -8,7 +8,7 @@ import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
-from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
+from abstract_rl.policy.continuous.select_policy import select_policy
 
 
 def run_policy(dir: str, episodes: int = 5, render: bool = False, stochastic: bool = False) -> list[float]:
@@ -33,7 +33,7 @@ def run_policy(dir: str, episodes: int = 5, render: bool = False, stochastic: bo
 
     # policy neural_modules
     with conf.ns("policy"):
-        policy = UnivariateGaussianPolicy(mc)
+        policy = select_policy(mc)
         policy.load_state_dict(torch.load(join(dir, "model/last", "policy.data")))
 
     returns = []

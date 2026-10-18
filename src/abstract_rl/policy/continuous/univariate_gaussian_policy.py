@@ -1,3 +1,4 @@
+import math
 from typing import Any, cast
 
 import numpy as np
@@ -12,6 +13,9 @@ from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 
+# pre-squash samples are limited to |u| <= 5, so tanh stays invertible in float32
+SQUASH_U_MAX = 5.0
+SQUASH_BOUND = math.tanh(SQUASH_U_MAX)
 SIGMA_MIN = 1e-6
 
 
@@ -66,6 +70,11 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             self.num_output_net = 1
         else:
             raise NotImplementedError(f"unknown covariance type {self.cov_type}")
+
+        # optionally squash the gaussian with tanh into the (symmetric) action bounds of the environment, so the
+        # policy and the q function only ever see actions which the environment actually executes
+        self.squash = bool(run_conf.get("squash", False))
+        self.action_scale = np.max(np.abs(mc.env.action_space.high))
 
         # create policy network
         sd = mc.env.observation_dim
@@ -133,8 +142,15 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # extract mu and sigma depending on settings
         mu, sigma = torch.split(suff_stats, 1, dim=1)
         std_normal = Normal(mu[:, 0], sigma[:, 0])
-        ll = std_normal.log_prob(actions.t())
-        return ll.t().contiguous()
+        if not self.squash:
+            ll = std_normal.log_prob(actions.t())
+            return ll.t().contiguous()
+
+        # change of variables a = c * tanh(u): log p(a) = log N(u) - log(c * (1 - tanh(u)^2))
+        y = torch.clamp(actions / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
+        u = torch.atanh(y)
+        ll = std_normal.log_prob(u.t()).t() - torch.log(self.action_scale * (1 - y.pow(2)))
+        return ll
 
     def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
 
@@ -146,7 +162,8 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         if suff_stats is None:
             assert states is not None
             suff_stats = self.forward(states)
-        return suff_stats[:, 0:1]
+        mu = suff_stats[:, 0:1]
+        return self.action_scale * torch.tanh(mu) if self.squash else mu
 
     def sample_actions(
         self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
@@ -172,8 +189,10 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # extract mu and sigma depending on settings
         mu, sigma = torch.split(suff_stats, 1, dim=1)
         std_normal = Normal(mu[:, 0], sigma[:, 0])
-        samples = std_normal.rsample([num_actions])
-        return samples.t().contiguous()
+        samples = std_normal.rsample([num_actions]).t().contiguous()
+        if self.squash:
+            samples = self.action_scale * torch.tanh(torch.clamp(samples, -SQUASH_U_MAX, SQUASH_U_MAX))
+        return samples
 
     def clone(self) -> "UnivariateGaussianPolicy":
         """
@@ -196,6 +215,9 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         return v
 
     def entropy(self, batch: Batch) -> torch.Tensor:
+        if self.squash:
+            # tanh squashed gaussians have no closed form entropy, the gaussian entropy would ignore the jacobian
+            raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
         policy = self.mc.get("policy", False)
         t_states = torch.Tensor(batch.states)
         suff_stats = policy.forward(t_states)

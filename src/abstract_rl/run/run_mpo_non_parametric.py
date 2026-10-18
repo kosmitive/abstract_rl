@@ -20,7 +20,7 @@ from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
-from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
+from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
 
@@ -67,7 +67,7 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         policy_opt_size = conf["opt_steps"]
         policy_batch_size = conf["batch_size"]
         sync_steps = conf["sync_steps"]
-        policy = UnivariateGaussianPolicy(mc)  # select_policy(mc)
+        policy = select_policy(mc)
         mc.add_syncable("policy", policy, sync_steps)
 
     # get obj_watcher
