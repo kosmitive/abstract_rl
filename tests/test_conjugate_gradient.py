@@ -3,17 +3,23 @@ import torch
 from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
 
 
-def test_mult_conjugate_gradients():
+def _solve(a, b, max_k=20, tol=1e-10):
+    x = conjugate_gradient(lambda v: a @ v, b, max_k, tol)
+    return x, torch.norm(a @ x - b)
+
+
+def test_identity():
     n = 3
-    A = torch.eye(n)
-    b = torch.ones(n)
-    _test_conjugate_gradients(A, b, 20, 1e-3)
+    _, residual = _solve(torch.eye(n), torch.ones(n))
+    assert residual < 1e-3
 
 
-def _test_conjugate_gradients(A, b, max_k=20, damping=1e-5):
-    def fnA(v):
-        return A @ v
-
-    x = conjugate_gradient(fnA, b, max_k, damping)
-    diff = torch.norm(fnA(x) - b)
-    assert diff < 1e-3
+def test_random_spd_matrix():
+    torch.manual_seed(0)
+    n = 10
+    m = torch.randn(n, n, dtype=torch.float64)
+    a = m @ m.T + n * torch.eye(n, dtype=torch.float64)
+    b = torch.randn(n, dtype=torch.float64)
+    x, residual = _solve(a, b, max_k=50)
+    assert residual < 1e-6
+    torch.testing.assert_close(x, torch.linalg.solve(a, b))
