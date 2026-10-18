@@ -25,7 +25,13 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
-from abstract_rl.value_functions.distributional import c51_expectation, c51_loss, mixture_mean, mog_nll
+from abstract_rl.value_functions.distributional import (
+    mixture_mean,
+    mog_sample_nll,
+    project_mixture_samples,
+    sample_mixture,
+    split_mixture,
+)
 
 
 class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
@@ -48,9 +54,13 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         layernorm_tanh = bool(conf.get("layernorm_tanh", False))
         init = conf.get("init", "orthogonal")
         def_fn = conf["act_fn"]
-        self.distributional = str(conf.get("distributional", "none"))
-        self.n_atoms = int(conf.get("n_atoms", 51))
+        # critic_type "mog" is the optional mixture-of-Gaussians head; "none" is the scalar critic
+        self.critic_type = str(conf.get("critic_type", "none"))
         self.n_components = int(conf.get("n_components", 5))
+        self.mog_init_scale = float(conf.get("mog_init_scale", 1e-3))
+        self.value_samples = int(conf.get("mog_value_samples", 128))
+        raw_conf = mc["conf"].to_dict()
+        self.bootstrap_actions = int(raw_conf.get("res_add_acts", 20))
         grad_clip = conf.get("grad_clip", None)
 
         # shortcut for state and action dim
@@ -61,18 +71,13 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.env = mc.env
         self.mc = mc
         self.loss = torch.nn.MSELoss()
-        match self.distributional:
+        match self.critic_type:
             case "none":
                 out_dim = 1
-            case "c51":
-                out_dim = self.n_atoms
-                atoms = torch.linspace(float(conf.get("v_min", -100.0)), float(conf.get("v_max", 100.0)), self.n_atoms)
-                self.atoms: torch.Tensor
-                self.register_buffer("atoms", atoms)
             case "mog":
                 out_dim = 3 * self.n_components
             case _:
-                raise ValueError(f"unknown distributional critic {self.distributional}")
+                raise ValueError(f"unknown critic type {self.critic_type}")
 
         # neural nets
         self.fc_net = MultilayerPerceptron(
@@ -148,32 +153,63 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
     def _features(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         return self.fc_net.forward(torch.cat([states, actions], dim=1))
 
-    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        """Scalar Q. A distributional head returns the mean of its distribution."""
+    def _mixture(self, states: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Means, softplus scales and logits of the mixture at each state-action pair."""
 
-        raw = self._features(states, actions)
-        match self.distributional:
+        return split_mixture(self._features(states, actions), self.n_components, self.mog_init_scale)
+
+    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Scalar Q. The mixture head returns the mean of its components."""
+
+        match self.critic_type:
             case "none":
-                return raw
-            case "c51":
-                return c51_expectation(raw, self.atoms)
+                return self._features(states, actions)
             case "mog":
-                return mixture_mean(raw, self.n_components)
+                means, _, logits = self._mixture(states, actions)
+                return mixture_mean(means, logits)
             case _:
-                raise ValueError(f"unknown distributional critic {self.distributional}")
+                raise ValueError(f"unknown critic type {self.critic_type}")
 
     def tr_obj(self, batch: Batch) -> torch.Tensor:
-        """Mean squared error, or the distributional loss when that head is enabled."""
+        """Mean squared error, or the mixture negative log likelihood when that head is enabled."""
 
-        t_states = torch.as_tensor(batch.states, dtype=torch.float32)
-        t_actions = torch.as_tensor(batch.actions, dtype=torch.float32)
-        q_targets = torch.as_tensor(batch["tq"], dtype=torch.float32).view(-1)
-        match self.distributional:
+        match self.critic_type:
             case "none":
+                t_states = torch.as_tensor(batch.states, dtype=torch.float32)
+                t_actions = torch.as_tensor(batch.actions, dtype=torch.float32)
+                q_targets = torch.as_tensor(batch["tq"], dtype=torch.float32).view(-1)
                 return self.loss(self.q_val(t_states, t_actions).view(-1), q_targets)
-            case "c51":
-                return c51_loss(self._features(t_states, t_actions), q_targets, self.atoms)
             case "mog":
-                return mog_nll(self._features(t_states, t_actions), q_targets, self.n_components)
+                return self._mog_loss(batch)
             case _:
-                raise ValueError(f"unknown distributional critic {self.distributional}")
+                raise ValueError(f"unknown critic type {self.critic_type}")
+
+    def _mog_loss(self, batch: Batch) -> torch.Tensor:
+        """Sample-based cross-entropy of the reward-and-discount projection of the target mixture.
+
+        Actions at the next state are drawn from the target policy. Samples from the target critic at those actions
+        are projected by ``reward + discount * (1 - done) * sample`` and scored by the online mixture. Neither the
+        target critic nor the target policy receives a gradient.
+        """
+
+        states = torch.as_tensor(batch.states, dtype=torch.float32)
+        actions = torch.as_tensor(batch.actions, dtype=torch.float32)
+        rewards = torch.as_tensor(batch.rewards, dtype=torch.float32)
+        next_states = torch.as_tensor(batch.next_states, dtype=torch.float32)
+        dones = torch.as_tensor(batch.dones, dtype=torch.float32)
+        means, scales, logits = self._mixture(states, actions)
+
+        with torch.no_grad():
+            target_policy = self.mc.get("policy", True)
+            target_q = self.mc.get("q_network", True)
+            next_actions = target_policy.sample_actions(next_states, num_actions=self.bootstrap_actions)
+            count = int(next_actions.shape[1])
+            flat_next = next_states.repeat_interleave(count, dim=0)
+            flat_actions = next_actions.reshape(next_states.shape[0] * count, -1)
+            target_means, target_scales, target_logits = target_q._mixture(flat_next, flat_actions)
+            draws = sample_mixture(target_means, target_scales, target_logits, self.value_samples)
+            draws = draws.reshape(self.value_samples, next_states.shape[0], count)
+            draws = draws.permute(2, 0, 1).reshape(count * self.value_samples, next_states.shape[0])
+
+        projected = project_mixture_samples(draws, rewards, self.env.discount(), dones)
+        return mog_sample_nll(means, scales, logits, projected)

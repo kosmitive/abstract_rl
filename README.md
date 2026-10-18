@@ -129,6 +129,9 @@ A training loop is a sequence of operator applications on trajectory collections
   `mpo_samples_per_insert`) samples actions from the target policy, scores them with the target critic, reweights
   them with a softmax of `Q / η` and takes a weighted maximum-likelihood step under a decoupled mean / covariance KL.
   `η` and the multipliers descend their duals on the same step. The critic is fit to Retrace (or an n-step return).
+  `val_critic_type: mog` swaps that scalar fit for an optional mixture-of-Gaussians critic, off by default: the head
+  emits logits, means and softplus scales, and the loss is the negative log likelihood of samples from the target
+  mixture after the reward and discount backup. The E-step still reads the mixture mean.
   Target networks are hard-copied every `policy_sync_steps` / `val_sync_steps` learner steps, or Polyak-averaged.
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration`. TRPO still copies them with `mc.sync()`

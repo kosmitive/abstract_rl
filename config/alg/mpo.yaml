@@ -41,7 +41,7 @@ rnk_eps: 0.1
 rnk_lr: 0.0003
 rnk_init_eta: 1.0
 rnk_max_steps: 200
-# fully connected neural q function. distributional: none | c51 | mog
+# fully connected neural q function. critic_type: none | mog (Acme mixture of Gaussians, off by default)
 val_struct: [256, 256]
 val_optimizer: adam
 val_lr: 0.0001
@@ -55,11 +55,10 @@ val_sync_steps: 100
 val_ret_lambda: 1.0
 val_l2_reg: 0.0
 val_grad_clip: 40.0
-val_distributional: none
-val_n_atoms: 51
-val_v_min: -100.0
-val_v_max: 100.0
+val_critic_type: none
 val_n_components: 5
+val_mog_init_scale: 0.001
+val_mog_value_samples: 128
 policy_opt_steps: 100
 policy_batch_size: 256
 # m-step. outer_lr is the policy, inner_lr the dual variables

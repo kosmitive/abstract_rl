@@ -25,7 +25,15 @@ from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.scripts.hydra_conf import make_config
-from abstract_rl.value_functions.distributional import c51_projection
+from abstract_rl.value_functions.distributional import (
+    MIN_SCALE,
+    mixture_log_prob,
+    mixture_mean,
+    mog_sample_nll,
+    project_mixture_samples,
+    sample_mixture,
+    split_mixture,
+)
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
 
@@ -212,21 +220,99 @@ def test_mpo_defaults_follow_the_acme_numbers():
     assert conf["mpo_samples_per_insert"] == 32.0
     assert conf["policy_sync_steps"] == 100 and conf["val_sync_steps"] == 100
     assert conf["mpo_target_update"] == "hard"
-    assert conf["val_distributional"] == "none"
+    assert conf["val_critic_type"] == "none"
+    assert conf["val_n_components"] == 5
+    assert "val_n_atoms" not in conf
     assert conf["ret_operator"] == "retrace"
     # Pendulum keeps the previously tuned E-step epsilon
     assert make_config("Pendulum-v1", "mpo")["rnk_eps"] == 0.05
 
 
-def test_c51_projection_is_a_distribution_and_a_one_hot_on_an_atom():
-    atoms = torch.linspace(-1.0, 1.0, 5)
-    on_atom = c51_projection(torch.tensor([atoms[2]]), atoms)
-    assert torch.allclose(on_atom.sum(-1), torch.ones(1))
-    assert on_atom.argmax() == 2
-    # atoms are -1, -0.5, 0, 0.5, 1; 0.25 sits halfway between 0 and 0.5
-    between = c51_projection(torch.tensor([0.25]), atoms)
-    assert torch.allclose(between.sum(-1), torch.ones(1), atol=1e-5)
-    assert between[0, 2] > 0 and between[0, 3] > 0
+def test_mixture_head_softplus_scales_and_mean():
+    raw = torch.zeros(2, 9)
+    raw[0, 3:6] = -40.0
+    means, scales, logits = split_mixture(raw, 3, init_scale=1e-3)
+    assert means.shape == scales.shape == logits.shape == (2, 3)
+    # a zero pre-activation reproduces init_scale, then the floor is added
+    assert torch.allclose(scales[1], torch.full((3,), 1e-3 + MIN_SCALE), atol=1e-6)
+    assert torch.all(scales >= MIN_SCALE)
+    assert torch.allclose(scales[0], torch.full((3,), MIN_SCALE), atol=1e-5)
+    weighted = mixture_mean(torch.tensor([[0.0, 10.0]]), torch.tensor([[0.0, 0.0]]))
+    assert torch.allclose(weighted, torch.tensor([[5.0]]))
+
+
+def test_projected_mixture_samples_apply_reward_and_discount_without_grad():
+    samples = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    reward = torch.tensor([0.5, -1.0])
+    dones = torch.tensor([0.0, 1.0])
+    projected = project_mixture_samples(samples, reward, 0.5, dones)
+    assert not projected.requires_grad
+    assert torch.allclose(projected[:, 0], torch.tensor([1.0, 2.0]))
+    assert torch.allclose(projected[:, 1], torch.tensor([-1.0, -1.0]))
+
+
+def test_mixture_nll_decreases_on_samples_from_the_projected_target():
+    torch.manual_seed(0)
+    batch, components, draws = 16, 2, 64
+    means = torch.nn.Parameter(torch.zeros(batch, components))
+    raw_scale = torch.nn.Parameter(torch.zeros(batch, components))
+    logits = torch.nn.Parameter(torch.zeros(batch, components))
+    with torch.no_grad():
+        target_means = torch.full((batch, components), 3.0)
+        target_scales = torch.full((batch, components), 0.4)
+        target_logits = torch.zeros(batch, components)
+        samples = sample_mixture(target_means, target_scales, target_logits, draws)
+    reward = torch.ones(batch)
+    dones = torch.zeros(batch)
+    dones[0] = 1.0
+    projected = project_mixture_samples(samples, reward, 0.9, dones)
+    assert torch.allclose(projected[:, 0], torch.ones(draws))
+
+    def loss() -> torch.Tensor:
+        scales = torch.nn.functional.softplus(raw_scale) + MIN_SCALE
+        return mog_sample_nll(means, scales, logits, projected)
+
+    before = loss()
+    before.backward()
+    assert means.grad is not None and means.grad.abs().sum() > 0
+    with torch.no_grad():
+        means -= 0.2 * means.grad
+    assert loss() < before.detach()
+    # a point on the target component is likelier than a point far from it
+    on_target = mixture_log_prob(target_means, target_scales, target_logits, torch.full((draws, batch), 3.0))
+    far = mixture_log_prob(target_means, target_scales, target_logits, torch.full((draws, batch), 30.0))
+    assert on_target.mean() > far.mean()
+
+
+def test_mog_critic_uses_the_mixture_mean_and_does_not_train_the_target(mpo_conf):
+    conf = {**mpo_conf, "val_critic_type": "mog", "val_mog_value_samples": 2, "res_add_acts": 2}
+    mc, _alg = _stack(conf)
+    q_net = mc.get("q_network", False)
+    target_q = mc.get("q_network", True)
+    target_policy = mc.get("policy", True)
+    obs = mc.env.observation_dim
+    act = mc.env.action_dim
+    states = torch.randn(4, obs)
+    actions = torch.randn(4, act)
+    means, _scales, logits = q_net._mixture(states, actions)
+    assert torch.allclose(q_net.q_val(states, actions), mixture_mean(means, logits))
+    batch = Batch(
+        states.numpy(),
+        actions.numpy(),
+        torch.zeros(4, 1).numpy(),
+        torch.randn(4, 1).numpy(),
+        torch.randn(4, obs).numpy(),
+        torch.zeros(4, 1).numpy(),
+    )
+    before = [p.detach().clone() for p in target_q.parameters()]
+    loss = q_net.tr_obj(batch)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in q_net.parameters())
+    for old, new in zip(before, target_q.parameters()):
+        assert torch.equal(old, new)
+        assert new.grad is None
+    assert all(p.grad is None for p in target_policy.parameters())
 
 
 def test_vector_envs_collect_the_requested_transitions(make_pendulum_mc):
