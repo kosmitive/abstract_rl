@@ -2,6 +2,7 @@ from typing import Any, cast
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.nn import Parameter
 
@@ -10,6 +11,21 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
+
+SIGMA_MIN = 1e-6
+
+
+def _sigma_head_is_softplus(act_fn: list[str | list[str]]) -> bool:
+    """Whether the configured activation of the last network layer already applies a softplus to the sigma output.
+
+    ``act_fn`` is the per layer list of the network configuration, an entry of the last layer is either one activation
+    name for all outputs or a list with one name per output, e.g. ``["tanh", "tanh", ["none", "softplus"]]`` (outputs
+    are ``[mu, sigma]``).
+    """
+    last = act_fn[-1] if len(act_fn) > 1 else act_fn[0]
+    if isinstance(last, (list, tuple)):
+        last = last[1] if len(last) > 1 else last[0]
+    return isinstance(last, str) and last.lower() == "softplus"
 
 
 class UnivariateGaussianPolicy(ContinuousPolicy):
@@ -32,19 +48,24 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.cli = CliPrinter().instance
 
         self.num_output_net: int | None = None
-        self.cov_variable: torch.Tensor | None = None
+        self.cov_variable: Any = None
         if self.cov_type == "state":
             self.num_output_net = 2
         elif self.cov_type == "fixed":
-            init_sigma = np.log(np.exp([run_conf["sigma"]]) - 1)
-            self.cov_variable = torch.Tensor([init_sigma])
-            self.cov_variable.backward()
-            self.num_output_net = 0
-        elif self.cov_type == "single":
-            self.cov_variable = Parameter(torch.zeros([1, 1]), requires_grad=True)
-            self.cov_variable.backward()
+            # constant standard deviation, stored in log space and not trained
+            init_log_sigma = np.log(run_conf["sigma"])
+            self.cov: torch.Tensor
+            self.register_buffer("cov", torch.full([1, 1], init_log_sigma))
+            self.cov_variable = self.cov
             self.num_output_net = 1
-            self.__setattr__("cov", self.cov_variable)
+        elif self.cov_type == "single":
+            # single state independent standard deviation, stored in log space
+            init_log_sigma = np.log(run_conf.get("sigma", 1.0))
+            self.cov = Parameter(torch.full([1, 1], init_log_sigma), requires_grad=True)
+            self.cov_variable = self.cov
+            self.num_output_net = 1
+        else:
+            raise NotImplementedError(f"unknown covariance type {self.cov_type}")
 
         # create policy network
         sd = mc.env.observation_dim
@@ -53,6 +74,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         )
 
         af = run_conf["act_fn"]
+        self._sigma_is_softplus = _sigma_head_is_softplus(af)
         self.network = MultilayerPerceptron(
             mc, hidden_neurons=policy_net_structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
         )
@@ -74,16 +96,17 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         """
 
         if self.cov_type == "state":
-            return self.network.forward(states)
+            mu, sigma = torch.split(self.network.forward(states), 1, dim=1)
+            # if the activation function of the network already is a softplus on the sigma head, only guard against an
+            # underflow to 0, otherwise the unconstrained output is made strictly positive with a softplus
+            sigma = torch.clamp(sigma, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(sigma) + SIGMA_MIN
+            return torch.cat([mu, sigma], 1)
 
-        elif self.cov_type == "fixed" or self.cov_type == "single":
+        else:
             mu = self.network.forward(states)
-            assert self.cov_variable is not None
             fw = torch.exp(self.cov_variable)
             sigma = fw.expand_as(mu)
             return torch.cat([mu, sigma], 1)
-
-        raise NotImplementedError(self.cov_type)
 
     def log_prob(
         self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
@@ -169,7 +192,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
         """
-        self.network.sync(v.network)
+        v.load_state_dict(self.state_dict())
         return v
 
     def entropy(self, batch: Batch) -> torch.Tensor:
