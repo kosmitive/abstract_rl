@@ -1,0 +1,56 @@
+[project]
+name = "abstract-rl"
+version = "0.1.0"
+description = "A modular reinforcement learning library (TRPO, MPO) based on PyTorch."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Markus Semmler" }]
+requires-python = ">=3.13,<3.14"
+keywords = ["reinforcement learning", "trpo", "mpo", "policy gradient", "gymnasium", "pytorch"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+    "Development Status :: 3 - Alpha",
+]
+dependencies = [
+    "gymnasium[classic-control]>=1.0",
+    "matplotlib>=3.9",
+    "numpy>=2.1",
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "torch>=2.5",
+]
+
+[project.urls]
+Source = "https://github.com/kosmitive/abstract_rl"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/abstract_rl"]
+
+# CPU-only PyTorch wheels (much smaller); remove to use the default CUDA builds.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
