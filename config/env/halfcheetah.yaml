@@ -3,5 +3,5 @@ success: 4800.0
 steps: 1200000
 overrides:
   all: {max_steps: 1000}
-  trpo: {num_epochs: 150, policy_batch_size: 8000, trpo_tr_eps: 0.02}
+  trpo: {num_epochs: 600, policy_batch_size: 4000, trpo_tr_eps: 0.02, val_l2_reg: 0.0, obs_norm: true}
   mpo: {num_epochs: 1200, policy_sigma: 0.5, mpo_trust_regions: [0.02]}
