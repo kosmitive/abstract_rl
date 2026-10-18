@@ -45,7 +45,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.split_objective = self.conf["coordinate_ascent_objective"]
         self.split_constraint = self.conf["coordinate_ascent_constraint"]
         self.cli = CliPrinter().instance
-        self.l2_reg = self.conf["l2_reg"]
+        self.l2_reg = self.conf.get("l2_reg", 0.0)
 
         num_params = 1 if not self.split_constraint else num_lagrange_multipliers
         self.lagrange_mults = [torch.nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(num_params)]
@@ -205,14 +205,9 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         obj = self.main_obj(batch, l_suff_stats)
         constraints = self.main_constraints(batch, l_suff_stats)
 
-        self.cli.print(
-            self.fmtstr
-            % (
-                step,
-                obj.detach().numpy(),
-                *[item for sublist in zip(self.lagrange_mults, constraints, strict=False) for item in sublist],
-            )
-        )
+        if step % 10 == 0:
+            vals = [float(v.detach()) for pair in zip(self.lagrange_mults, constraints, strict=False) for v in pair]
+            self.cli.print(self.fmtstr % (step, obj.item(), *vals))
 
     def __lagrange_obj(self, batch: Batch, suff_stats: torch.Tensor) -> torch.Tensor:
         """

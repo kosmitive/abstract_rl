@@ -1,6 +1,6 @@
 import json
-import time
-from os import mkdir
+from datetime import datetime
+from os import makedirs, mkdir
 from os.path import exists, join
 from typing import Any
 
@@ -18,13 +18,14 @@ class ModelConfiguration:
     integrated a syncing mechanism due to the need of target and original data structures for more stable evaluations.
     """
 
-    def __init__(self, conf: dict[str, Any], root: str = "data") -> None:
+    def __init__(self, conf: dict[str, Any], root: str | None = None) -> None:
         """
         Create a new model configuration with no syncables no data and no environment.
         """
 
         # settings for the script
-        reload = conf["reload"]
+        root = root if root is not None else conf.get("data_root", "data")
+        reload = conf.get("reload", False)
         conf["reload"] = True
 
         self.syncables: dict[str, tuple[int, Any, Any]] = {}
@@ -33,16 +34,19 @@ class ModelConfiguration:
             # create folder structure
             self.env_name = conf["env_name"]
             self.env_dir = join(root, self.env_name)
-            if not exists(self.env_dir):
-                mkdir(self.env_dir)
             self.alg_name = conf["alg"]
             self.env_dir = join(self.env_dir, self.alg_name)
-            if not exists(self.env_dir):
-                mkdir(self.env_dir)
-            timestr = time.strftime("%Y%m%d-%H%M%S")
-            self.run_root = join(self.env_dir, timestr)
-            if not exists(self.run_root):
-                mkdir(self.run_root)
+            # parallel runs may create the same directories at the same time, so never check before creating
+            makedirs(self.env_dir, exist_ok=True)
+            while True:
+                timestr = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                self.run_root = join(self.env_dir, timestr)
+                try:
+                    makedirs(self.run_root)
+                    break
+                except FileExistsError:
+                    # another run started within the same microsecond, take a new time stamp
+                    continue
 
             self.overall_step = 0
             self.env: Any = None

@@ -25,6 +25,10 @@ class DataLogger:
         self._header[name] = dim
         self._data[name] = []
 
+    def has_field(self, name: str) -> bool:
+        """Whether a field with this name was created."""
+        return name in self._header
+
     def get(self, names: list[str], until: int) -> Any:
         """
         Obtain the given names until the given until value.

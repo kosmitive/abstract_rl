@@ -29,22 +29,23 @@ class MCMCEnvWrapper:
         """
         conf = mc["conf"]
         self.mc = mc
-        self.num_threads = conf["num_threads"]
-        self.render = conf["render"]
+        self.num_threads = conf.get("num_threads", 1)
+        self.render = conf.get("render", False)
 
         # save config
         self.conf = conf
         self.num_epochs = conf.get_root("num_epochs")
         self.env_name = conf["name"]
         self.env = gym.make(self.env_name, render_mode="human" if self.render else None)
+        self._seed = conf.get_root("seed")
 
-        self._normalize = conf["normalize"]
+        self._normalize = conf.get("normalize", False)
         self._discount = conf["discount"]
 
         self.epoch = 0
 
         # set best measured reward to lowest possible reward
-        self.best_reward = np.finfo(np.float64).min
+        self.best_reward = float(np.finfo(np.float64).min)
         self.max_traj_len = 0
         self.cli = CliPrinter().instance
         self.created_trajectories = 0
@@ -55,6 +56,11 @@ class MCMCEnvWrapper:
         # observations are scaled by the (finite) upper bound of the observation space if normalize is set
         high = np.asarray(self.obs_sp.high, dtype=np.float64)
         self._obs_scale = np.where(np.isfinite(high) & (high > 0), high, 1.0)
+
+        # affine reward transform r' = reward_scale * r + reward_offset used for training only (evaluation scripts
+        # report the raw environment return)
+        self._reward_scale = conf.get("reward_scale", 1.0)
+        self._reward_offset = conf.get("reward_offset", 0.0)
 
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
@@ -72,10 +78,15 @@ class MCMCEnvWrapper:
 
     def reset(self) -> np.ndarray:
         """
-        Resets the environment.
+        Resets the environment. The very first reset is seeded with the configured seed.
         :return: The state after the reset.
         """
-        cs, _info = self.env.reset()
+        if self._seed is not None:
+            cs, _info = self.env.reset(seed=int(self._seed))
+            self.act_sp.seed(int(self._seed))
+            self._seed = None
+        else:
+            cs, _info = self.env.reset()
         return self._preprocess(cs)
 
     def execute_policy(
@@ -88,29 +99,36 @@ class MCMCEnvWrapper:
         rew_field_name: str | None = None,
     ) -> TrajectoryCollection:
         """
-        Executes a policy for a maximum number of steps multiple times. This work can be split onto multiple threads as
-        well.
+        Executes the policy for complete episodes (each at most max_steps long) until at least batch_size
+        transitions were collected.
         :param policy: The policy to evaluate.
-        :param max_steps: The maximum number of steps.
-        :return: A list of trajectories.
+        :param max_steps: The maximum number of steps per episode.
+        :param batch_size: The minimum number of transitions to collect.
+        :param exploration: Sample from the policy if True, otherwise use its mode.
+        :param render: Render the first episode.
+        :param rew_field_name: If given, log the mean and std of the episodic return under this name.
+        :return: A trajectory collection.
         """
 
-        with self.conf.ns("policy"):
-            t = 0
-            k = 0
-            trajectories = []
-            while t < batch_size:
-                assert max_steps is not None
-                tr = self.execute_policy_once(
-                    np.minimum(batch_size - t, max_steps), policy, render and k == 0, opt=not exploration
-                )
-                trajectories.append(tr)
-                t += len(tr)
-                k += 1
+        t = 0
+        k = 0
+        trajectories = []
+        while t < batch_size:
+            tr = self.execute_policy_once(max_steps, policy, render and k == 0, opt=not exploration)
+            trajectories.append(tr)
+            t += len(tr)
+            k += 1
 
         if rew_field_name is not None:
-            disc_rewards = [traj.discounted_reward(self.discount()) for traj in trajectories]
-            self.mc["log"].log({rew_field_name: [np.mean(disc_rewards), np.std(disc_rewards)]})
+            # the logged return is the one of the environment, not of the (optionally scaled) training reward
+            returns = [traj.raw_return for traj in trajectories]
+            mean_return = float(np.mean(returns))
+            self.best_reward = max(self.best_reward, mean_return)
+            log = self.mc["log"]
+            log.log({rew_field_name: [np.mean(returns), np.std(returns)]})
+            if log.has_field("steps"):
+                log.log({"steps": [t]})
+            self.total_steps = getattr(self, "total_steps", 0) + t
 
         self.epoch += 1
 
@@ -131,10 +149,9 @@ class MCMCEnvWrapper:
         :return: The finalized and built trajectory.
         """
 
-        # one environment for the run, so its RNG advances across episodes
+        # reset environment and create empty trajectory
         env = self.env
-        cs, _info = env.reset()
-        cs = self._preprocess(cs)
+        cs = self.reset()
         self.state_filter.register(cs)
 
         # create new trajectory builder
@@ -144,6 +161,7 @@ class MCMCEnvWrapper:
 
         traj_builder = TrajectoryBuilder(new_id, self, cs)
         t = 0
+        raw_return = 0.0
 
         # repeat for the number of steps
         while max_steps is None or t < max_steps:
@@ -164,10 +182,11 @@ class MCMCEnvWrapper:
             done = terminated or truncated
             cs = self._preprocess(cs)
             self.state_filter.register(cs)
+            raw_return += float(r)
+            r = self._reward_scale * r + self._reward_offset
             self.reward_filter.register(np.asarray([r], dtype=np.float64))
 
             t += 1
-            # only punish if episode aborted
             traj_builder.observe(a, float(r), cs, ll, int(done))
 
             # render if needed
@@ -180,6 +199,7 @@ class MCMCEnvWrapper:
 
         # compile using the discount factor
         traj = traj_builder.finalize()
+        traj.raw_return = raw_return
         self.max_traj_len = max(self.max_traj_len, t)
         return traj
 

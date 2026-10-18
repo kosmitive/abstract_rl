@@ -27,8 +27,14 @@ class Trajectory:
         self._sd = self.env.observation_dim
         self._ad = self.env.action_dim
         self.cli = CliPrinter().instance
-        self._states = self.__data_frame.loc[:, "s_0" : f"s_{self._sd - 1}"].values
-        self._rewards = self.__data_frame.loc[:, "r":"r"].values[:-1]
+        self._states = self.__data_frame.loc[:, "s_0" : f"s_{self._sd - 1}"].to_numpy(copy=True)
+        self._rewards = self.__data_frame.loc[:, "r":"r"].to_numpy(copy=True)[:-1]
+        # return of the environment, differs from total_reward if the training reward is scaled or shifted
+        self.raw_return = np.sum(self._rewards)
+        # pandas .values is a non-writable view; torch.Tensor warns and refuses in-place writes on it
+        self._actions = self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].to_numpy(copy=True)[:-1]
+        self._dones = self.__data_frame.loc[:, "d":"d"].to_numpy(copy=True)[:-1]
+        self._log_likelihoods = self.__data_frame.loc[:, "ll":"ll"].to_numpy(copy=True)[:-1]
 
     def __len__(self) -> int:
         return len(self._trajectory.index) - 1
@@ -58,7 +64,7 @@ class Trajectory:
         Actions of trajectory.
         :return: All actions of the trajectory.
         """
-        return self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].values[:-1]
+        return self._actions
 
     @property
     def dones(self) -> np.ndarray:
@@ -66,7 +72,7 @@ class Trajectory:
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
         """
-        return self.__data_frame.loc[:, "d":"d"].values[:-1]
+        return self._dones
 
     @property
     def log_likelihoods(self) -> np.ndarray:
@@ -74,7 +80,7 @@ class Trajectory:
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
         """
-        return self.__data_frame.loc[:, "ll":"ll"].values[:-1]
+        return self._log_likelihoods
 
     @property
     def rewards(self) -> np.ndarray:

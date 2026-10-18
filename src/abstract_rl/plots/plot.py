@@ -32,3 +32,7 @@ class Plot:
 
     def save(self, filename: str) -> None:
         self.fig.savefig(filename)
+
+    def close(self) -> None:
+        """Close the underlying figure."""
+        plt.close(self.fig)

@@ -21,18 +21,17 @@ from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 
 
 # title of the script
-def run_trpo(conf: Any) -> None:
+def run_trpo(conf: Any) -> np.ndarray:
     """
     Runs the passed config off policy.
     :param conf: The run configuration.
     """
 
-    default_settings()
-
     # create a model configuration
-    conf["alg"] = "trpo"
+    conf.setdefault("alg", "trpo")
     mc = ModelConfiguration(conf)
     conf = mc["conf"]
+    default_settings(conf.get_root("torch_threads") if "torch_threads" in conf else 1)
     cli = CliPrinter().instance
 
     seed = conf["seed"]
@@ -88,13 +87,23 @@ def run_trpo(conf: Any) -> None:
     # create a new reward plot
     rew_plot = RewardValueFunctionPlot()
     logger.create_field(stoch_reward, 2)
+    # number of environment steps collected in each epoch (for plotting learning curves over samples)
+    logger.create_field("steps", 1)
 
     # repeat for the number of given steps
+    # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
+    max_env_steps = conf.get("max_env_steps", None)
+    epoch_steps = policy_batch_size
     for e in range(num_epochs):
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
+        if max_env_steps:
+            done_steps = getattr(env, "total_steps", 0)
+            if done_steps >= max_env_steps:
+                break
+            policy_batch_size = min(epoch_steps, max_env_steps - done_steps)
 
         # --------------------------------
         # test policy
@@ -110,7 +119,7 @@ def run_trpo(conf: Any) -> None:
             # make and store reward plot
             res_log = logger.get([stoch_reward], e + 1)
             rew_plot.update(*res_log, len(tc))  # type: ignore[call-arg]
-            rew_plot.save(join(mc.plot_root, "performance.eps"))
+            rew_plot.save(join(mc.plot_root, "performance.png"))
 
             # save last model
             mc.store("last")
@@ -134,4 +143,7 @@ def run_trpo(conf: Any) -> None:
 
         # copy target_networks
         mc.sync()
-        e += 1
+
+    env.close()
+    rew_plot.close()
+    return logger.get([stoch_reward], num_epochs)[0]

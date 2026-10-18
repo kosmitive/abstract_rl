@@ -25,16 +25,17 @@ from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
 
 # title of the script
-def run_mpo_non_parametric(conf: Any) -> None:
+def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     """
     Runs the passed config off policy.
     :param conf: The run configuration.
     """
 
     # create a model configuration
+    conf.setdefault("alg", "mpo")
     mc = ModelConfiguration(conf)
     conf = mc["conf"]
-    default_settings()
+    default_settings(conf.get_root("torch_threads") if "torch_threads" in conf else 1)
     cli = CliPrinter().instance
 
     seed = conf["seed"]
@@ -107,16 +108,26 @@ def run_mpo_non_parametric(conf: Any) -> None:
     # create a new reward plot
     rew_plot = RewardValueFunctionPlot()
     logger.create_field(stoch_reward, 2)
+    # number of environment steps collected in each epoch (for plotting learning curves over samples)
+    logger.create_field("steps", 1)
 
     # if reloaded load old values
     e = 0
 
     # repeat for the number of given steps
+    # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
+    max_env_steps = conf.get("max_env_steps", None)
+    epoch_steps = num_new_steps
     while e < num_epochs:
         # initial print of the episode
         if e % 100 == 0:
             cli.new_epoch(mc.run_root, e)
         cli.big_header(f"epoch {e}")
+        if max_env_steps:
+            done_steps = getattr(env, "total_steps", 0)
+            if done_steps >= max_env_steps:
+                break
+            num_new_steps = min(epoch_steps, max_env_steps - done_steps)
 
         # --------------------------------
         # test policy
@@ -136,7 +147,7 @@ def run_mpo_non_parametric(conf: Any) -> None:
             # make and store reward plot
             res_log = logger.get([stoch_reward], e + 1)
             rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
-            rew_plot.save(join(mc.plot_root, "performance.eps"))
+            rew_plot.save(join(mc.plot_root, "performance.png"))
 
             # save last model
             mc.store("last")
@@ -164,4 +175,6 @@ def run_mpo_non_parametric(conf: Any) -> None:
 
         e += 1
 
-    rew_plot.show()
+    env.close()
+    rew_plot.close()
+    return logger.get([stoch_reward], num_epochs)[0]
