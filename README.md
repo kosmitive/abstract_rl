@@ -97,7 +97,8 @@ threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo
 environment table. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
-diagonal Gaussian policy from the action space.
+diagonal Gaussian policy from the action space. `policy_cov_type: full` stays off by default and, when set, uses that
+diagonal policy with a state-dependent Cholesky factor.
 
 ## Architecture
 

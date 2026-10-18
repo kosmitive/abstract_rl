@@ -86,6 +86,13 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             mc, hidden_neurons=policy_net_structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
         )
         self.add_module("nn", self.network)
+        if self.cov_type == "state":
+            # softplus(bias) + SIGMA_MIN = policy_sigma, matching the std single and fixed start from
+            raw = math.log(math.expm1(float(run_conf.get("sigma", 1.0)) - SIGMA_MIN))
+            with torch.no_grad():
+                bias = self.network.layers[-1].bias
+                assert bias is not None
+                bias[1] = raw
 
     def get_suff_stats_dim(self) -> int:
         """
