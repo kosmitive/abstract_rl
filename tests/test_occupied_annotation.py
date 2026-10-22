@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
@@ -11,7 +12,7 @@ from abstract_rl.run.run_mpo_non_parametric import annotate_chunked
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
 CAPACITY = 600
-FIELDS = ("add_act", "add_q", "add_pi")
+FIELDS = ResampleOperator.FIELDS
 
 
 def _rollout(key, lengths, obs_dim):
@@ -56,17 +57,27 @@ def test_occupied_rows_track_the_highest_write():
     assert not np.any(np.asarray(memory.trajectories().mask[0, 550:]))
 
 
-def test_chunked_and_full_resample_agree_on_valid_rows(make_pendulum_mc):
+@pytest.mark.parametrize(
+    ("rollouts", "occupied", "chunk"),
+    [
+        # a third of the memory is filled: only the first chunks run
+        ([[40, 30], [50, 25], [45]], 190, 64),
+        # 580 occupied rows: the last chunk is clamped to the capacity and overlaps the one before
+        ([[290], [290]], 580, 64),
+        # the third insert wraps to the front and overwrites the first episode, the high-water mark stays at 580
+        ([[290], [290], [100]], 580, 64),
+    ],
+)
+def test_chunked_and_full_resample_agree_on_valid_rows(make_pendulum_mc, rollouts, occupied, chunk):
     mc = make_pendulum_mc(alg="mpo", res_add_acts=20, val_struct=[32, 32], val_act_fn=["elu", "elu", "none"])
     state = _models(mc)
     with mc["conf"].ns("res"):
         res = ResampleOperator(mc)
 
-    # three merges fill about a third of the memory
     memory = TrajectoryCollection.memory(None, CAPACITY, 3, 1)
-    for i, lengths in enumerate([[40, 30], [50, 25], [45]]):
+    for i, lengths in enumerate(rollouts):
         memory = memory.merge(_rollout(jax.random.key(10 + i), lengths, 3), 10_000)
-    assert int(memory.occupied_rows()) == 190
+    assert int(memory.occupied_rows()) == occupied
     template = jax.eval_shape(lambda m: res.transform_all(state, m, jax.random.key(0)), memory)
     memory = memory.with_annotations(
         {k: jax.ShapeDtypeStruct(template.trajectories()[k].shape[2:], jnp.float32) for k in FIELDS}
@@ -77,12 +88,17 @@ def test_chunked_and_full_resample_agree_on_valid_rows(make_pendulum_mc):
     # both jitted: eager and jitted log-likelihoods differ by up to 4e-5 near the squash bound
     full = jax.jit(lambda lane: res.transform(state, lane, key))(lane)
     chunked = jax.jit(
-        lambda m: annotate_chunked(lambda part, k, rows: res.transform(state, part, k, rows), m, key, 64)
+        lambda m: annotate_chunked(lambda part, k, rows: res.transform(state, part, k, rows), m, key, chunk, FIELDS)
     )(memory)
     chunked = jax.tree.map(lambda x: x[0], chunked.trajectories())
 
     valid = np.asarray(lane.mask)
+    assert valid.any()
     for k in FIELDS:
         np.testing.assert_allclose(np.asarray(chunked[k])[valid], np.asarray(full[k])[valid], atol=1e-6)
         # rows beyond the occupied ones keep their previous (zero) annotations
-        assert not np.any(np.asarray(chunked[k])[190:])
+        assert not np.any(np.asarray(chunked[k])[occupied:])
+
+
+def test_occupied_rows_of_a_plain_collection_is_the_lane_length():
+    assert int(_rollout(jax.random.key(0), [10], 3).occupied_rows()) == 17

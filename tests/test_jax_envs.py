@@ -77,8 +77,12 @@ def test_unknown_env_lists_the_known_ids():
 
 @pytest.mark.parametrize(
     "env_id, obs_dim, act_dim",
-    [("InvertedPendulum-v5", None, 1), ("InvertedDoublePendulum-v5", None, 1), ("HalfCheetah-v5", None, 6),
-     ("AcrobotSwingup-v0", None, 1)],
+    [
+        ("InvertedPendulum-v5", None, 1),
+        ("InvertedDoublePendulum-v5", None, 1),
+        ("HalfCheetah-v5", None, 6),
+        ("AcrobotSwingup-v0", None, 1),
+    ],
 )
 def test_mjx_contract(env_id, obs_dim, act_dim):
     env = make_env(env_id)

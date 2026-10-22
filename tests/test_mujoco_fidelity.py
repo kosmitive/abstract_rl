@@ -42,8 +42,8 @@ def test_same_state_and_actions_give_gymnasiums_trajectory(env_id, seed):
     for k, a in enumerate(_actions(env, 30, seed)):
         ref_obs, ref_r, ref_term, _, _ = ref.step(a)
         st, obs, r, term, trunc = step(st, jnp.asarray(a, jnp.float32), jax.random.key(k))
-        # float32 MJX vs float64 MuJoCo, both RK4: the gap grows from ~1e-7 once the pendulum has fallen
-        np.testing.assert_allclose(obs, ref_obs, rtol=1e-3, atol=1e-3, err_msg=f"step {k}")
+        # float32 MJX vs float64 MuJoCo, both RK4: the measured gap over these 30 steps is at most 3.4e-5
+        np.testing.assert_allclose(obs, ref_obs, rtol=1e-4, atol=1e-4, err_msg=f"step {k}")
         assert float(r) == pytest.approx(ref_r, rel=1e-4, abs=1e-4), f"step {k}"
         assert bool(term) == ref_term and not bool(trunc), f"step {k}"
         terminated.append(ref_term)
@@ -71,6 +71,10 @@ def test_reset_noise_matches_gymnasium(env_id):
     ref_states = np.asarray(ref_states)
     noise = env.reset_noise_scale
     assert np.all(np.abs(ours[:, : ref.model.nq]) <= noise)
+    # qvel is uniform in +-noise (inverted pendulum) or normal with std noise (double pendulum, 5 sigma bound)
+    qvel_bound = noise if env_id == "InvertedPendulum-v5" else 5 * noise
+    assert np.all(np.abs(ours[:, ref.model.nq :]) <= qvel_bound)
+    assert np.all(np.abs(ref_states[:, ref.model.nq :]) <= qvel_bound)
     np.testing.assert_allclose(ours.std(0), ref_states.std(0), rtol=0.2)
     np.testing.assert_allclose(ours.mean(0), 0.0, atol=3 * noise / np.sqrt(400))
 

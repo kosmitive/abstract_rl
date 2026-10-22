@@ -90,6 +90,7 @@ def test_frozen_rollout_keeps_statistics(make_pendulum_mc):
     np.testing.assert_allclose(frozen.get("obs_rms").count, state.get("obs_rms").count)
     np.testing.assert_allclose(frozen.get("obs_rms").mean, state.get("obs_rms").mean)
     assert int(frozen.get("state_filter")._n) == int(state.get("state_filter")._n)
+    assert int(frozen.get("reward_filter")._n) == int(state.get("reward_filter")._n)
 
 
 def test_explicit_lane_count_and_time_annotation(make_pendulum_mc):

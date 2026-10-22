@@ -7,8 +7,16 @@ from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 
 
 def _conf(mpo_conf, **overrides):
-    return {**mpo_conf, "env_name": "TestPointMass-v0", "max_steps": 30, "env_sample": 120, "val_opt_steps": 5,
-            "policy_opt_steps": 5, "tc_size": 600, **overrides}
+    return {
+        **mpo_conf,
+        "env_name": "TestPointMass-v0",
+        "max_steps": 30,
+        "env_sample": 120,
+        "val_opt_steps": 5,
+        "policy_opt_steps": 5,
+        "tc_size": 600,
+        **overrides,
+    }
 
 
 def test_returns_per_seed_and_epoch_and_eta_log(mpo_conf, tmp_path):
@@ -32,3 +40,5 @@ def test_memory_respects_tc_size(mpo_conf):
     returns = run_mpo_non_parametric(_conf(mpo_conf, num_epochs=8, tc_size=200))
     assert returns.shape == (1, 8, 2)
     assert module.LAST_MEMORY_SIZES and max(module.LAST_MEMORY_SIZES) <= 200 + 30
+    # the cap keeps the longest newest prefix of whole episodes (each at most max_steps), so it is nearly full
+    assert min(module.LAST_MEMORY_SIZES[1:]) > 200 - 30

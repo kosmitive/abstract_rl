@@ -79,6 +79,49 @@ def test_merge_capping_matches_the_list_rule():
         assert int(memory.trajectories().mask.sum()) == sum(n for _, n in collected)
 
 
+@pytest.mark.parametrize("seed", [4, 6, 7])
+def test_merge_at_minimal_capacity_drops_overwritten_episodes_whole(seed):
+    """seed-17-like: tc_size 2, R = 30 rows per rollout, C = tc_size + 2R = 62, 1-3 lanes of length 9. The ring wraps
+    every few epochs and these seeds make an insert overwrite kept rows; the result must equal the torch list rule."""
+    tc_size, rows_per_rollout = 2, 30
+    capacity = tc_size + 2 * rows_per_rollout
+    rng = np.random.default_rng(seed)
+    memory = TrajectoryCollection.memory(None, capacity, 1, 1)
+    overwrites = 0
+    merge = jax.jit(lambda m, r: m.merge(r, tc_size))
+    collected = []
+    for epoch in range(30):
+        lanes = []
+        for _ in range(rng.integers(1, 4)):
+            lengths, left = [], 9
+            while left > 0:
+                n = int(rng.integers(1, left + 1))
+                lengths.append(n)
+                left -= n
+            lanes.append(lengths)
+        rollout = _rollout(lanes, epoch, 9)
+        count = int(rollout.trajectories().mask.sum())
+        start = 0 if int(memory._ptr) + count > capacity else int(memory._ptr)
+        overwrites += int(np.asarray(memory.trajectories().mask[0])[start : start + count].any())
+        memory = merge(memory, rollout)
+        finished = []
+        for lane, lengths in enumerate(lanes):
+            t = 0
+            for k, n in enumerate(lengths):
+                t += n
+                finished.append((t - 1, lane, epoch * 1000 + lane * 100 + k, n))
+        collected += [(tag, n) for _, _, tag, n in sorted(finished)]
+        collected = _list_rule(collected, tc_size)
+        assert sorted(_episodes(memory)) == sorted(tag for tag, _ in collected)
+        t = jax.tree.map(lambda x: np.asarray(x[0]), memory.trajectories())
+        # no partial episode survives: every kept episode is contiguous and closed by its end flag
+        valid = np.nonzero(t.mask)[0]
+        for tag in set(t.states[t.mask, 0].tolist()):
+            rows = valid[t.states[valid, 0] == tag]
+            assert np.all(np.diff(rows) == 1) and t.ends[rows[-1]]
+    assert overwrites > 0  # the path under test ran
+
+
 def test_insert_never_splits_an_episode():
     memory = TrajectoryCollection.memory(None, 50, 1, 1)
     for epoch in range(8):

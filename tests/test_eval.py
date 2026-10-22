@@ -18,6 +18,15 @@ def test_eval_uses_frozen_obs_rms_and_seeded_starts(trpo_conf, tmp_path):
     assert name == "Pendulum-v1" and returns.shape == (2,)
 
 
+def test_load_policy_best_loads_the_best_obs_rms(trpo_conf, tmp_path):
+    run_trpo({**trpo_conf, "obs_norm": True})
+    (run_dir,) = tmp_path.glob("Pendulum-v1/trpo/*")
+    stored = np.load(run_dir / "model/best/obs_rms.npz")
+    _, _, state = eval_balance.load_policy(str(run_dir), model="best")
+    np.testing.assert_allclose(state.get("obs_rms").mean, stored["mean"], rtol=1e-6)
+    np.testing.assert_allclose(state.get("obs_rms").count, stored["count"], rtol=1e-6)
+
+
 def test_pendulum_gif_frames(trpo_conf, tmp_path):
     run_trpo(trpo_conf)
     (run_dir,) = tmp_path.glob("Pendulum-v1/trpo/*")

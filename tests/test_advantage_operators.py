@@ -28,9 +28,17 @@ def _lane(g, pad=0):
     n = len(s) - 1
     p = lambda x: jnp.concatenate([x, jnp.zeros((pad, *x.shape[1:]), x.dtype)])  # noqa: E731
     ends = jnp.zeros(n, bool).at[-1].set(True)
-    return Trajectory(p(s[:-1]), p(s[1:]), p(jnp.zeros((n, 1))), p(jnp.asarray(g["rewards"], jnp.float32)),
-                      p(jnp.asarray(g["rewards"][:, 0], jnp.float32)), p(jnp.asarray(g["dones"], jnp.float32)),
-                      p(jnp.zeros((n, 1))), p(ends), p(jnp.ones(n, bool)))
+    return Trajectory(
+        p(s[:-1]),
+        p(s[1:]),
+        p(jnp.zeros((n, 1))),
+        p(jnp.asarray(g["rewards"], jnp.float32)),
+        p(jnp.asarray(g["rewards"][:, 0], jnp.float32)),
+        p(jnp.asarray(g["dones"], jnp.float32)),
+        p(jnp.zeros((n, 1))),
+        p(ends),
+        p(jnp.ones(n, bool)),
+    )
 
 
 @pytest.mark.parametrize("case", ["truncated", "terminated"])
