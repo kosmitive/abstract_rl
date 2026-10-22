@@ -42,6 +42,7 @@ JAXTYPED_MODULES = [
     "abstract_rl.operator.np_rew_operator",
     "abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder",
     "abstract_rl.policy.non_parametric.non_parametric_policy",
+    "abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
