@@ -8,6 +8,7 @@ from abstract_rl.run.run_trpo import run_trpo
 
 
 def _check_returns(returns, num_epochs):
+    returns = returns[0]
     assert returns.shape == (num_epochs, 2)
     assert np.all(np.isfinite(returns))
     # Pendulum-v1 rewards are in [-16.3, 0] and episodes last 200 steps
@@ -15,11 +16,10 @@ def _check_returns(returns, num_epochs):
     assert np.all(returns[:, 0] >= -16.3 * 200)
 
 
-@pytest.mark.skip(reason="porting to JAX: re-enabled in plan 2")
 def test_trpo_pendulum_smoke(trpo_conf, tmp_path):
     returns = run_trpo(trpo_conf)
     _check_returns(returns, trpo_conf["num_epochs"])
-    assert list(tmp_path.glob("Pendulum-v1/trpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("Pendulum-v1/trpo/*/model/last/policy.eqx"))
 
 
 @pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3")
@@ -43,15 +43,15 @@ def test_eval_balance_runs_on_trained_policy(trpo_conf, tmp_path):
 
 
 def _check_multi_dimensional(returns, num_epochs):
+    returns = returns[0]
     assert returns.shape == (num_epochs, 2)
     assert np.all(np.isfinite(returns))
 
 
-@pytest.mark.skip(reason="porting to JAX: re-enabled in plan 2")
 def test_trpo_with_two_dimensional_actions_smoke(trpo_conf, tmp_path):
     trpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "policy_batch_size": 300})
     _check_multi_dimensional(run_trpo(trpo_conf), trpo_conf["num_epochs"])
-    assert list(tmp_path.glob("TestPointMass-v0/trpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("TestPointMass-v0/trpo/*/model/last/policy.eqx"))
 
 
 @pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3")
