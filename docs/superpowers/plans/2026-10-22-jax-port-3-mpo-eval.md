@@ -1487,3 +1487,48 @@ on Gymnasium and are labelled so. Then:
 - [ ] **Step 7: Commit**
 
 Commit the code changes, the docs and the tune changes as separate commits. Do not commit `data/`, which is ignored.
+
+---
+
+### Task 10: Make the MuJoCo pendulum adapters faithful to Gymnasium v5
+
+The Task 9 benchmark plus an audit (`.superpowers/sdd/2026-10-22-jax-port-3-mpo-eval/mpo-stability-audit.md`) found
+two environment bugs:
+- **InvertedPendulum-v5:** Brax's `inverted_pendulum.step` maps actions from [-1, 1] onto the actuator range. Our
+  adapter reports the actuator range [-3, 3] as the bounds, so the effective gain is 3x and every |a| > 1 saturates.
+  Gymnasium applies `ctrl = a` directly.
+- **InvertedDoublePendulum-v5:** Brax uses `n_frames=2` (dt 0.02). Gymnasium v5 uses `frame_skip=5` (dt 0.05).
+HalfCheetah was checked and is comparable (`hc-env-check.md`).
+
+**Files:**
+- Modify: `src/abstract_rl/env/jax_envs.py`
+- Create: `tests/test_mujoco_fidelity.py`
+
+**Requirements:**
+- For each of `InvertedPendulum-v5`, `InvertedDoublePendulum-v5` and `HalfCheetah-v5`, compare against Gymnasium v5's
+  env (constructor defaults, the XML in the gymnasium package, `frame_skip`, reward, termination, observation,
+  `reset_noise_scale`):
+  - the control applied for an action (`data.ctrl == action`, with the bounds Gymnasium reports);
+  - `dt` (timestep × frames);
+  - reward terms (IP: 1 per step, terminal included or not as in Gymnasium; IDP: alive bonus minus distance and
+    velocity penalties);
+  - termination conditions;
+  - observation layout, including IDP's 9 + 2 constraint-force dims if Gymnasium v5 has them (spec D5 noted 8 vs 11:
+    resolve it now if feasible, else document);
+  - reset noise distributions.
+- Fix every difference that can be fixed through Brax's constructor arguments or a thin adapter. Examples: un-scaling
+  the action before Brax re-scales it, passing `n_frames`, replacing the reward/termination via the adapter, or
+  building the env from Gymnasium's own XML with `mujoco.MjModel.from_xml_path` on the MJX backend.
+- The integrator matters too. Gymnasium's XML may use RK4, which MJX may not support. If it is unsupported, use the
+  closest supported one and document the residual.
+- Prefer loading Gymnasium's XML through MJX when Brax's asset differs materially. Gymnasium is a dev-group
+  dependency, so a test may import it; the library must not import it at runtime. If needed, vendor the small XML files
+  under `src/abstract_rl/env/assets/` with their licence header.
+- Tests, pinned against Gymnasium:
+  - from the same qpos/qvel state (set both envs' state directly), the same fixed action sequence (20–50 steps)
+    gives next observations within a tolerance appropriate to the integrator differences, and identical rewards
+    and termination flags;
+  - plus a test that `ctrl == action`.
+- Every remaining residual difference goes in the spec D5 entry and in `jax_envs.py` docstrings.
+
+Commit message: "Make the JAX MuJoCo pendulum environments match Gymnasium v5."
