@@ -50,7 +50,8 @@ uv run python -m abstract_rl.scripts.bench_jax --alg mpo --env pendulum --seeds 
 ```
 
 The `mps` extra (`uv sync --extra mps`) installs the Metal backend for JAX, selected with `jax_platform=mps`. Metal
-runs the networks; the MJX environments need `jax_platform=cpu` (the default).
+runs the TRPO networks on the gymnax environments; the MJX environments and MPO (whose seed-batched replay-memory
+update uses a scatter Metal does not support) need `jax_platform=cpu` (the default).
 
 Measured on an Apple M3 Max (16 cores), JAX on CPU, 6 epochs (3 for HalfCheetah), TRPO with `policy_batch_size=4000`.
 JAX env-steps/s is summed over seeds and excludes the compiling first call.
@@ -72,13 +73,13 @@ speedup is against the single-seed torch figure.
 
 MPO on Pendulum (JAX on CPU, `env_sample=1000` steps per epoch, 4 epochs, same machine; the line is steps summed over seeds):
 
-| seeds | JAX env-steps/s (cpu) | first call (compile) | epoch |
-|---|---|---|---|
-| 1 | 610 | 6.6 s | 1.64 s |
-| 4 | 340 | 17.2 s | 11.8 s |
+| seeds | JAX env-steps/s (cpu) | epoch |
+|---|---|---|
+| 1 | 806 | 1.24 s |
+| 4 | 1042 | 3.84 s |
 
-On CPU four MPO seeds are slower per step than one (measured, not yet profiled); the benefit of the batched run is
-one process and one compile for all seeds. The full benchmark under [Results](#results) compares the learning with
+MPO is compute-bound (the E-step annotates the whole replay memory every epoch), so four vmapped seeds give only
+about 1.3x the throughput of one; the benefit of the batched run is one process and one compile for all seeds. The full benchmark under [Results](#results) compares the learning with
 the torch version (Pendulum MPO reaches -150 after 44k steps, median over 5 seeds; torch 36k).
 
 ### Deviations from the torch implementation
@@ -95,6 +96,10 @@ The full list with reasons is in the [design spec](docs/superpowers/specs/2026-1
 - **D6** Observations are float32 from the environment on.
 - **D7** When capping drops part of one epoch's episodes, ties between lanes finishing at the same step are broken by
   lane order.
+- **D8** With `max_env_steps`, the seeds of one run stop together when the seed with the most steps reaches the cap,
+  so the other seeds get up to about 5 % fewer steps than a torch run of that seed.
+- **D9** The network-initialisation keys coincide with two of epoch 0's per-step keys (rollout and minibatch/resample
+  key). Every draw is still seeded and independent across seeds; the effect is a correlation within one epoch.
 
 ## Results
 
@@ -167,8 +172,8 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
   - *InvertedDoublePendulum MPO: 2/5 instead of 5/5* (greedy 9334, 9357, 8897, 8907 and 7362). Every seed reaches
     the threshold in training (median 60k steps, `main` 66k). The final policies of seeds 3 and 4 drop one of their
     20 greedy episodes. Seed 5 drops 6 of 20, and its training return falls at the end (mean 5386 over epochs
-    481-540, 4308 over epochs 541-600): the late collapse that `main`'s smaller trust region (0.005) removed in
-    torch. No further tuning was run.
+    481-540, 4308 over epochs 541-600): the kind of late collapse that `main` removed in torch by halving the KL
+    trust region to 0.005, which these runs already use. No further tuning was run.
   - *The InvertedDoublePendulum falls come from the policies, not from the JAX environment.* Run in Gymnasium's
     float64 MuJoCo from the same start states, the policies fall on the same episodes at the same steps, and a
     float64 JAX env does not remove the falls. 8 of the 10 runs fall on about 1-2 % of start states, mostly shortly
@@ -197,8 +202,8 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
 - **Budgets.** TRPO epochs are `policy_batch_size` steps, and the episodes still running in the rollout lanes are
   finished, so InvertedPendulum and InvertedDoublePendulum end slightly past the budget (D2). Both MountainCar cells
   run with `max_env_steps` 400000; TRPO gets it via `--set max_env_steps=400000`, because finishing the lanes would
-  otherwise give about 500k steps. The capped epoch drops the episodes that would cross the cap (D7), so these runs
-  end between 380k and 400k steps. MPO stops after a fixed number of epochs and finishes the running episode, so on
+  otherwise give about 500k steps. All seeds of a run stop together once the seed with the most steps reaches the cap (D8),
+  so the other seeds end between 380k and 400k steps. MPO stops after a fixed number of epochs and finishes the running episode, so on
   InvertedDoublePendulum it runs past the budget: up to 22 % for the seed whose episodes fall mid-length. The learning
   curves are cut at the budget; the greedy return is the one of the final policy.
 - **Pendulum balance check** (`scripts/eval_balance.py`, |θ| < 0.1 rad in the last 100 of 200 steps, 20 start
@@ -314,7 +319,7 @@ module layout and operator design. In short:
   return based evaluation, SB3 baselines.
 - 2026 port to JAX (Equinox, Optax): every epoch is jitted and the seeds of a run are vmapped; the environments
   are jittable JAX ports instead of Gymnasium, and PyTorch and Gymnasium are only needed by the SB3 baselines. The
-  differences to the torch version are listed above (D1-D7) and the benchmark was re-run with JAX (see Results).
+  differences to the torch version are listed above (D1-D9) and the benchmark was re-run with JAX (see Results).
 - Bug fixes needed for both algorithms to learn (see the commit history):
   TRPO surrogate broadcast (`[D,1]*[D]`), target-policy sync without sigma, time-limit episodes treated as terminal,
   replay index sampling, Q-function target broadcasting and state/action pairing, Retrace off-by-one and aliasing,
