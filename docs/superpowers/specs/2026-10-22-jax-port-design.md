@@ -28,6 +28,18 @@ the class and module architecture must stay recognisable. Torch, Gymnasium and d
 - New algorithms, new tuning, or "paper-style" changes to MPO and TRPO.
 - Multi-device sharding.
 
+## 1a. Change policy: minimal diff
+
+- **No renames.** Files, classes, methods, attributes, config keys and local variables keep their current names. That
+  includes the existing typo `non_parametric_trust_region_optimizatioon.py`.
+- **No restructuring unless jittability requires it.** A change is allowed only if jit, vmap or grad cannot work
+  without it, in which case it takes the smallest form that does (section 5a, R-items). Anything beyond that is an
+  optional improvement and needs explicit approval (section 5a, P-items).
+- **Keep the code flow.** A function keeps its signature, adding only explicit inputs and outputs (a PRNG key, the
+  state it used to mutate) and jaxtyping annotations. The body is converted line by line where possible: `torch.` to
+  `jnp.`, an in-place update to a returned value, a Python loop on traced values to the matching `lax` primitive.
+- **Keep comments and docstrings.** Update them only where they describe torch-specific behaviour.
+
 ## 2. Decisions taken in brainstorming
 
 | Topic | Decision |
@@ -109,7 +121,7 @@ Python `if`s on it stay plain `if`s.
 | `policy/continuous/select_policy.py` | factory | the same factory, taking a key |
 | `value_functions/fc_{v,q}_networks.py` | `nn.Module`, `VanillaGradient` | `eqx.Module`. `v_val`, `q_val`, `q_val_multi` (keeps the `repeat_interleave` row order, `i*K + j`), `v_val(key, states, exp_actions=10, policy)` and `tr_obj`. |
 | `data_structures/abstract_conf/syncable.py` | `clone` / `sync` with deepcopy | `sync(online, target, step, sync_steps) = jnp.where(step % sync_steps == 0, online, target)`, applied leaf-wise with `jax.tree.map`. `clone` becomes the identity, because pytrees are immutable. |
-| `algorithms/mixed/vanilla_gradient.py` | Adam mixin | `perform_mult_sgd(model, opt_state, buffer, key, steps, batch_size, fields)` is a `lax.scan` over `steps` Optax Adam updates. Optax defaults `b1=.9, b2=.999, eps=1e-8` equal the PyTorch defaults. |
+| `algorithms/mixed/vanilla_gradient.py` | Adam mixin | `perform_mult_sgd(state, key, num_steps, tc, batch_size, fields)` keeps today's name and argument order, with `state` and `key` added (R1, R2, R6). It is a `lax.scan` over `num_steps` Optax Adam updates. Optax defaults `b1=.9, b2=.999, eps=1e-8` equal the PyTorch defaults. |
 | `algorithms/mixed/conjugate_gradient.py` | Python `while` | `lax.while_loop`, carrying `(k, x, r, p, rdotr)`, with the same `max_k` and `rdotr <= tol` stop and the same `A(v)` callable interface |
 | `algorithms/mixed/trust_region_gradient.py` | `perform_tr_sgd`, `line_search` | `jax.flatten_util.ravel_pytree` replaces `flat_params`. The FVP is a forward-over-reverse HVP (`jax.jvp(jax.grad(kl))`) plus damping. The line search is a `lax.while_loop` over `lr = 1, 1/2, ...` for up to 10 steps, with the same acceptance test, and restores `x` on failure. |
 | `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | 200 fixed Adam steps on `log η` | `lax.fori_loop` with a fresh Adam per call, as today, run in float64 on CPU (section 7) |
@@ -127,6 +139,50 @@ Dead code is ported as-is or dropped as-is. Nothing is fixed silently. Every ite
 - The unused `ret_add_acts` and `num_add_actions` stay as config keys.
 - `rnk_max_steps` is still not passed, so the dual keeps its default of 200 steps.
 - The parametric MPO mode is kept and still needs `"a"`.
+
+## 5a. Architecture review: JAX compatibility
+
+### Required changes (R): jit, vmap or grad cannot work without these
+
+Each one is shown in its smallest form.
+
+| ID | Current pattern | Why it breaks under jit/vmap | Minimal change, names kept |
+|---|---|---|---|
+| R1 | `self.mc.get("policy", target=True)` is called inside traced methods (algorithms, operators, Q `v_val`). `mc` is a mutable host dict. | The batched per-seed models must come in as traced arguments. A host dict holds one unbatched object. | `mc` keeps its host role: wiring, run directories, store. The traced code receives a state pytree that has the **same accessor**, `state.get("policy", target=True)`, with the same keys (`policy`, `v_network`, `q_network`, `tc`, ...). So a call site changes only from `self.mc.get(...)` to `state.get(...)`. |
+| R2 | `VanillaGradient` and the MPO algorithm own `torch.optim.Adam` objects, holding parameters and state, inside the module or algorithm. | Optimiser state has to be a separate pytree, threaded in and out. It cannot be a field of the module being differentiated. | Same method names (`perform_mult_sgd`, `perform_adam_step`). `opt_state` moves into the algorithm state under keys named after today's attributes (`opt_outer`, `opt_inner`, `v_network.opt`, ...). |
+| R3 | `Syncable.clone()` uses `deepcopy`. `mc.sync()` mutates targets with `overall_step % sync_steps`. | It mutates in place, and the branch depends on a traced counter. | Target models become separate leaves in the state. `sync` is a `jnp.where(overall_step % sync_steps == 0, online, target)` tree-map. `overall_step` moves into the state. |
+| R4 | `Trajectory` and `TrajectoryCollection` are Python lists of pandas and numpy objects with ragged lengths. `Batch` is numpy. | Static shapes, and pytrees only. | These are padded pytrees (section 6) with the **same attribute and property names**: `states`, `next_states`, `all_states`, `actions`, `rewards`, `dones`, `log_likelihoods`, `traj["field"]`, `batch[field]`, `to_batch`, `sample`, `merge`. They gain a `mask`. |
+| R5 | `transform(trajectory)` mutates its annotations, and `transform_all` loops over a list. | In-place writes, and a Python loop over traced data. | `transform(trajectory) -> trajectory` stays per episode, with the same body converted to a reverse `lax.scan`. `TrajectoryOperator.transform_all` becomes `vmap(self.transform)` over the padded episode axis. This is the one base-class edit, and every operator subclass is otherwise untouched. |
+| R6 | Global `torch.manual_seed` and `np.random`. | vmap over seeds needs a separate random stream per seed. | Stochastic functions (`sample_actions`, `sample`, `sample_v`, rollout, `v_val`) take an extra leading `key` argument. Nothing else changes. |
+| R7 | Python `while` or `if` on tensor values: the CG break, the line search, the dual loop, `step % 10` logging. | Traced values can't drive Python control flow. | The same function, rewritten in place with `lax.while_loop` or `lax.fori_loop`. The loop-variable names stay. |
+| R8 | `RunningCenteredFilter` and obs-norm update numpy state on every env step. `MCMCEnvWrapper` counters (`total_steps`, `epoch`, `best_reward`, `max_traj_len`, `created_trajectories`) are Python attributes. | Host mutation inside the rollout | Same class names and fields. The stats become pytree leaves carried through the rollout scan, and the counters live in the state. The thread lock is dropped, because nothing is concurrent any more. |
+| R9 | `cli.print`, `DataLogger.log`, `TrajectoryCollection.print` and the CG and line-search prints run inside the update loops. | Host I/O in traced code would run once at trace time. | Traced code returns a `metrics` dict, and the host prints the same lines after the jitted call. The print functions keep their format strings. |
+| R10 | `TrustRegionGradient.__init__(policy, ...)` and `FullyVNeuralNet(..., VanillaGradient)` mix stateful mixin `__init__`s into modules through multiple inheritance. | Equinox modules are frozen dataclasses, and mixins must not add mutable fields. | The mixins keep their class names and methods. Their hyperparameters (`tr_eps`, `cg_max_k`, ...) become static fields. The live objects (policy, optimiser) come through the state (R1, R2). |
+
+Not required and therefore unchanged:
+- reading `SharedConf` inside methods, because conf values are Python constants at trace time;
+- `isinstance` and static config branches such as `split_objective`, `cov_type` and `mode`;
+- optional `states=None` or `suff_stats=None` arguments, which are static at trace time;
+- the string-based activation selection;
+- the `cli.header` structure of the run loops;
+- recomputing target statistics several times in MPO, which XLA eliminates as common subexpressions.
+
+### Optional improvements (P): proposed, applied only if approved
+
+| ID | Proposal | Benefit | Logic impact |
+|---|---|---|---|
+| P1 | `donate_argnums` on the state in the jitted epoch | Avoids copying the MPO replay buffer (about 50k×20 action samples per seed) every epoch, roughly halving peak memory. | none |
+| P2 | `epochs_per_call` (default 1): `lax.scan` over k epochs per jitted call, then log and checkpoint per epoch from the stacked metrics. | Fewer host round-trips, which matters for short Pendulum epochs on MPS. | none for metrics. `store("last")` happens every k epochs. |
+| P3 | A shared `misc/typing.py` with jaxtyping aliases (`Obs = Float[Array, "*batch obs"]`, `Act`, `SuffStats`, `Key`) and `DTYPE = jnp.float32` | Consistent shapes across about 40 signatures, and one place to change dtype | none, one new file |
+| P4 | Drop the logging-only third recompute in `MPOAlgorithm.perform_step`, and log the values the min step already computed. | About 30% less M-step compute | The printed values become pre-min-step instead of post-min-step. The training math is unchanged. |
+| P5 | Make `ModelConfiguration.store` and `store_best` asynchronous: hand the host copy to a writer thread. | The epoch loop doesn't block on disk I/O when there are many seeds. | none |
+| P6 | A `vmap` over seeds through one generic `run_seeds(run_fn)` helper shared by `run_trpo` and `run_mpo_non_parametric`, instead of duplicating the batching code in both | Less duplicated code in the two run loops | none, one new helper |
+
+Explicitly **not** proposed, because each would change logic or go against the minimal-diff policy:
+- fixing the rollout's filtered-versus-unfiltered state quirk;
+- passing `rnk_max_steps` to the dual;
+- deleting unused config keys;
+- replacing the `ModelConfiguration` service locator with explicit wiring.
 
 ## 6. Data and environments
 
