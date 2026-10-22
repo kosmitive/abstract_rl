@@ -8,6 +8,7 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
 )
 from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.scripts.mpo_pendulum import run_config
 from golden import golden, load_named, named_parameters, sub
@@ -71,3 +72,45 @@ def test_list_trust_regions_are_sampled_per_key(make_pendulum_mc):
         alg = MPOAlgorithm(mc)
     a, b = alg.sample_v(jax.random.key(0))[0], alg.sample_v(jax.random.key(1))[0]
     assert 0.01 <= float(a) <= 0.05 and float(a) != float(b)
+
+
+def test_vmapped_mult_steps_match_an_unbatched_run(make_pendulum_mc):
+    mc = make_pendulum_mc(alg="mpo", **{**{k: run_config[k] for k in MPO_KEYS}, **CASES["mpo_split"]})
+    with mc["conf"].ns("policy"):
+        policies = [select_policy(mc, jax.random.key(i)) for i in range(2)]
+    mc.add_syncable("policy", policies[0], 1)
+    with mc["conf"].ns("mpo"):
+        alg = MPOAlgorithm(mc)
+    states = [ModelState.create(alg.init_state(p), {"policy": (p, p)}) for p in policies]
+    stacked = jax.tree.map(lambda *x: jnp.stack(x), *states)
+    keys = jnp.stack([jax.random.key(10), jax.random.key(11)])
+
+    # one valid episode of 40 steps in a memory of 64 rows
+    memory = TrajectoryCollection.memory(None, 64, 3, 1).with_annotations(
+        {k: jax.ShapeDtypeStruct((20,), jnp.float32) for k in ["add_act", "grad_ranking", "add_pi"]}
+    )
+    t = memory.trajectories()
+    k1, k2, k3 = jax.random.split(jax.random.key(3), 3)
+    t = (
+        t.set("add_act", jax.random.normal(k1, t["add_act"].shape))
+        .set("grad_ranking", jax.nn.log_softmax(jax.random.normal(k2, t["grad_ranking"].shape), axis=-1))
+        .replace(
+            states=jax.random.normal(k3, t.states.shape),
+            mask=t.mask.at[:, :40].set(True),
+            ends=t.ends.at[:, 39].set(True),
+        )
+    )
+    memory = memory.with_trajectories(t)
+
+    batched = jax.jit(jax.vmap(alg.perform_mult_steps, in_axes=(0, 0, None, None, None)), static_argnums=(2, 4))
+    state, metrics = batched(stacked, keys, 3, memory, 8)
+    n = alg.num_params
+    assert metrics["obj"].shape == (2, 3)
+    assert metrics["lagrange_mults"].shape == (2, 3, n)
+    assert metrics["constraints"].shape == (2, 3, n)
+
+    single = jax.jit(alg.perform_mult_steps, static_argnums=(2, 4))
+    state1, _ = single(states[1], keys[1], 3, memory, 8)
+    got = named_parameters(jax.tree.map(lambda x: x[1], state.get("policy")))
+    for k, expected in named_parameters(state1.get("policy")).items():
+        np.testing.assert_allclose(got[k], expected, rtol=1e-5, err_msg=k)

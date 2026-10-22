@@ -30,11 +30,9 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
     def __init__(self, mc: ModelConfiguration) -> None:
         """
-
         Initializes a new maximum a posteriori policy optimization algorithm.
         :param mc: The model configuration, containing all important elements, like env or similar.
         """
-
         PolicyOptimizationAlgorithm.__init__(self, mc)
 
         # create lagrange multiplier
@@ -88,7 +86,6 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         :param batch: The batch to use for obtaining the sufficient statistics
         :return:
         """
-
         # get target and correct policy
         t_states = jnp.asarray(batch.states, DTYPE)
         t_policy = state.get("policy", target=True)
@@ -161,7 +158,6 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
     def obj(self, state: ModelState, batch: Any, policy: Any, lagrange_mults: Any, v: list[Any]) -> Any:  # type: ignore[override]
         """
-
         Calculate the objective based on the objective and the splitted kl divergence constraints.
         :param batch: Batch to estimate objective and constraints
         :return: A un-detached version of the objective
@@ -179,7 +175,6 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self, state: ModelState, key: PRNGKeyArray, num_steps: int, tc: Any, batch_size: int
     ) -> tuple[ModelState, dict[str, Any]]:
         """
-
         Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
         constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
         objective is created based on lagrangian multipliers and the theory of min max optimization.
@@ -201,7 +196,6 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
     def perform_step(self, state: ModelState, step: Any, batch: Any, v: list[Any]) -> tuple[ModelState, dict[str, Any]]:
         """
-
         Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
         constrain is effectively decoupled, so convergence of mean and variance can be controlled separately. A
         objective is created based on lagrangian multipliers and the theory of min max optimization.
@@ -211,12 +205,12 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         state = self.__max_step(state, batch, v)
         state, obj, constraints = self.__min_step(state, batch, v)
 
-        # the logged objective and constraints are the ones of the min step (spec P4)
+        # the logged objective (without the multiplier terms, as torch printed it) and constraints are the ones of the
+        # min step (spec P4)
         return state, {"obj": obj, "lagrange_mults": state.get("lagrange_mults"), "constraints": jnp.stack(constraints)}
 
     def __lagrange_obj(self, batch: Any, suff_stats: Any, policy: Any) -> Any:
         """
-
         Calculated the reweighted objective needed for the min max problem. This is only partly
         the objective as the lagrange constraints are missing.
         :param batch: The batch to use for estimating the objective.
@@ -259,11 +253,16 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         opt = optax.adam(self.inner_lr)
 
         def objective(lagrange_mults: Any) -> Any:
+            # same value as self.obj, but the objective without the multiplier terms is kept for logging
             l_suff_stats = self.shuffle_up_stats(state, batch, policy)
+            main = self.main_obj(state, batch, l_suff_stats, policy)
             constraints = self.main_constraints(state, batch, l_suff_stats, policy, v)
-            return self.obj(state, batch, policy, lagrange_mults, v), constraints
+            obj = main
+            for i, c in enumerate(constraints):
+                obj = obj + jnp.exp(lagrange_mults[i]) * c
+            return obj, (main, constraints)
 
-        (obj, constraints), grads = jax.value_and_grad(objective, has_aux=True)(state.get("lagrange_mults"))
+        (_, (obj, constraints)), grads = jax.value_and_grad(objective, has_aux=True)(state.get("lagrange_mults"))
         updates, opt_state = opt.update(grads, state.get("opt_inner"))
         state = state.set("lagrange_mults", state.get("lagrange_mults") + updates).set("opt_inner", opt_state)
         return state, obj, constraints
