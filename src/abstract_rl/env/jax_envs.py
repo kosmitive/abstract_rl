@@ -96,3 +96,66 @@ class GymnaxEnv:
 
 register_env("Pendulum-v1", lambda: GymnaxEnv("Pendulum-v1"))
 register_env("MountainCarContinuous-v0", lambda: GymnaxEnv("MountainCarContinuous-v0"))
+
+
+def _ctrl_bounds(ctrlrange: Any, action_dim: int) -> tuple[np.ndarray, np.ndarray]:
+    """Actuator bounds of a MuJoCo model; unlimited actuators (an all-zero range) fall back to [-1, 1]."""
+    ctrl = np.asarray(ctrlrange, np.float32).reshape(action_dim, 2)
+    if not np.all(ctrl[:, 0] < ctrl[:, 1]):
+        return np.full(action_dim, -1.0, np.float32), np.full(action_dim, 1.0, np.float32)
+    return ctrl[:, 0].copy(), ctrl[:, 1].copy()
+
+
+class BraxEnv:
+    """Brax environment on the MJX backend. Brax ``done`` is a termination; time limits are applied by ``max_steps``."""
+
+    def __init__(self, name: str) -> None:
+        from brax import envs
+
+        self._env = envs.get_environment(name, backend="mjx")
+        self.observation_dim = int(self._env.observation_size)
+        self.action_dim = int(self._env.action_size)
+        self.action_low, self.action_high = _ctrl_bounds(self._env.sys.actuator_ctrlrange, self.action_dim)
+        self.obs_high = np.full(self.observation_dim, np.inf, np.float32)
+
+    def reset(self, key: PRNGKeyArray) -> tuple[Any, Float[Array, " Ds"]]:
+        env_state = self._env.reset(key)
+        return env_state, jnp.asarray(env_state.obs, DTYPE)
+
+    def step(
+        self, env_state: Any, action: Float[Array, " A"], key: PRNGKeyArray
+    ) -> tuple[Any, Float[Array, " Ds"], Float[Array, ""], Bool[Array, ""], Bool[Array, ""]]:
+        env_state = self._env.step(env_state, action)
+        return (env_state, jnp.asarray(env_state.obs, DTYPE), jnp.asarray(env_state.reward, DTYPE).reshape(()),
+                jnp.asarray(env_state.done).reshape(()) > 0.5, jnp.asarray(False))
+
+
+class PlaygroundEnv:
+    """MuJoCo Playground environment (MJX). Its ``done`` is a termination; time limits are applied by ``max_steps``."""
+
+    def __init__(self, name: str) -> None:
+        from mujoco_playground import registry
+
+        self._env = registry.load(name)
+        self.observation_dim = int(np.prod(np.asarray(self._env.observation_size)))
+        self.action_dim = int(self._env.action_size)
+        self.action_low, self.action_high = _ctrl_bounds(self._env.mj_model.actuator_ctrlrange, self.action_dim)
+        self.obs_high = np.full(self.observation_dim, np.inf, np.float32)
+
+    def reset(self, key: PRNGKeyArray) -> tuple[Any, Float[Array, " Ds"]]:
+        env_state = self._env.reset(key)
+        return env_state, jnp.asarray(env_state.obs, DTYPE).reshape(-1)
+
+    def step(
+        self, env_state: Any, action: Float[Array, " A"], key: PRNGKeyArray
+    ) -> tuple[Any, Float[Array, " Ds"], Float[Array, ""], Bool[Array, ""], Bool[Array, ""]]:
+        env_state = self._env.step(env_state, action)
+        obs = jnp.asarray(env_state.obs, DTYPE).reshape(-1)
+        return (env_state, obs, jnp.asarray(env_state.reward, DTYPE).reshape(()),
+                jnp.asarray(env_state.done).reshape(()) > 0.5, jnp.asarray(False))
+
+
+register_env("InvertedPendulum-v5", lambda: BraxEnv("inverted_pendulum"))
+register_env("InvertedDoublePendulum-v5", lambda: BraxEnv("inverted_double_pendulum"))
+register_env("HalfCheetah-v5", lambda: BraxEnv("halfcheetah"))
+register_env("AcrobotSwingup-v0", lambda: PlaygroundEnv("AcrobotSwingup"))

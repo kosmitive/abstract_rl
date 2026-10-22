@@ -73,3 +73,32 @@ def test_point_mass_contract():
 def test_unknown_env_lists_the_known_ids():
     with pytest.raises(KeyError, match="Pendulum-v1"):
         make_env("Nope-v0")
+
+
+@pytest.mark.parametrize(
+    "env_id, obs_dim, act_dim",
+    [("InvertedPendulum-v5", None, 1), ("InvertedDoublePendulum-v5", None, 1), ("HalfCheetah-v5", None, 6),
+     ("AcrobotSwingup-v0", None, 1)],
+)
+def test_mjx_contract(env_id, obs_dim, act_dim):
+    env = make_env(env_id)
+    _contract(env, env.observation_dim, act_dim)
+    assert np.all(env.action_low < env.action_high)
+    assert np.all(np.isinf(env.obs_high))
+
+
+def test_inverted_pendulum_falls_and_terminates():
+    env = make_env("InvertedPendulum-v5")
+    st, _ = env.reset(KEY)
+    step = jax.jit(env.step)
+    for k in range(200):
+        st, _obs, _r, term, trunc = step(st, jnp.full(1, env.action_high[0]), jax.random.key(k))
+        if bool(term):
+            break
+    assert bool(term) and not bool(trunc)
+
+
+def test_halfcheetah_never_terminates():
+    env = make_env("HalfCheetah-v5")
+    steps = _roll(env, 50, jnp.full(6, 0.5))
+    assert not any(bool(t) or bool(tr) for _, _, t, tr in steps)
