@@ -169,7 +169,10 @@ Not required and therefore unchanged:
 
 ### Optional improvements (P)
 
-**Accepted on 2026-10-22: P1, P2 (default `epochs_per_call: 1`), P3 and P6. Rejected: P4 and P5.**
+**Accepted on 2026-10-22: all of P1–P6.**
+- P2 defaults to `epochs_per_call: 1`.
+- P4 changes only the printed M-step values: they are now the ones before the min step. The training math is unchanged.
+- P5 writes checkpoints from a background thread, and the writer is joined before the run ends.
 
 | ID | Proposal | Benefit | Logic impact |
 |---|---|---|---|
