@@ -7,8 +7,9 @@
 Modular [JAX](https://docs.jax.dev) ([Equinox](https://docs.kidger.site/equinox/), [Optax](https://optax.readthedocs.io))
 implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces (environment
 wrapper, trajectory operators, policies, value functions). Python 3.12+, [uv](https://docs.astral.sh/uv/), ruff, mypy.
-The environments are jittable JAX ports ([gymnax](https://github.com/RobertTLange/gymnax),
-[Brax](https://github.com/google/brax) with MJX, [MuJoCo Playground](https://github.com/google/mujoco_playground)), so
+The environments are jittable JAX ports ([gymnax](https://github.com/RobertTLange/gymnax) for the classic-control
+tasks, [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) on Gymnasium's own XML for the MuJoCo pendulums and
+[Brax](https://github.com/google/brax) for HalfCheetah), so
 a whole epoch, rollouts included, is one jitted program and many seeds train at once under `vmap`. The library depends
 on neither PyTorch nor Gymnasium; both are only used by the optional Stable-Baselines3 baselines.
 
@@ -89,7 +90,8 @@ The full list with reasons is in the [design spec](docs/superpowers/specs/2026-1
   identical to torch).
 - **D3** `run.conf` stores the real seed instead of `np.random.randint(1e6)`.
 - **D4** The temperature dual runs in float32 instead of float64.
-- **D5** Environment dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control.
+- **D5** Environment dynamics come from JAX ports instead of Gymnasium v5: gymnax (Pendulum, MountainCar), MJX on
+  Gymnasium's XML (the pendulums, matching Gymnasium v5 up to float32 rounding) and Brax (HalfCheetah, small residuals).
 - **D6** Observations are float32 from the environment on.
 - **D7** When capping drops part of one epoch's episodes, ties between lanes finishing at the same step are broken by
   lane order.
@@ -148,7 +150,7 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
 | HalfCheetah-v5 | 4471.7 ± 1645.7, 3/5 | 4433.2 ± 485.5, **1/5** | 7940.5 ± 1398.2, 5/5 | 8761.8 ± 1083.8, 5/5 |
 
 - **Where JAX matches or beats torch.** Pendulum, MountainCar, InvertedPendulum and HalfCheetah MPO solve 5/5 seeds as
-  on `main`, with equal or higher greedy returns. The Pendulum returns are about 15 points higher than torch's.
+  on `main`, with equal or higher greedy returns. The Pendulum returns are about 16-17 points higher than torch's.
   gymnax's Pendulum matches Gymnasium step by step (observations within 2e-6, rewards within 1e-5 from the same
   state), but the 20 evaluation start states are drawn from JAX keys instead of Gymnasium seeds (D1). With a spread of
   about 85 over start states, the mean of 20 episodes moves by tens of points with the start states alone.
@@ -164,7 +166,7 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
     also gave 3/5 (mean 9157, every failure one falling episode out of 20), so `main`'s 0.005 is kept.
   - *InvertedDoublePendulum MPO: 2/5 instead of 5/5* (greedy 9334, 9357, 8897, 8907 and 7362). Every seed reaches
     the threshold in training (median 60k steps, `main` 66k). The final policies of seeds 3 and 4 drop one of their
-    20 greedy episodes. Seed 5 drops 7 of 20, and its training return falls at the end (mean 5386 over epochs
+    20 greedy episodes. Seed 5 drops 6 of 20, and its training return falls at the end (mean 5386 over epochs
     481-540, 4308 over epochs 541-600): the late collapse that `main`'s smaller trust region (0.005) removed in
     torch. No further tuning was run.
   - *The InvertedDoublePendulum falls come from the policies, not from the JAX environment.* Run in Gymnasium's
