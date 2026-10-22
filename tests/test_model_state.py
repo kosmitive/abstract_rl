@@ -33,6 +33,8 @@ def test_masked_reductions_ignore_nan_padding():
     assert jnp.isfinite(masked_mean(padded, mask)) and jnp.isfinite(masked_std(padded, mask))
     grad = jax.grad(lambda p: masked_mean(p * 2.0, mask))(padded)
     assert jnp.all(jnp.isfinite(grad[:3])) and jnp.all(grad[3:] == 0)
+    grad_std = jax.grad(lambda p: masked_std(p * 2.0, mask))(padded)
+    assert jnp.all(jnp.isfinite(grad_std[:3])) and jnp.all(grad_std[3:] == 0)
 
 
 def test_batch_keeps_the_torch_accessors():

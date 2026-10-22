@@ -22,8 +22,9 @@ def masked_std(x: Array, mask: Bool[Array, "N"] | None) -> Float[Array, ""]:
     if mask is None:
         return jnp.std(x, ddof=1)
     m = _broadcast_mask(x, mask)
-    mean = jnp.sum(jnp.where(m, x, 0.0)) / jnp.sum(m)
-    return jnp.sqrt(jnp.sum(jnp.where(m, (x - mean) ** 2, 0.0)) / (jnp.sum(m) - 1))
+    xs = jnp.where(m, x, 0.0)  # mask first, so padded NaN/inf never enter the arithmetic or its backward pass
+    mean = jnp.sum(xs) / jnp.sum(m)
+    return jnp.sqrt(jnp.sum(jnp.where(m, (xs - mean) ** 2, 0.0)) / (jnp.sum(m) - 1))
 
 
 def batch_mask(batch: Any) -> Any:
