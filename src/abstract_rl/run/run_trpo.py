@@ -93,12 +93,14 @@ def run_trpo(conf: Any) -> np.ndarray:
     def epoch(state: ModelState, batch_size: int) -> tuple[ModelState, dict[str, Any]]:
         """One epoch of one seed: rollout, advantages, trust region step on the policy, fit of v, sync."""
         key, k_rollout, k_v = jax.random.split(state.get("key"), 3)
-        pre = {"policy": state.get("policy"), "v_network": state.get("v_network"), "obs_rms": state.get("obs_rms")}
+        pre = {"policy": state.get("policy"), "v_network": state.get("v_network")}
 
         # test policy
         state, tc, rollout = env.execute_policy(
             state, k_rollout, state.get("policy"), max_steps, batch_size, exploration=True
         )
+        # the stored checkpoint pairs the models the rollout ran with with the statistics the rollout updated
+        pre["obs_rms"] = state.get("obs_rms")
         tc = filter.transform_all(state, tc)
 
         # calc value fns and policies: estimate v values by sample return
@@ -163,6 +165,9 @@ def run_trpo(conf: Any) -> np.ndarray:
                 policy_batch_size = min(epoch_steps, max_env_steps - done_steps)
                 if policy_batch_size < epoch_steps:
                     num = 1
+                else:
+                    # a chunk of full epochs must not overshoot the budget, the shortened last epoch runs on its own
+                    num = max(1, min(num, (max_env_steps - done_steps) // epoch_steps))
 
             state, metrics = run_chunk(state, policy_batch_size, num)
             metrics = jax.device_get(metrics)
@@ -193,8 +198,15 @@ def run_trpo(conf: Any) -> np.ndarray:
                     rows = metrics["p_step"]["rows"][0, c]
                     for row in rows[~np.isnan(rows[:, 0])]:
                         cli.print(P_ROW_FORMAT.format(int(row[0]), *row[1:]))
-                    if not bool(metrics["p_step"]["accepted"][0, c]):
-                        cli.line().print("FAILED")
+                    for i, seed in enumerate(runs.seeds):
+                        if not bool(metrics["p_step"]["accepted"][i, c]):
+                            cli.line().print(f"FAILED (seed {seed})")
+
+                with cli.header("v-step", True):
+                    cli.print(FullyVNeuralNet.titlestr % ("k", "pre_objective", "post_objective")).line()
+                    k_pre_post = metrics["v_step"]["k_pre_post"][0, c]
+                    for k in np.flatnonzero(~np.isnan(k_pre_post[:, 1])):
+                        cli.print(FullyVNeuralNet.fmtstr % (k, *k_pre_post[k]))
                 e += 1
 
             # save last model (the models the last rollout ran with), keep it as best model if its return is the highest

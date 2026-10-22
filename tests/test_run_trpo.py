@@ -48,3 +48,18 @@ def test_env_step_budget_shortens_the_last_epoch(trpo_conf):
 def test_epochs_per_call(trpo_conf):
     returns = run_trpo(_conf(trpo_conf, num_epochs=4, epochs_per_call=2))
     assert returns.shape == (1, 4, 2) and np.all(np.isfinite(returns))
+
+
+def test_stored_obs_rms_is_the_one_after_the_rollout(trpo_conf, tmp_path):
+    run_trpo(_conf(trpo_conf, obs_norm=True, num_epochs=1))
+    (run,) = tmp_path.glob("TestPointMass-v0/trpo/*")
+    steps = int(float((run / "data/steps.txt").read_text().split()[0]))
+    # PointMass never terminates, so every episode is 30 steps long and starts with one reset observation
+    episodes = steps // 30
+    count = float(np.load(run / "model/obs_rms.npz")["count"])
+    np.testing.assert_allclose(count, steps + episodes + 1e-4, rtol=1e-6)
+
+
+def test_epochs_per_call_respects_the_env_step_budget(trpo_conf):
+    returns = run_trpo(_conf(trpo_conf, num_epochs=10, max_env_steps=300, epochs_per_call=4))
+    assert returns.shape[1] == 3  # 120 + 120 + a shortened 60 step epoch, not a 4 epoch chunk of 480 steps
