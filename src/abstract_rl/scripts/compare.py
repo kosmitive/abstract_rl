@@ -8,7 +8,7 @@ The results directory is searched recursively for abstract_rl runs (``run.conf``
 evaluation ``eval.json`` written by ``eval_returns --json`` next to ``run.conf``) and SB3 runs (``run.json`` plus
 ``monitor.csv``). For every environment a learning curve plot (training return over environment steps, mean ± std over
 seeds) and a Markdown table with the greedy evaluation are written. Learning curves are cut at the environment-step
-budget (``steps`` in ``config/env``; the episode crossing it is kept), so runs that stop after a fixed number of
+budget (``steps`` in ``conf/env``; the episode crossing it is kept), so runs that stop after a fixed number of
 epochs and overshoot the budget are compared on equal steps; the greedy return is the one of the final policy.
 """
 
@@ -31,8 +31,8 @@ from abstract_rl.scripts.hydra_conf import steps as steps_budget
 
 Runs = dict[tuple[str, str], dict[int, tuple[ndarray, ndarray, ndarray | None]]]
 
-LABELS = {"trpo": "TRPO (abstract_rl)", "mpo": "MPO (abstract_rl)", "sb3_trpo": "TRPO (SB3)", "sb3_ppo": "PPO (SB3)"}
-COLORS = {"trpo": "C0", "mpo": "C1", "sb3_trpo": "C2", "sb3_ppo": "C3"}
+LABELS = {"trpo": "TRPO (abstract_rl)", "mpo": "MPO (abstract_rl)", "sb3_trpo": "TRPO (SB3)", "sb3_td3": "TD3 (SB3)"}
+COLORS = {"trpo": "C0", "mpo": "C1", "sb3_trpo": "C2", "sb3_td3": "C3"}
 
 
 def load_runs(root: str) -> Runs:

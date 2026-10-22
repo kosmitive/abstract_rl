@@ -1,4 +1,4 @@
-"""Train TRPO or MPO on one of the benchmark environments (Hydra entry point, configuration in ``config/``).
+"""Train TRPO or MPO on one of the benchmark environments (Hydra entry point, configuration in ``abstract_rl/conf``).
 
 Usage::
 

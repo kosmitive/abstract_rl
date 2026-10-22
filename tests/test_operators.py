@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 
 
 def test_temperature_satisfies_kl_bound():

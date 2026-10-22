@@ -1,13 +1,21 @@
 # Abstract RL
 
+[![CI](https://github.com/kosmitive/abstract_rl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kosmitive/abstract_rl/actions/workflows/ci.yml)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
 (environment wrapper, trajectory operators, policies, value functions). Python 3.13, [uv](https://docs.astral.sh/uv/),
 ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
 Stable-Baselines3.
 
-| MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 |
-|---|---|
-| ![MPO Pendulum](docs/mpo_pendulum_best.gif) | ![MPO MountainCar](docs/mpo_mountaincar_best.gif) |
+| MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 | MPO on InvertedPendulum-v5 |
+|---|---|---|
+| ![MPO Pendulum](docs/mpo_pendulum_best.gif) | ![MPO MountainCar](docs/mpo_mountaincar_best.gif) | ![MPO InvertedPendulum](docs/mpo_inverted_pendulum_best.gif) |
+| **MPO on InvertedDoublePendulum-v5** | **MPO on HalfCheetah-v5** | |
+| ![MPO InvertedDoublePendulum](docs/mpo_inverted_double_pendulum_best.gif) | ![MPO HalfCheetah](docs/mpo_halfcheetah_best.gif) | |
+
+The GIFs show one greedy episode of the best MPO policy per environment (highest greedy return over all runs).
 
 - **TRPO**: Trust Region Policy Optimization ([Schulman et al., 2015](https://arxiv.org/abs/1502.05477)) with
   [GAE](https://arxiv.org/abs/1506.02438), conjugate gradient natural gradient step and a KL line search.
@@ -28,8 +36,8 @@ PyTorch comes from the CPU wheel index (enough for these small networks); remove
 
 ## Results
 
-Configurations are Hydra YAML files in [`config/`](config) (`run env=<env> alg=<alg> seed=N`),
-**5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `config/env/<env>.yaml`).
+Configurations are Hydra YAML files in [`src/abstract_rl/conf/`](src/abstract_rl/conf) (`run env=<env> alg=<alg> seed=N`),
+**5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `conf/env/<env>.yaml`).
 *Greedy return* is the mean of 20 seeded evaluation episodes with the policy mean (final policy), averaged over seeds
 ± std over seeds. *Solved* counts seeds whose greedy return reaches the threshold (Gymnasium reward threshold;
 Pendulum-v1 has none, -150 corresponds to swing-up and balance). *Steps to threshold* is the first step at which the
@@ -38,25 +46,28 @@ smoothed training return reaches it (median over the seeds that do).
 | Environment | Algorithm | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
 |---|---|---|---|---|---|---|
 | Pendulum-v1 (≥ -150) | TRPO (abstract_rl) | 5 | 800,000 | -127.7 ± 2.7 | 5/5 | 192,000 (5/5) |
-| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -123.8 ± 1.0 | 5/5 | 40,000 (5/5) |
+| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -123.3 ± 0.4 | 5/5 | 36,000 (5/5) |
 | Pendulum-v1 (≥ -150) | TRPO (SB3) | 5 | 800,000 | -124.0 ± 1.6 | 5/5 | 204,000 (5/5) |
-| Pendulum-v1 (≥ -150) | PPO (SB3) | 5 | 800,000 | -156.1 ± 38.5 | 3/5 | 536,000 (5/5) |
+| Pendulum-v1 (≥ -150) | TD3 (SB3) | 5 | 800,000 | -120.9 ± 1.0 | 5/5 | 36,000 (5/5) |
 | MountainCarContinuous-v0 (≥ 90) | TRPO (abstract_rl) | 5 | 401,254 | 94.1 ± 0.7 | 5/5 | 44,286 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,039 | 93.6 ± 0.0 | 5/5 | 52,000 (5/5) |
+| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,038 | 93.6 ± 0.0 | 5/5 | 56,000 (5/5) |
 | MountainCarContinuous-v0 (≥ 90) | TRPO (SB3) | 5 | 400,072 | 74.7 ± 37.5 | 4/5 | 52,013 (4/5) |
-| MountainCarContinuous-v0 (≥ 90) | PPO (SB3) | 5 | 399,927 | 54.8 ± 76.7 | 4/5 | 5,998 (5/5) |
+| MountainCarContinuous-v0 (≥ 90) | TD3 (SB3) | 5 | 399,966 | 54.9 ± 77.4 | 4/5 | 28,993 (4/5) |
 | InvertedPendulum-v5 (≥ 950) | TRPO (abstract_rl) | 5 | 151,370 | 1000.0 ± 0.0 | 5/5 | 28,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,663 | 950.2 ± 99.6 | 4/5 | 19,000 (5/5) |
+| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,357 | 1000.0 ± 0.0 | 5/5 | 20,000 (5/5) |
 | InvertedPendulum-v5 (≥ 950) | TRPO (SB3) | 5 | 150,523 | 1000.0 ± 0.0 | 5/5 | 29,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | PPO (SB3) | 5 | 150,220 | 1000.0 ± 0.0 | 5/5 | 28,000 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 602,473 | 9092.1 ± 218.8 | 2/5 | 211,015 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,178 | 5937.0 ± 4162.1 | 3/5 | 66,066 (5/5) |
+| InvertedPendulum-v5 (≥ 950) | TD3 (SB3) | 5 | 149,310 | 1000.0 ± 0.0 | 5/5 | 25,000 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 605,543 | 9332.8 ± 3.8 | 5/5 | 431,112 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,620 | 9332.9 ± 7.4 | 5/5 | 66,110 (5/5) |
 | InvertedDoublePendulum-v5 (≥ 9100) | TRPO (SB3) | 5 | 599,517 | 8270.3 ± 602.2 | 0/5 | 107,946 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | PPO (SB3) | 5 | 599,587 | 9175.8 ± 225.2 | 3/5 | 197,967 (5/5) |
-| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 1903.7 ± 862.3 | 0/5 | never |
-| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 8350.6 ± 1043.4 | 5/5 | 198,000 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | TD3 (SB3) | 5 | 599,243 | 9347.9 ± 10.3 | 5/5 | 26,996 (5/5) |
+| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 4471.7 ± 1645.7 | 3/5 | 732,000 (2/5) |
+| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 7940.5 ± 1398.2 | 5/5 | 210,000 (5/5) |
 | HalfCheetah-v5 (≥ 4800) | TRPO (SB3) | 5 | 1,200,000 | 2547.9 ± 1314.1 | 0/5 | never |
-| HalfCheetah-v5 (≥ 4800) | PPO (SB3) | 5 | 1,200,000 | 1620.3 ± 59.9 | 0/5 | never |
+| HalfCheetah-v5 (≥ 4800) | TD3 (SB3) | 5 | 1,200,000 | 11009.6 ± 522.5 | 5/5 | 96,000 (5/5) |
+
+Learning curves of the four algorithms on environment steps (training return, mean ± std over the 5 seeds; the
+runs of the table):
 
 ![benchmark](docs/benchmark.png)
 
@@ -66,16 +77,22 @@ smoothed training return reaches it (median over the seeds that do).
   step budget (`max_env_steps`).
 - **Pendulum balance check** (`scripts/eval_balance.py`, |θ| < 0.1 rad in the last 100 of 200 steps, 20 start
   states): TRPO and MPO balance in 5/5 seeds and 20/20 episodes each (max |θ| 0.012-0.057 rad TRPO, 0.032-0.098 rad MPO).
-- **SB3 baselines**: library defaults, except MountainCarContinuous-v0, which uses the
+- **SB3 baselines**: TRPO uses the library defaults, except on MountainCarContinuous-v0, which uses the
   [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) hyper-parameters (`--zoo`, gSDE exploration) at
-  the same 400k budget; with defaults both SB3 algorithms score 0 there. On Pendulum-v1 the zoo settings were worse
-  than the defaults (TRPO -136, PPO -226), so the defaults are shown.
-- **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** are not re-tuned. MPO stops after a fixed number of epochs
-  and finishes the running episode, so on the two pendulums it ran up to 4-6% past the budget; the learning curves are
-  cut at the budget, the greedy return is the one of the final policy. MPO is less stable late in training there
-  (one InvertedPendulum seed, two InvertedDoublePendulum seeds collapse after reaching the maximum).
-- Runs were made on Linux (Python 3.13) and a MacBook (Python 3.14) with one CPU thread; seeds are fixed but results
-  are not bit-reproducible across machines.
+  the same 400k budget; with the defaults it scores 0 there. On Pendulum-v1 the zoo settings were worse than the
+  defaults (-136), so the defaults are shown. TD3 always uses the zoo hyper-parameters (`ZOO` in
+  `scripts/run_baselines.py`); on MountainCarContinuous-v0 one of five seeds (seed 3) never finds the goal (-99.9).
+- **MPO tuned for InvertedPendulum and InvertedDoublePendulum** (one setting each, see `conf/tune/`): a 300k
+  instead of 50k replay memory (`tc_size`) on InvertedPendulum (4/5 → 5/5 seeds) and a KL trust region
+  (`mpo_trust_regions`) of 0.005 instead of 0.01 on InvertedDoublePendulum (3/5 → 5/5); both remove the late-training
+  collapse of single seeds. HalfCheetah MPO is not re-tuned. MPO stops after a fixed number of epochs and finishes the
+  running episode, so on the two pendulums it ran up to 5% (InvertedPendulum) and 7% (InvertedDoublePendulum) past the
+  budget; the learning curves are cut at the budget, the greedy return is the one of the final policy.
+- **TRPO tuned for InvertedDoublePendulum and HalfCheetah** (see `conf/tune/`): InvertedDoublePendulum 75 × 8000
+  steps with a KL trust region of 0.005, HalfCheetah 300 × 4000 steps with a KL trust region of 0.02 and `obs_norm`,
+  both without the value L2 penalty (InvertedDoublePendulum 2/5 → 5/5, HalfCheetah 0/5 → 3/5 seeds).
+- Runs were made on Linux and a MacBook (Python 3.13) with one CPU thread; seeds are fixed but
+  results are not bit-reproducible across machines.
 
 ## Usage
 
@@ -85,16 +102,17 @@ uv run python -m abstract_rl.scripts.run env=mountaincar alg=mpo data_root=resul
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo --cfg job              # print the config
 uv run python -m abstract_rl.scripts.eval_returns data/HalfCheetah-v5/mpo/<run> --save       # greedy evaluation
 uv run python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run>              # Pendulum balance check
-uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 ppo --seed 1 --data-root results
+uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 td3 --seed 1 --data-root results
 uv run python -m abstract_rl.scripts.compare results --out docs/                         # table and plots
 uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render         # replay a policy
 ```
 
-Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`),
-`config/alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults) and `config/env/<env>.yaml` (Gymnasium `id`, `success`
-threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo`/`mpo`). Environments: `pendulum`,
+Configuration ([Hydra](https://hydra.cc)) ships inside the package in `src/abstract_rl/conf/`: `config.yaml` (`seed`,
+`data_root`, `max_env_steps`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
+`success` threshold, `steps` budget), `tune_all/<env>.yaml` (overrides for both algorithms) and
+`tune/<env>_<alg>.yaml` (per-algorithm overrides). Environments: `pendulum`,
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
-environment table. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
+tune files. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
 diagonal Gaussian policy from the action space.
@@ -110,7 +128,7 @@ src/abstract_rl/
 ├── data_structures/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryBuilder, TrajectoryCollection (replay), Batch
-├── env/                              MCMCEnvWrapper: runs whole episodes of a policy in a Gymnasium env
+├── env/                              RolloutEnvWrapper: runs whole episodes of a policy in a Gymnasium env
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
 ├── policy/                           univariate and diagonal Gaussian policy (+ select_policy), non-parametric policy
 ├── value_functions/                  fully connected V and Q networks
@@ -156,6 +174,80 @@ module layout and operator design. In short:
   Gaussian actions (now tanh-squashed with the Jacobian in the log-likelihood), Retrace policy mismatch, KL check
   in the TRPO line search, a larger ELU critic for MPO, and a state-dependent sigma that stays positive without
   being passed through softplus twice.
+
+## Acknowledgements
+
+- The running state filter (`misc/running_centered_filter.py`) is adapted from John Schulman's
+  [modular_rl](https://github.com/joschu/modular_rl) and Ilya Kostrikov's
+  [pytorch-trpo](https://github.com/ikostrikov/pytorch-trpo).
+- The baselines use [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3),
+  [SB3-Contrib](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib) and hyper-parameters from
+  [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo); the environments come from
+  [Gymnasium](https://gymnasium.farama.org) and [MuJoCo](https://mujoco.org).
+
+## Citing
+
+If you use this code, please cite the repository (see [`CITATION.cff`](CITATION.cff)) and the papers of the methods:
+
+```bibtex
+@software{semmler_abstract_rl,
+  author = {Semmler, Markus},
+  title  = {Abstract RL: modular PyTorch TRPO and MPO},
+  url    = {https://github.com/kosmitive/abstract_rl},
+  year   = {2026}
+}
+
+@inproceedings{peters2010reps,
+  author    = {Peters, Jan and M{\"u}lling, Katharina and Alt{\"u}n, Yasemin},
+  title     = {Relative Entropy Policy Search},
+  booktitle = {Proceedings of the 24th AAAI Conference on Artificial Intelligence (AAAI)},
+  year      = {2010},
+  pages     = {1607--1612},
+  url       = {https://ojs.aaai.org/index.php/AAAI/article/view/7727}
+}
+
+@inproceedings{schulman2015trpo,
+  author    = {Schulman, John and Levine, Sergey and Moritz, Philipp and Jordan, Michael I. and Abbeel, Pieter},
+  title     = {Trust Region Policy Optimization},
+  booktitle = {Proceedings of the 32nd International Conference on Machine Learning (ICML)},
+  year      = {2015},
+  url       = {https://arxiv.org/abs/1502.05477}
+}
+
+@inproceedings{schulman2016gae,
+  author    = {Schulman, John and Moritz, Philipp and Levine, Sergey and Jordan, Michael I. and Abbeel, Pieter},
+  title     = {High-Dimensional Continuous Control Using Generalized Advantage Estimation},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2016},
+  url       = {https://arxiv.org/abs/1506.02438}
+}
+
+@inproceedings{abdolmaleki2018mpo,
+  author    = {Abdolmaleki, Abbas and Springenberg, Jost Tobias and Tassa, Yuval and Munos, Remi and Heess, Nicolas
+               and Riedmiller, Martin},
+  title     = {Maximum a Posteriori Policy Optimisation},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2018},
+  url       = {https://arxiv.org/abs/1806.06920}
+}
+
+@article{abdolmaleki2018rerpi,
+  author    = {Abdolmaleki, Abbas and Springenberg, Jost Tobias and Degrave, Jonas and Bohez, Steven and Tassa, Yuval
+               and Belov, Dan and Heess, Nicolas and Riedmiller, Martin},
+  title     = {Relative Entropy Regularized Policy Iteration},
+  journal   = {arXiv preprint arXiv:1812.02256},
+  year      = {2018},
+  url       = {https://arxiv.org/abs/1812.02256}
+}
+
+@inproceedings{munos2016retrace,
+  author    = {Munos, R{\'e}mi and Stepleton, Tom and Harutyunyan, Anna and Bellemare, Marc G.},
+  title     = {Safe and Efficient Off-Policy Reinforcement Learning},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2016},
+  url       = {https://arxiv.org/abs/1606.02647}
+}
+```
 
 ## License
 

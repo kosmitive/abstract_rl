@@ -8,6 +8,8 @@ defaults:
   - optional tune_all: ${env}
   - tune: ${env}_${alg}
   - _self_
+  # no run.log in the working directory, results are written to data_root
+  - override hydra/job_logging: none
 
 seed: 1
 data_root: data
@@ -29,9 +31,6 @@ hydra:
   output_subdir: null
   job:
     chdir: false
-  job_logging:
-    root:
-      level: WARN
   hydra_logging:
     root:
       level: WARN

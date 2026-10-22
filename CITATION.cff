@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Abstract RL: modular PyTorch TRPO and MPO"
+type: software
+authors:
+  - family-names: Semmler
+    given-names: Markus
+repository-code: "https://github.com/kosmitive/abstract_rl"
+url: "https://github.com/kosmitive/abstract_rl"
+license: MIT
+keywords:
+  - reinforcement learning
+  - trpo
+  - mpo
+  - pytorch

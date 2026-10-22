@@ -1,6 +1,6 @@
 # Scripts
 
-Benchmark runs with Hydra (`config/` selects the algorithm and environment groups, and `hydra_conf.py` turns the composed algorithm node into the training dictionary):
+Benchmark runs with Hydra (`src/abstract_rl/conf/` selects the algorithm and environment groups, and `hydra_conf.py` turns the composed algorithm node into the training dictionary):
 
 ```
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
@@ -11,7 +11,9 @@ uv run python -m abstract_rl.scripts.mpo_pendulum
 
 MuJoCo environments need the `mujoco` extra (`uv sync --extra mujoco`).
 Every run writes to `data/<env>/<alg>/<timestamp>/` (configuration, logged returns, model checkpoints, a
-performance plot and per-epoch CLI logs).
+performance plot and per-epoch CLI logs). `model/last` holds the final policy, `model/best` the policy of the epoch with
+the highest mean training return (epoch and return in `model/best.json`); pass `--model best` to the evaluation scripts
+to use it.
 
 Evaluation:
 
@@ -21,9 +23,9 @@ uv run python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/*/<run> --out
 uv run python -m abstract_rl.scripts.plot_learning_curve data/Pendulum-v1/trpo/<run> -o trpo.png
 ```
 
-Baselines (`uv sync --extra baselines`, Stable-Baselines3 PPO and sb3-contrib TRPO) and the comparison of everything:
+Baselines (`uv sync --extra baselines`, Stable-Baselines3 TD3 and sb3-contrib TRPO) and the comparison of everything:
 
 ```
-uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 ppo --seed 1 --data-root results
+uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 td3 --seed 1 --data-root results
 uv run python -m abstract_rl.scripts.compare results --out docs/
 ```

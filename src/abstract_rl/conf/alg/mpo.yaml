@@ -12,10 +12,12 @@ policy_layer_norm: false
 policy_init: xavier_gaussian
 policy_sync_steps: 1
 policy_sigma: 1.0
+# single (default), fixed, state, or full: state-dependent Cholesky L(s)
 policy_cov_type: single
 policy_squash: true
 filter_states: false
 filter_rewards: false
+obs_norm: false
 num_epochs: 150
 max_steps: 200
 alg: mpo
@@ -49,7 +51,6 @@ policy_batch_size: 256
 # m-step
 mpo_inner_lr: 0.01
 mpo_outer_lr: 0.0003
-mpo_mode: non-parametric
 mpo_trust_regions: [0.01]
 mpo_coordinate_ascent_objective: false
 mpo_coordinate_ascent_constraint: false

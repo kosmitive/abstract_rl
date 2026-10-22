@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from os import makedirs, mkdir
 from os.path import exists, join
+from shutil import copy, copytree
 from typing import Any
 
 import numpy as np
@@ -9,7 +10,7 @@ import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 
 
 class ModelConfiguration:
@@ -49,6 +50,7 @@ class ModelConfiguration:
                     continue
 
             self.overall_step = 0
+            self.best_return = -np.inf
             self.env: Any = None
             conf["reload_dir"] = self.run_root
             self.add_main("conf", SharedConf(conf))
@@ -113,6 +115,19 @@ class ModelConfiguration:
                 mkdir(torch_path)
             torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
 
+    def store_best(self, ret: float, epoch: int) -> None:
+        """Copy the stored ``last`` models (and observation statistics) to ``best`` if ``ret`` is a new best return."""
+
+        if ret <= self.best_return:
+            return
+        self.best_return = ret
+        best_path = join(self.model_root, "best")
+        copytree(join(self.model_root, "last"), best_path, dirs_exist_ok=True)
+        if exists(join(self.model_root, "obs_rms.npz")):
+            copy(join(self.model_root, "obs_rms.npz"), best_path)
+        with open(join(self.model_root, "best.json"), "w") as file_best:
+            json.dump({"epoch": epoch, "return": ret}, file_best)
+
     def get(self, key: str, target: bool = False) -> Any:
         """
         Access a specific key. Solves internally for env, main and sync able keys to give access using only this
@@ -126,15 +141,15 @@ class ModelConfiguration:
         ti = 1 if not target else 2
         return self.data[key] if key in self.data else self.syncables[key][ti]
 
-    def add_environment(self, env: MCMCEnvWrapper) -> None:
+    def add_environment(self, env: RolloutEnvWrapper) -> None:
         """
         Adds an environment.
         :param env: The environment to add internally.
         """
-        assert isinstance(env, MCMCEnvWrapper)
+        assert isinstance(env, RolloutEnvWrapper)
         self.env = env
 
-    def get_environment(self) -> MCMCEnvWrapper:
+    def get_environment(self) -> RolloutEnvWrapper:
         """
         Pass back an environment.
         :return: Return the internal instance of environment.
