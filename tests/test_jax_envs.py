@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from abstract_rl.env.jax_envs import make_env
+from abstract_rl.env.jax_envs import JaxEnv, make_env
 
 KEY = jax.random.key(0)
 
@@ -19,6 +19,7 @@ def _roll(env, steps, action=None):
 
 
 def _contract(env, obs_dim, act_dim):
+    assert isinstance(env, JaxEnv)
     assert env.observation_dim == obs_dim and env.action_dim == act_dim
     assert env.action_low.shape == (act_dim,) and env.action_high.shape == (act_dim,)
     assert env.obs_high.shape == (obs_dim,)
@@ -35,7 +36,8 @@ def test_pendulum_contract_and_time_limit_is_a_truncation():
     env = make_env("Pendulum-v1")
     _contract(env, 3, 1)
     np.testing.assert_allclose(env.obs_high, [1.0, 1.0, 8.0])
-    np.testing.assert_allclose(env.action_low, [-2.0]) and np.testing.assert_allclose(env.action_high, [2.0])
+    np.testing.assert_allclose(env.action_low, [-2.0])
+    np.testing.assert_allclose(env.action_high, [2.0])
     steps = _roll(env, 200)
     assert not any(bool(t) for _, _, t, _ in steps)
     assert [bool(tr) for _, _, _, tr in steps] == [False] * 199 + [True]
@@ -45,7 +47,8 @@ def test_pendulum_contract_and_time_limit_is_a_truncation():
 def test_mountaincar_contract_and_goal_is_a_termination():
     env = make_env("MountainCarContinuous-v0")
     _contract(env, 2, 1)
-    np.testing.assert_allclose(env.action_low, [-1.0]) and np.testing.assert_allclose(env.action_high, [1.0])
+    np.testing.assert_allclose(env.action_low, [-1.0])
+    np.testing.assert_allclose(env.action_high, [1.0])
     # full throttle in the direction of the velocity swings up and reaches the goal within the time limit
     st, obs = env.reset(KEY)
     terminated = False
