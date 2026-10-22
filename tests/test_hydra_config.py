@@ -45,3 +45,9 @@ def test_command_line_overrides_beat_environment_defaults():
     assert conf["policy_sigma"] == 1.5 and conf["policy_cov_type"] == "fixed"
     assert conf["seed"] == 3 and conf["data_root"] == "/tmp/x" and conf["max_env_steps"] == 400_000
     assert "max_env_steps" not in run_dict(load(["env=pendulum", "alg=trpo"]))
+
+
+def test_jax_run_keys():
+    conf = run_dict(load(["env=pendulum", "alg=trpo", "seeds=[1,2,3]"]))
+    assert conf["seeds"] == [1, 2, 3] and conf["jax_platform"] == "cpu" and conf["epochs_per_call"] == 1
+    assert run_dict(load(["env=pendulum", "alg=trpo"]))["seeds"] is None

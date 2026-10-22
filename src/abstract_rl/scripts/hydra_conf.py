@@ -32,6 +32,8 @@ def run_dict(cfg: DictConfig) -> dict[str, Any]:
         conf["max_env_steps"] = cfg.max_env_steps
     conf["env_name"] = cfg.env.id
     conf["seed"] = cfg.seed
+    conf["seeds"] = list(cfg.seeds) if cfg.get("seeds") is not None else None
+    conf["jax_platform"] = cfg.get("jax_platform", "cpu")
     conf["data_root"] = cfg.data_root
     return conf
 

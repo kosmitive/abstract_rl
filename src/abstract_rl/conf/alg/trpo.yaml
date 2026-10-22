@@ -40,3 +40,5 @@ trpo_cg_max_k: 10
 trpo_cg_res_tol: 1.0e-10
 trpo_dvp_damping: 0.1
 trpo_tr_eps: 0.01
+# epochs per jitted call (logging and checkpoints happen once per call)
+epochs_per_call: 1

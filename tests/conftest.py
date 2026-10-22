@@ -34,6 +34,8 @@ JAXTYPED_MODULES = [
     "abstract_rl.algorithms.mixed.trust_region_gradient",
     "abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm",
     "abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization",
+    "abstract_rl.run.run_seeds",
+    "abstract_rl.data_structures.abstract_conf.model_configuration",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 

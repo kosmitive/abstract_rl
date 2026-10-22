@@ -3,7 +3,6 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 
 
 def default_settings(num_threads: int = 1) -> None:
@@ -11,8 +10,6 @@ def default_settings(num_threads: int = 1) -> None:
     Apply default settings to all.
     :param num_threads: Number of intra-op threads for torch. The networks are tiny, so a single thread is fastest.
     """
-    torch.set_num_threads(num_threads)
-
     def float_formatter(x: Any) -> str:
         return f"{x: 10.4f}"
 
