@@ -100,6 +100,7 @@ class RolloutEnvWrapper:
         exploration: bool = True,
         num_envs: int | None = None,
         update_stats: bool = True,
+        record: bool = False,
     ) -> tuple[ModelState, TrajectoryCollection, dict[str, Array]]:
         """
         Executes the policy for complete episodes (each at most max_steps long) in E lanes until at least batch_size
@@ -113,6 +114,8 @@ class RolloutEnvWrapper:
         :param exploration: Sample from the policy if True, otherwise use its mode.
         :param num_envs: The number of lanes E, or None for ``self.num_envs(batch_size, max_steps)``.
         :param update_stats: Update the observation statistics and filters if True, otherwise freeze them.
+        :param record: Annotate the raw next observations ``raw_next_states`` and, for MuJoCo environments, the joint
+            positions ``qpos`` after each step (evaluation and rendering only, training rollouts do not carry them).
         :return: The new state, the trajectory collection and the rollout metrics.
         """
         e = num_envs if num_envs is not None else self.num_envs(batch_size, max_steps)
@@ -148,6 +151,12 @@ class RolloutEnvWrapper:
             "mask": zeros(dtype=bool),
             "time": zeros(dtype=jnp.int32),
         }
+        # static check: only MuJoCo adapters expose the model and the joint positions of their states
+        record_qpos = record and hasattr(self.env, "mj_model")
+        if record:
+            buf["raw_next_states"] = zeros(sd)
+        if record_qpos:
+            buf["qpos"] = zeros(self.env.qpos(env_state).shape[-1])
         carry = (
             jnp.asarray(0),
             key,
@@ -207,6 +216,10 @@ class RolloutEnvWrapper:
                 "mask": active,
                 "time": jnp.full(e, i, jnp.int32),
             }
+            if record:
+                step_vals["raw_next_states"] = jnp.asarray(raw_nxt, DTYPE)
+            if record_qpos:
+                step_vals["qpos"] = jnp.asarray(self.env.qpos(stepped), DTYPE)
             # index i is written once, so selecting on the slice instead of the whole buffer gives identical outputs
             buf = {
                 k: buf[k].at[:, i].set(jnp.where(active.reshape(active.shape + (1,) * (v.ndim - 1)), v, buf[k][:, i]))
@@ -240,7 +253,7 @@ class RolloutEnvWrapper:
             buf["log_likelihoods"],
             buf["ends"],
             buf["mask"],
-            annotations={"time": buf["time"]},
+            annotations={k: buf[k] for k in ("time", "raw_next_states", "qpos") if k in buf},
         )
         tc = TrajectoryCollection(self, trajectories)
         stats = tc.episode_stats()
@@ -262,13 +275,14 @@ class RolloutEnvWrapper:
         policy: Any,
         opt: bool = False,
         update_stats: bool = True,
+        record: bool = False,
     ) -> tuple[ModelState, Trajectory]:
         """
         Execute a policy once for the maximum number of steps or until the environment terminates.
         :return: The new state and the single-lane trajectory of the episode.
         """
         state, tc, _ = self.execute_policy(
-            state, key, policy, max_steps, 1, exploration=not opt, num_envs=1, update_stats=update_stats
+            state, key, policy, max_steps, 1, exploration=not opt, num_envs=1, update_stats=update_stats, record=record
         )
         return state, jax.tree.map(lambda x: x[0], tc.trajectories())
 

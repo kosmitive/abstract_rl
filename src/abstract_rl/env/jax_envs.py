@@ -118,6 +118,15 @@ class BraxEnv:
         self.action_low, self.action_high = _ctrl_bounds(self._env.sys.actuator_ctrlrange, self.action_dim)
         self.obs_high = np.full(self.observation_dim, np.inf, np.float32)
 
+    @property
+    def mj_model(self) -> Any:
+        """The MuJoCo model of the system, for rendering."""
+        return self._env.sys.mj_model
+
+    def qpos(self, env_state: Any) -> Float[Array, " Q"]:
+        """The joint positions of an environment state, for rendering."""
+        return env_state.pipeline_state.qpos
+
     def reset(self, key: PRNGKeyArray) -> tuple[Any, Float[Array, " Ds"]]:
         env_state = self._env.reset(key)
         return env_state, jnp.asarray(env_state.obs, DTYPE)
@@ -141,6 +150,15 @@ class PlaygroundEnv:
         self.action_dim = int(self._env.action_size)
         self.action_low, self.action_high = _ctrl_bounds(self._env.mj_model.actuator_ctrlrange, self.action_dim)
         self.obs_high = np.full(self.observation_dim, np.inf, np.float32)
+
+    @property
+    def mj_model(self) -> Any:
+        """The MuJoCo model of the environment, for rendering."""
+        return self._env.mj_model
+
+    def qpos(self, env_state: Any) -> Float[Array, " Q"]:
+        """The joint positions of an environment state, for rendering."""
+        return env_state.data.qpos
 
     def reset(self, key: PRNGKeyArray) -> tuple[Any, Float[Array, " Ds"]]:
         env_state = self._env.reset(key)

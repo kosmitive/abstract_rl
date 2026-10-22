@@ -2,46 +2,37 @@
 
 import argparse
 from os.path import join
+from typing import Any
 
 import numpy as np
-import torch
+from PIL import Image
 
-from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
-from abstract_rl.policy.continuous.select_policy import select_policy
+from abstract_rl.scripts.eval_balance import load_policy, run_episode
 
 
 def run_policy(dir: str, episodes: int = 5, render: bool = False, stochastic: bool = False) -> list[float]:
     """
     Loads the last stored policy of a run and executes it.
-    :param dir: The run directory, containing run.conf and model/last/policy.data.
+    :param dir: The run directory, containing run.conf and model/last/policy.eqx.
     :param episodes: The number of episodes to execute.
-    :param render: Render the environment.
+    :param render: Render every episode offscreen into ``replay_<episode>.gif`` in the run directory.
     :param stochastic: Sample actions instead of using the mode of the policy.
     :return: The list of episodic returns.
     """
 
-    # the model configuration loads run.conf from the run directory
-    mc = ModelConfiguration({"reload": True, "reload_dir": dir})
-    conf = mc["conf"]
-    conf["env_render"] = render
-
-    # create an environment wrapper
-    with conf.ns("env"):
-        env = RolloutEnvWrapper(mc)
-        mc.add_environment(env)
-
-    # policy neural_modules
-    with conf.ns("policy"):
-        policy = select_policy(mc)
-        policy.load_state_dict(torch.load(join(dir, "model/last", "policy.data")))
+    # the model configuration loads run.conf from the run directory, the frozen statistics come with the policy
+    env, policy, state = load_policy(dir)
+    seed = env.conf.get_root("seed")
 
     returns = []
-    with conf.ns("policy"):
-        for _ in range(episodes):
-            traj = env.execute_policy_once(conf.get_root("max_steps"), policy, render, opt=not stochastic)
-            returns.append(float(traj.total_reward))
-            print(f"return: {traj.total_reward:.1f}")
+    for i in range(episodes):
+        frames: list[Any] | None = [] if render else None
+        ret, _ = run_episode(env, policy, state, seed + i, frames, stochastic=stochastic)
+        returns.append(ret)
+        print(f"return: {ret:.1f}")
+        if frames:
+            images = [Image.fromarray(f) for f in frames]
+            images[0].save(join(dir, f"replay_{i}.gif"), save_all=True, append_images=images[1:], duration=33, loop=0)
     env.close()
     print(f"mean return over {episodes} episodes: {np.mean(returns):.1f} +- {np.std(returns):.1f}")
     return returns

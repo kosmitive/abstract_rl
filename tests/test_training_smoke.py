@@ -1,10 +1,7 @@
 import numpy as np
-import pytest
 
 from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 from abstract_rl.run.run_trpo import run_trpo
-
-# the torch training loops call the ported (jnp) conjugate gradient; skipped per test until the plan named below
 
 
 def _check_returns(returns, num_epochs):
@@ -28,7 +25,6 @@ def test_mpo_pendulum_smoke(mpo_conf, tmp_path):
     assert list(tmp_path.glob("Pendulum-v1/mpo/*/model/last/policy.eqx"))
 
 
-@pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3 (checkpoints and eval)")
 def test_eval_balance_runs_on_trained_policy(trpo_conf, tmp_path):
     from abstract_rl.scripts import eval_balance
 
@@ -59,7 +55,6 @@ def test_mpo_with_two_dimensional_actions_smoke(mpo_conf, tmp_path):
     assert list(tmp_path.glob("TestPointMass-v0/mpo/*/model/last/policy.eqx"))
 
 
-@pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3 (checkpoints and eval)")
 def test_best_policy_is_stored_and_evaluated(trpo_conf, tmp_path):
     import json
 
@@ -68,8 +63,9 @@ def test_best_policy_is_stored_and_evaluated(trpo_conf, tmp_path):
     trpo_conf["num_epochs"] = 3
     returns = run_trpo(trpo_conf)
     (run_dir,) = tmp_path.glob("Pendulum-v1/trpo/*")
-    assert (run_dir / "model/best/policy.data").exists()
+    assert (run_dir / "model/best/policy.eqx").exists()
     best = json.loads((run_dir / "model/best.json").read_text())
+    returns = returns[0]  # the only seed
     assert best == {"epoch": int(np.argmax(returns[:, 0])), "return": float(returns[:, 0].max())}
     assert eval_returns.main([str(run_dir), "--episodes", "1", "--model", "best"]) in (0, 1)
     out = tmp_path / "eval"

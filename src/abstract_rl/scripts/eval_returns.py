@@ -14,30 +14,15 @@ import os
 import sys
 
 import numpy as np
-import torch
 
-from abstract_rl.scripts.eval_balance import load_policy
+from abstract_rl.scripts.eval_balance import load_policy, run_episode
 from abstract_rl.scripts.hydra_conf import success
 
 
 def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000, model: str = "last") -> tuple[str, np.ndarray]:
     """Returns of ``episodes`` greedy (policy mean) episodes of a stored run on the unmodified environment."""
-    env_wrapper, policy = load_policy(run_dir, model)
-    env = env_wrapper.env
-    max_steps = env_wrapper.conf.get_root("max_steps")
-    returns = []
-    for i in range(episodes):
-        obs, _ = env.reset(seed=seed + i)
-        total, steps, done = 0.0, 0, False
-        while not done and (max_steps is None or steps < max_steps):
-            with torch.no_grad():
-                s = torch.as_tensor(env_wrapper._preprocess(obs), dtype=torch.float32).view(1, -1)
-                a = policy.mode(states=s).reshape(-1).numpy().astype(np.float64)
-            obs, r, terminated, truncated, _ = env.step(a)
-            total += float(r)
-            steps += 1
-            done = terminated or truncated
-        returns.append(total)
+    env_wrapper, policy, state = load_policy(run_dir, model)
+    returns = [run_episode(env_wrapper, policy, state, seed + i)[0] for i in range(episodes)]
     name = env_wrapper.env_name
     env_wrapper.close()
     return name, np.asarray(returns)

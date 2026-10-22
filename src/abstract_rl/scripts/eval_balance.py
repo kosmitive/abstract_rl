@@ -17,23 +17,30 @@ import sys
 from os.path import basename, exists, join, normpath
 from typing import Any
 
-import gymnasium as gym
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 from numpy import ndarray
 from PIL import Image
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.env.render import render_frames
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
+from abstract_rl.misc.running_mean_std import RunningMeanStd
+from abstract_rl.misc.typing import DTYPE
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
-def load_policy(run_dir: str, model: str = "last") -> tuple[RolloutEnvWrapper, ContinuousPolicy]:
+def load_policy(run_dir: str, model: str = "last") -> tuple[RolloutEnvWrapper, ContinuousPolicy, ModelState]:
     """Rebuild environment wrapper and policy of a stored run and load the policy parameters of ``model``.
 
-    ``model`` is ``last`` (final policy) or ``best`` (policy of the epoch with the highest return).
+    ``model`` is ``last`` (final policy) or ``best`` (policy of the epoch with the highest return). The returned state
+    holds the frozen observation statistics stored with ``model``.
     """
     mc = ModelConfiguration({"reload": True, "reload_dir": run_dir})
     conf = mc["conf"]
@@ -41,40 +48,68 @@ def load_policy(run_dir: str, model: str = "last") -> tuple[RolloutEnvWrapper, C
     with conf.ns("env"):
         env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
-    if exists(join(run_dir, "model", model, "obs_rms.npz")):
-        env.load_obs_rms(join(run_dir, "model", model, "obs_rms.npz"))
+    state = ModelState.create(env.init_state(), {})
+    rms_path = (
+        join(run_dir, "model", "obs_rms.npz") if model == "last" else join(run_dir, "model", model, "obs_rms.npz")
+    )
+    if exists(rms_path):
+        rms = np.load(rms_path)
+        state = state.set(
+            "obs_rms",
+            RunningMeanStd(
+                jnp.asarray(rms["mean"], DTYPE), jnp.asarray(rms["var"], DTYPE), jnp.asarray(rms["count"], DTYPE)
+            ),
+        )
     with conf.ns("policy"):
-        policy = select_policy(mc)
-        policy.load_state_dict(torch.load(join(run_dir, "model", model, "policy.data")))
-    policy.eval()
-    return env, policy
+        policy = select_policy(mc, jax.random.key(0))
+        policy = eqx.tree_deserialise_leaves(join(run_dir, "model", model, "policy.eqx"), policy)
+    return env, policy, state
+
+
+@eqx.filter_jit
+def _episode(
+    env_wrapper: RolloutEnvWrapper,
+    policy: ContinuousPolicy,
+    state: ModelState,
+    key: Any,
+    max_steps: int,
+    stochastic: bool,
+) -> Trajectory:
+    """One episode with frozen statistics, recording raw observations (and joint positions) for rendering."""
+    _, traj = env_wrapper.execute_policy_once(
+        state, key, max_steps, policy, opt=not stochastic, update_stats=False, record=True
+    )
+    return traj
 
 
 def run_episode(
-    env_wrapper: RolloutEnvWrapper, policy: ContinuousPolicy, env: gym.Env, seed: int, frames: list[Any] | None = None
+    env_wrapper: RolloutEnvWrapper,
+    policy: ContinuousPolicy,
+    state: ModelState,
+    seed: int,
+    frames: list[Any] | None = None,
+    stochastic: bool = False,
 ) -> tuple[float, ndarray]:
-    """Run one episode with the policy mean. Returns the episodic return and the angle at each step."""
-    obs, _ = env.reset(seed=seed)
-    total, thetas, done = 0.0, [], False
-    while not done:
-        with torch.no_grad():
-            s = torch.as_tensor(env_wrapper._preprocess(obs), dtype=torch.float32).view(1, -1)
-            a = policy.mode(states=s).numpy()[0].astype(np.float64)
-        obs, r, terminated, truncated, _ = env.step(a)
-        total += float(r)
-        thetas.append(np.arctan2(obs[1], obs[0]))
-        if frames is not None:
-            frames.append(env.render())
-        done = terminated or truncated
-    return total, np.asarray(thetas)
+    """Run one episode with the policy mean (sampled actions if ``stochastic``). Returns the episodic return and the
+    angle at each step. The episode is seeded with ``seed`` and the observation statistics of ``state`` stay frozen."""
+    max_steps = env_wrapper.conf.get_root("max_steps")
+    traj = jax.device_get(_episode(env_wrapper, policy, state, jax.random.key(seed), max_steps, stochastic))
+    mask = np.asarray(traj.mask, bool)
+    total = float(np.sum(np.asarray(traj.raw_rewards, np.float64)[mask]))
+    # the angle of the raw observation, the stored next states are normalised if obs_norm is set
+    obs = np.asarray(traj["raw_next_states"])[mask]
+    thetas = np.arctan2(obs[:, 1], obs[:, 0])
+    if frames is not None:
+        frames.extend(render_frames(env_wrapper, traj))
+    return total, thetas
 
 
 def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000, model: str = "last") -> tuple[ndarray, ndarray]:
     """Evaluate a run. Returns (returns [E], thetas [E, T])."""
-    env_wrapper, policy = load_policy(run_dir, model)
+    env_wrapper, policy, state = load_policy(run_dir, model)
     returns, thetas = [], []
     for i in range(episodes):
-        ret, th = run_episode(env_wrapper, policy, env_wrapper.env, seed + i)
+        ret, th = run_episode(env_wrapper, policy, state, seed + i)
         returns.append(ret)
         thetas.append(th)
     env_wrapper.close()
@@ -82,12 +117,10 @@ def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000, model: str = 
 
 
 def save_gif(run_dir: str, path: str, seed: int = 10_000, fps: int = 30, model: str = "last") -> float:
-    """Render one episode (rgb_array, no display needed) into a GIF."""
-    env_wrapper, policy = load_policy(run_dir, model)
-    env = env_wrapper.frozen_eval_env("rgb_array")
+    """Render one episode (offscreen, no display needed) into a GIF."""
+    env_wrapper, policy, state = load_policy(run_dir, model)
     frames: list[Any] = []
-    ret, _ = run_episode(env_wrapper, policy, env, seed, frames)
-    env.close()
+    ret, _ = run_episode(env_wrapper, policy, state, seed, frames)
     env_wrapper.close()
     images = [Image.fromarray(f).resize((250, 250)) for f in frames]
     images[0].save(path, save_all=True, append_images=images[1:], duration=int(1000 / fps), loop=0)
