@@ -6,6 +6,8 @@ env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
 env_render: false
+# lockstep environment lanes of a rollout (auto: ceil(batch_size / max_steps))
+env_num_envs: auto
 policy_structure: [64, 64]
 policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false

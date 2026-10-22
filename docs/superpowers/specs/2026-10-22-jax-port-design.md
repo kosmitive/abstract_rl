@@ -205,11 +205,11 @@ valid_eps   Bool[Array, "eps"]            # this round was actually needed
 annotations dict[str, Array]              # "tv", "td", "a", "add_act", "add_q", "grad_ranking", "tq", ...
 ```
 
-- **Rounds.** A `lax.while_loop` runs rounds of E episodes until the collected valid steps reach `batch_size` or
-  `R_max = ceil(batch_size / E)` rounds have run. `R_max` is the static upper bound and covers 1-step episodes.
-  - Rounds that aren't needed are masked out, but they still cost compute.
-  - Every env in a round finishes its episode, so the episode count is rounded up to a multiple of E. This is the only
-    rollout deviation. With E = 1 the rollout is identical to today's.
+- **Lanes.** E environments run in lockstep inside one `lax.while_loop`. Each lane collects whole episodes back to back
+  into a buffer `[E, L]` with `L = ceil(batch_size / E) + max_steps`. When a lane ends an episode while the epoch has
+  fewer than `batch_size` valid transitions, it resets and continues. Otherwise it stops. A lane never cuts an episode,
+  and no lane starts an episode after the target is reached. `ends` marks the last step of every episode and `mask` the
+  valid steps.
 - **Episode end.** Each env steps until `terminated` or until `max_steps` is reached. Steps after the end are masked,
   and the env state is frozen with `jnp.where`.
   - A `max_steps` cut and an env time-limit truncation are both stored as not done. TD and Retrace therefore bootstrap
@@ -368,7 +368,7 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 | ID | Deviation | Why |
 |---|---|---|
 | D1 | Random streams differ from torch and numpy. Every draw uses explicit keys. | Different RNG designs, and vmap needs per-seed keys. |
-| D2 | Episodes per epoch are rounded up to a multiple of E. E = 1 is exact. | Static shapes for the vmapped envs |
+| D2 | An epoch overshoots `batch_size` by at most the episodes still running in the other E−1 lanes; torch overshoots by at most one episode. E = 1 is identical to torch. | Static shapes for the vmapped envs, with memory linear in `batch_size + E·max_steps` |
 | D3 | `run.conf` stores the real seed, not `np.random.randint(1e6)`. | The overwrite was a bug that broke `compare.py`. |
 | D4 | The temperature dual runs in float32 instead of float64. Parity is checked at rtol 1e-3. | x64 globally would make MJX and all networks float64, and Metal has no float64. |
 | D5 | Env dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control. | Vectorisable, jittable envs |
