@@ -22,6 +22,8 @@ JAXTYPED_MODULES = [
     "abstract_rl.value_functions.fc_v_networks",
     "abstract_rl.value_functions.fc_q_networks",
     "abstract_rl.env.jax_envs",
+    "abstract_rl.misc.running_centered_filter",
+    "abstract_rl.misc.running_mean_std",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
