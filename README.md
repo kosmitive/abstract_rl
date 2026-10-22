@@ -9,9 +9,13 @@ Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, 
 ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
 Stable-Baselines3.
 
-| MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 |
-|---|---|
-| ![MPO Pendulum](docs/mpo_pendulum_best.gif) | ![MPO MountainCar](docs/mpo_mountaincar_best.gif) |
+| MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 | MPO on InvertedPendulum-v5 |
+|---|---|---|
+| ![MPO Pendulum](docs/mpo_pendulum_best.gif) | ![MPO MountainCar](docs/mpo_mountaincar_best.gif) | ![MPO InvertedPendulum](docs/mpo_inverted_pendulum_best.gif) |
+| **MPO on InvertedDoublePendulum-v5** | **MPO on HalfCheetah-v5** | |
+| ![MPO InvertedDoublePendulum](docs/mpo_inverted_double_pendulum_best.gif) | ![MPO HalfCheetah](docs/mpo_halfcheetah_best.gif) | |
+
+The GIFs show one greedy episode of the best MPO policy per environment (highest greedy return over all runs).
 
 - **TRPO**: Trust Region Policy Optimization ([Schulman et al., 2015](https://arxiv.org/abs/1502.05477)) with
   [GAE](https://arxiv.org/abs/1506.02438), conjugate gradient natural gradient step and a KL line search.
@@ -42,25 +46,28 @@ smoothed training return reaches it (median over the seeds that do).
 | Environment | Algorithm | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
 |---|---|---|---|---|---|---|
 | Pendulum-v1 (≥ -150) | TRPO (abstract_rl) | 5 | 800,000 | -127.7 ± 2.7 | 5/5 | 192,000 (5/5) |
-| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -123.8 ± 1.0 | 5/5 | 40,000 (5/5) |
+| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -123.3 ± 0.4 | 5/5 | 36,000 (5/5) |
 | Pendulum-v1 (≥ -150) | TRPO (SB3) | 5 | 800,000 | -124.0 ± 1.6 | 5/5 | 204,000 (5/5) |
-| Pendulum-v1 (≥ -150) | TD3 (SB3) | pending | pending | pending | pending | pending |
+| Pendulum-v1 (≥ -150) | TD3 (SB3) | 5 | 800,000 | -120.9 ± 1.0 | 5/5 | 36,000 (5/5) |
 | MountainCarContinuous-v0 (≥ 90) | TRPO (abstract_rl) | 5 | 401,254 | 94.1 ± 0.7 | 5/5 | 44,286 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,039 | 93.6 ± 0.0 | 5/5 | 52,000 (5/5) |
+| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,038 | 93.6 ± 0.0 | 5/5 | 56,000 (5/5) |
 | MountainCarContinuous-v0 (≥ 90) | TRPO (SB3) | 5 | 400,072 | 74.7 ± 37.5 | 4/5 | 52,013 (4/5) |
-| MountainCarContinuous-v0 (≥ 90) | TD3 (SB3) | pending | pending | pending | pending | pending |
+| MountainCarContinuous-v0 (≥ 90) | TD3 (SB3) | 5 | 399,966 | 54.9 ± 77.4 | 4/5 | 28,993 (4/5) |
 | InvertedPendulum-v5 (≥ 950) | TRPO (abstract_rl) | 5 | 151,370 | 1000.0 ± 0.0 | 5/5 | 28,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,663 | 950.2 ± 99.6 | 4/5 | 19,000 (5/5) |
+| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,357 | 1000.0 ± 0.0 | 5/5 | 20,000 (5/5) |
 | InvertedPendulum-v5 (≥ 950) | TRPO (SB3) | 5 | 150,523 | 1000.0 ± 0.0 | 5/5 | 29,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | TD3 (SB3) | pending | pending | pending | pending | pending |
-| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 602,473 | 9092.1 ± 218.8 | 2/5 | 211,015 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,178 | 5937.0 ± 4162.1 | 3/5 | 66,066 (5/5) |
+| InvertedPendulum-v5 (≥ 950) | TD3 (SB3) | 5 | 149,310 | 1000.0 ± 0.0 | 5/5 | 25,000 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 605,543 | 9332.8 ± 3.8 | 5/5 | 431,112 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,620 | 9332.9 ± 7.4 | 5/5 | 66,110 (5/5) |
 | InvertedDoublePendulum-v5 (≥ 9100) | TRPO (SB3) | 5 | 599,517 | 8270.3 ± 602.2 | 0/5 | 107,946 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | TD3 (SB3) | pending | pending | pending | pending | pending |
-| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 1903.7 ± 862.3 | 0/5 | never |
-| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 8350.6 ± 1043.4 | 5/5 | 198,000 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | TD3 (SB3) | 5 | 599,243 | 9347.9 ± 10.3 | 5/5 | 26,996 (5/5) |
+| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 4471.7 ± 1645.7 | 3/5 | 732,000 (2/5) |
+| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 7940.5 ± 1398.2 | 5/5 | 210,000 (5/5) |
 | HalfCheetah-v5 (≥ 4800) | TRPO (SB3) | 5 | 1,200,000 | 2547.9 ± 1314.1 | 0/5 | never |
-| HalfCheetah-v5 (≥ 4800) | TD3 (SB3) | pending | pending | pending | pending | pending |
+| HalfCheetah-v5 (≥ 4800) | TD3 (SB3) | 5 | 1,200,000 | 11009.6 ± 522.5 | 5/5 | 96,000 (5/5) |
+
+Learning curves of the four algorithms on environment steps (training return, mean ± std over the 5 seeds; the
+runs of the table):
 
 ![benchmark](docs/benchmark.png)
 
@@ -70,16 +77,22 @@ smoothed training return reaches it (median over the seeds that do).
   step budget (`max_env_steps`).
 - **Pendulum balance check** (`scripts/eval_balance.py`, |θ| < 0.1 rad in the last 100 of 200 steps, 20 start
   states): TRPO and MPO balance in 5/5 seeds and 20/20 episodes each (max |θ| 0.012-0.057 rad TRPO, 0.032-0.098 rad MPO).
-- **SB3 baselines**: library defaults, except MountainCarContinuous-v0, which uses the
+- **SB3 baselines**: TRPO uses the library defaults, except on MountainCarContinuous-v0, which uses the
   [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) hyper-parameters (`--zoo`, gSDE exploration) at
-  the same 400k budget; with defaults both SB3 algorithms score 0 there. On Pendulum-v1 the zoo settings were worse
-  than the defaults (TRPO -136), so the defaults are shown. TD3 is pending.
-- **InvertedPendulum, InvertedDoublePendulum, HalfCheetah** are not re-tuned. MPO stops after a fixed number of epochs
-  and finishes the running episode, so on the two pendulums it ran up to 4-6% past the budget; the learning curves are
-  cut at the budget, the greedy return is the one of the final policy. MPO is less stable late in training there
-  (one InvertedPendulum seed, two InvertedDoublePendulum seeds collapse after reaching the maximum).
-- Runs were made on Linux (Python 3.13) and a MacBook (Python 3.14) with one CPU thread; seeds are fixed but results
-  are not bit-reproducible across machines.
+  the same 400k budget; with the defaults it scores 0 there. On Pendulum-v1 the zoo settings were worse than the
+  defaults (-136), so the defaults are shown. TD3 always uses the zoo hyper-parameters (`ZOO` in
+  `scripts/run_baselines.py`); on MountainCarContinuous-v0 one of five seeds (seed 3) never finds the goal (-99.9).
+- **MPO tuned for InvertedPendulum and InvertedDoublePendulum** (one setting each, see `conf/tune/`): a 300k
+  instead of 50k replay memory (`tc_size`) on InvertedPendulum (4/5 → 5/5 seeds) and a KL trust region
+  (`mpo_trust_regions`) of 0.005 instead of 0.01 on InvertedDoublePendulum (3/5 → 5/5); both remove the late-training
+  collapse of single seeds. HalfCheetah MPO is not re-tuned. MPO stops after a fixed number of epochs and finishes the
+  running episode, so on the two pendulums it ran up to 5% (InvertedPendulum) and 7% (InvertedDoublePendulum) past the
+  budget; the learning curves are cut at the budget, the greedy return is the one of the final policy.
+- **TRPO tuned for InvertedDoublePendulum and HalfCheetah** (see `conf/tune/`): InvertedDoublePendulum 75 × 8000
+  steps with a KL trust region of 0.005, HalfCheetah 300 × 4000 steps with a KL trust region of 0.02 and `obs_norm`,
+  both without the value L2 penalty (InvertedDoublePendulum 2/5 → 5/5, HalfCheetah 0/5 → 3/5 seeds).
+- Runs were made on Linux and a MacBook (Python 3.13) with one CPU thread; seeds are fixed but
+  results are not bit-reproducible across machines.
 
 ## Usage
 

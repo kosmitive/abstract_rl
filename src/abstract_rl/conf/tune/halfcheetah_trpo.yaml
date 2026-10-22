@@ -1,5 +1,5 @@
 # @package alg
-num_epochs: 600
+num_epochs: 300
 policy_batch_size: 4000
 trpo_tr_eps: 0.02
 val_l2_reg: 0.0

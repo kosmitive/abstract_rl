@@ -27,7 +27,7 @@ def test_deliberate_environment_overrides():
 def test_trpo_budgets_for_halfcheetah_and_inverted_double_pendulum():
     halfcheetah = run_dict(load(["env=halfcheetah", "alg=trpo"]))
     assert halfcheetah["obs_norm"] is True
-    assert halfcheetah["num_epochs"] == 600
+    assert halfcheetah["num_epochs"] == 300
     assert halfcheetah["policy_batch_size"] == 4000
     assert halfcheetah["trpo_tr_eps"] == 0.02
     assert halfcheetah["val_l2_reg"] == 0.0

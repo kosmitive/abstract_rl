@@ -1,2 +1,3 @@
 # @package alg
 num_epochs: 150
+tc_size: 300000
