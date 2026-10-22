@@ -5,7 +5,7 @@ from os.path import exists, join
 import numpy as np
 from gymnasium.wrappers import NormalizeObservation
 
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
@@ -23,7 +23,7 @@ def test_obs_norm_saves_training_stats_and_freezes_them(make_pendulum_mc):
     assert exists(path)
     saved = np.load(path)
     with mc["conf"].ns("env"):
-        frozen = MCMCEnvWrapper(mc)
+        frozen = RolloutEnvWrapper(mc)
     assert frozen.env.update_running_mean is False
     assert np.allclose(frozen.env.obs_rms.mean, saved["mean"])
     count = frozen.env.obs_rms.count

@@ -1,6 +1,6 @@
 # Scripts
 
-Benchmark runs with Hydra (`config/` selects the algorithm and environment groups, and `hydra_conf.py` turns the composed algorithm node into the training dictionary):
+Benchmark runs with Hydra (`src/abstract_rl/conf/` selects the algorithm and environment groups, and `hydra_conf.py` turns the composed algorithm node into the training dictionary):
 
 ```
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1

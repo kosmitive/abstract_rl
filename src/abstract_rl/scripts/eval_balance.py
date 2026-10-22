@@ -25,12 +25,12 @@ from numpy import ndarray
 from PIL import Image
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
-def load_policy(run_dir: str, model: str = "last") -> tuple[MCMCEnvWrapper, ContinuousPolicy]:
+def load_policy(run_dir: str, model: str = "last") -> tuple[RolloutEnvWrapper, ContinuousPolicy]:
     """Rebuild environment wrapper and policy of a stored run and load the policy parameters of ``model``.
 
     ``model`` is ``last`` (final policy) or ``best`` (policy of the epoch with the highest return).
@@ -39,7 +39,7 @@ def load_policy(run_dir: str, model: str = "last") -> tuple[MCMCEnvWrapper, Cont
     conf = mc["conf"]
     conf["env_render"] = False
     with conf.ns("env"):
-        env = MCMCEnvWrapper(mc)
+        env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
     if exists(join(run_dir, "model", model, "obs_rms.npz")):
         env.load_obs_rms(join(run_dir, "model", model, "obs_rms.npz"))
@@ -51,7 +51,7 @@ def load_policy(run_dir: str, model: str = "last") -> tuple[MCMCEnvWrapper, Cont
 
 
 def run_episode(
-    env_wrapper: MCMCEnvWrapper, policy: ContinuousPolicy, env: gym.Env, seed: int, frames: list[Any] | None = None
+    env_wrapper: RolloutEnvWrapper, policy: ContinuousPolicy, env: gym.Env, seed: int, frames: list[Any] | None = None
 ) -> tuple[float, ndarray]:
     """Run one episode with the policy mean. Returns the episodic return and the angle at each step."""
     obs, _ = env.reset(seed=seed)

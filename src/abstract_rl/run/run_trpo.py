@@ -8,7 +8,7 @@ from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optim
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
@@ -47,7 +47,7 @@ def run_trpo(conf: Any) -> np.ndarray:
     # create an environment wrapper
     with conf.ns("env"):
         render = conf["render"]
-        env = MCMCEnvWrapper(mc)
+        env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
 
     # define namespace for v

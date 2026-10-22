@@ -10,7 +10,7 @@ import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 
 
 class ModelConfiguration:
@@ -141,15 +141,15 @@ class ModelConfiguration:
         ti = 1 if not target else 2
         return self.data[key] if key in self.data else self.syncables[key][ti]
 
-    def add_environment(self, env: MCMCEnvWrapper) -> None:
+    def add_environment(self, env: RolloutEnvWrapper) -> None:
         """
         Adds an environment.
         :param env: The environment to add internally.
         """
-        assert isinstance(env, MCMCEnvWrapper)
+        assert isinstance(env, RolloutEnvWrapper)
         self.env = env
 
-    def get_environment(self) -> MCMCEnvWrapper:
+    def get_environment(self) -> RolloutEnvWrapper:
         """
         Pass back an environment.
         :return: Return the internal instance of environment.

@@ -8,7 +8,7 @@ The results directory is searched recursively for abstract_rl runs (``run.conf``
 evaluation ``eval.json`` written by ``eval_returns --json`` next to ``run.conf``) and SB3 runs (``run.json`` plus
 ``monitor.csv``). For every environment a learning curve plot (training return over environment steps, mean ± std over
 seeds) and a Markdown table with the greedy evaluation are written. Learning curves are cut at the environment-step
-budget (``steps`` in ``config/env``; the episode crossing it is kept), so runs that stop after a fixed number of
+budget (``steps`` in ``conf/env``; the episode crossing it is kept), so runs that stop after a fixed number of
 epochs and overshoot the budget are compared on equal steps; the greedy return is the one of the final policy.
 """
 

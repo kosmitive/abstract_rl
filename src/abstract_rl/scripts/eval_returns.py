@@ -5,7 +5,7 @@ Usage::
     uv run python -m abstract_rl.scripts.eval_returns data/HalfCheetah-v5/trpo/<run> [more runs] --episodes 20
 
 Per run the mean return over seeded start states is printed together with the success threshold of the environment
-(``success`` of ``config/env/<env>.yaml``). The exit code is non-zero if a run stays below the threshold.
+(``success`` of ``conf/env/<env>.yaml``). The exit code is non-zero if a run stays below the threshold.
 """
 
 import argparse

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
@@ -28,7 +28,7 @@ def run_policy(dir: str, episodes: int = 5, render: bool = False, stochastic: bo
 
     # create an environment wrapper
     with conf.ns("env"):
-        env = MCMCEnvWrapper(mc)
+        env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
 
     # policy neural_modules

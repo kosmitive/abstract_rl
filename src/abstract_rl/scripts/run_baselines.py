@@ -4,7 +4,7 @@ Needs the optional extra ``baselines``; MuJoCo ids also need ``mujoco``. The eva
 the abstract_rl runs: training episode returns are recorded per environment step (Monitor), and after training the
 greedy policy is evaluated on 20 episodes with the start states seeded 10000 + episode, reporting the raw
 environment return.
-The step budget is ``steps`` in ``config/env`` unless ``--steps`` is set.
+The step budget is ``steps`` in ``conf/env`` unless ``--steps`` is set.
 
 TD3 starts from the rl-baselines3-zoo entry in ``ZOO``. TRPO uses library defaults unless ``--zoo``.
 Repeatable ``--hp key=value`` overrides (Python literals) are applied on top of that entry.
@@ -53,7 +53,7 @@ def _td3_mujoco(**overrides: Any) -> dict[str, Any]:
 
 
 # rl-baselines3-zoo hyperparameters (hyperparams/{td3,trpo}.yml). The zoo ``n_timesteps`` is not stored: the run
-# uses ``steps`` from ``config/env`` (or ``--steps``). ``n_envs`` and ``normalize`` are handled by ``run``.
+# uses ``steps`` from ``conf/env`` (or ``--steps``). ``n_envs`` and ``normalize`` are handled by ``run``.
 # TD3 noise is stored as ``noise_type`` / ``noise_std`` and mapped onto an SB3 action noise sized to the action dim.
 ZOO: dict[str, dict[str, dict[str, Any]]] = {
     "Pendulum-v1": {
@@ -97,7 +97,7 @@ ZOO: dict[str, dict[str, dict[str, Any]]] = {
 
 
 def environment_ids() -> list[str]:
-    """Gymnasium ids accepted on the CLI: budgets from ``config/env``, then zoo-only ids."""
+    """Gymnasium ids accepted on the CLI: budgets from ``conf/env``, then zoo-only ids."""
     ids = list(steps_budget())
     ids.extend(env_id for env_id in ZOO if env_id not in ids)
     return ids
@@ -217,7 +217,7 @@ def make_action_noise(hyper: dict[str, Any], action_dim: int) -> Any:
 
 
 def _budget(env_id: str, steps: int | None) -> int:
-    """Step count from the argument, or from ``steps`` in ``config/env``.
+    """Step count from the argument, or from ``steps`` in ``conf/env``.
 
     Args:
         env_id: Gymnasium id.
@@ -230,7 +230,7 @@ def _budget(env_id: str, steps: int | None) -> int:
         return steps
     budgets = steps_budget()
     if env_id not in budgets:
-        raise KeyError(f"{env_id} has no step budget in config/env; pass steps")
+        raise KeyError(f"{env_id} has no step budget in conf/env; pass steps")
     return budgets[env_id]
 
 
@@ -335,7 +335,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     if args.steps is None and args.env not in steps_budget():
-        parser.error(f"{args.env} has no step budget in config/env; pass --steps")
+        parser.error(f"{args.env} has no step budget in conf/env; pass --steps")
     try:
         hyper = resolve_hyper(args.env, args.alg, args.zoo, list(args.hp or []), args.hyper)
     except argparse.ArgumentTypeError as exc:

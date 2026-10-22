@@ -1,6 +1,7 @@
 """Train TRPO on Pendulum-v1: ``uv run python -m abstract_rl.scripts.trpo_pendulum``.
 
-Equivalent to ``python -m abstract_rl.scripts.run env=pendulum alg=trpo``, the configuration lives in ``config/``.
+Equivalent to ``python -m abstract_rl.scripts.run env=pendulum alg=trpo``, the configuration lives in
+``abstract_rl/conf``.
 """
 
 from abstract_rl.run.run_trpo import run_trpo

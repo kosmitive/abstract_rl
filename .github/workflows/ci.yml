@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ruff:
@@ -13,6 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+          enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen --group dev
       - name: Ruff check
@@ -28,6 +34,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+          enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen --group dev
       - name: Mypy
@@ -41,8 +48,29 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+          enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen --group dev
       - name: Pytest
         run: uv run pytest
 
+  wheel:
+    name: wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Build
+        run: uv build
+      - name: Install the wheel into a clean environment and compose a config
+        run: |
+          wheel="$(ls "$GITHUB_WORKSPACE"/dist/*.whl)"
+          cd "$RUNNER_TEMP"
+          uv venv --python 3.13 venv
+          uv pip install --python venv/bin/python "$wheel" \
+            --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+          venv/bin/python -c "import abstract_rl.scripts.run"
+          venv/bin/python -m abstract_rl.scripts.run --cfg job env=halfcheetah alg=trpo alg.trpo_tr_eps=0.03

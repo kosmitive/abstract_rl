@@ -32,7 +32,7 @@ given rate, when sync() is called.
     # create an environment wrapper
     with conf.ns('env'):
         num_traj = conf['traj_evaluations']
-        env = MCMCEnvWrapper(mc)
+        env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
 
     # create the memory and get some settings

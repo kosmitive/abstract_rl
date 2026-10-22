@@ -1,7 +1,7 @@
-"""Hydra configuration of the benchmark runs (``config/`` at the repository root).
+"""Hydra configuration of the benchmark runs (``abstract_rl/conf``, shipped inside the package).
 
-``config/alg`` and ``config/env`` are config groups. Shared environment overrides (``config/tune_all``) and
-per-algorithm overrides (``config/tune``) are selected by defaults-list interpolation, ``${env}`` and
+``conf/alg`` and ``conf/env`` are config groups. Shared environment overrides (``conf/tune_all``) and
+per-algorithm overrides (``conf/tune``) are selected by defaults-list interpolation, ``${env}`` and
 ``${env}_${alg}``, and merged into the algorithm node. Command line ``alg.*`` overrides are applied by Hydra
 on top of that. The training loops receive the algorithm node as a flat dictionary, with the environment id,
 seed and data root filled in.
@@ -14,7 +14,7 @@ from typing import Any
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "conf"
 
 
 def load(overrides: list[str] | None = None) -> DictConfig:

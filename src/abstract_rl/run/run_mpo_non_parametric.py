@@ -11,7 +11,7 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
@@ -53,7 +53,7 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         render = conf["render"]
         num_new_steps = conf["sample"]
         num_traj = conf["traj_evaluations"]
-        env = MCMCEnvWrapper(mc)
+        env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
 
     # create the memory and get some settings

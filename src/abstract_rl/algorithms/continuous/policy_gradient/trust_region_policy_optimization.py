@@ -8,9 +8,9 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 
 class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
     """
-    Represents a trust region policy optimization algorithm, where it uses v-trace and generalized advantage
-    estimation for providing off policy advantages and then used these values to maximize the estimated objective,
-    while full filling the kl constraint. See https://arxiv.org/abs/1502.05477 for more details.
+    Trust region policy optimization (https://arxiv.org/abs/1502.05477). On-policy: the advantages come from
+    generalized advantage estimation on freshly collected trajectories, and the surrogate objective is maximized with
+    a natural gradient step under a KL trust region.
     """
 
     def __init__(self, mc: ModelConfiguration) -> None:
@@ -42,4 +42,4 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
         :param batch: The batch to use.
         :return: The likelihood ratio gradient
         """
-        return self.policy.likelihood_ratio(batch)  # - self.trpo_entropy * self.policy.entropy(batch)
+        return self.policy.likelihood_ratio(batch)

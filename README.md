@@ -28,8 +28,8 @@ PyTorch comes from the CPU wheel index (enough for these small networks); remove
 
 ## Results
 
-Configurations are Hydra YAML files in [`config/`](config) (`run env=<env> alg=<alg> seed=N`),
-**5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `config/env/<env>.yaml`).
+Configurations are Hydra YAML files in [`src/abstract_rl/conf/`](src/abstract_rl/conf) (`run env=<env> alg=<alg> seed=N`),
+**5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `conf/env/<env>.yaml`).
 *Greedy return* is the mean of 20 seeded evaluation episodes with the policy mean (final policy), averaged over seeds
 ± std over seeds. *Solved* counts seeds whose greedy return reaches the threshold (Gymnasium reward threshold;
 Pendulum-v1 has none, -150 corresponds to swing-up and balance). *Steps to threshold* is the first step at which the
@@ -90,11 +90,12 @@ uv run python -m abstract_rl.scripts.compare results --out docs/                
 uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render         # replay a policy
 ```
 
-Configuration ([Hydra](https://hydra.cc)): `config/config.yaml` (`seed`, `data_root`, `max_env_steps`),
-`config/alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults) and `config/env/<env>.yaml` (Gymnasium `id`, `success`
-threshold, `steps` budget, `overrides` of the algorithm defaults for `all`/`trpo`/`mpo`). Environments: `pendulum`,
+Configuration ([Hydra](https://hydra.cc)) ships inside the package in `src/abstract_rl/conf/`: `config.yaml` (`seed`,
+`data_root`, `max_env_steps`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
+`success` threshold, `steps` budget), `tune_all/<env>.yaml` (overrides for both algorithms) and
+`tune/<env>_<alg>.yaml` (per-algorithm overrides). Environments: `pendulum`,
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
-environment table. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
+tune files. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
 diagonal Gaussian policy from the action space.
@@ -110,7 +111,7 @@ src/abstract_rl/
 ├── data_structures/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryBuilder, TrajectoryCollection (replay), Batch
-├── env/                              MCMCEnvWrapper: runs whole episodes of a policy in a Gymnasium env
+├── env/                              RolloutEnvWrapper: runs whole episodes of a policy in a Gymnasium env
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
 ├── policy/                           univariate and diagonal Gaussian policy (+ select_policy), non-parametric policy
 ├── value_functions/                  fully connected V and Q networks

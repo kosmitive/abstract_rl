@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 
 
-class MCMCEnvWrapper:
+class RolloutEnvWrapper:
     """
     Environment wrapper for gym environments. Adds support for executing a whole trajectory based on a policy,
     instead of only giving a step based interface to the outside.
