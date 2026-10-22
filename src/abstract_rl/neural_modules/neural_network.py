@@ -2,19 +2,28 @@ import math as m
 from collections.abc import Sequence
 from typing import Any
 
-import torch
-import torch.nn as nn
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array, Float, PRNGKeyArray
 from numpy import ndarray
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.misc.mixed import select_activation
+from abstract_rl.misc.typing import DTYPE
 
 
-class MultilayerPerceptron(nn.Module, Syncable):
+class MultilayerPerceptron(eqx.Module, Syncable):
     """
     Fully connected neural network
     """
+
+    structure: tuple[int, ...] = eqx.field(static=True)
+    layer_norm: bool = eqx.field(static=True)
+    init: str = eqx.field(static=True)
+    act_fn: tuple[Any, ...] = eqx.field(static=True)
+    layers: list[eqx.nn.Linear]
 
     def __init__(
         self,
@@ -23,6 +32,8 @@ class MultilayerPerceptron(nn.Module, Syncable):
         act_fn: str | Sequence[str | list[str]] = "tanh",
         layer_norm: bool = False,
         init: str = "orthogonal",
+        *,
+        key: PRNGKeyArray,
     ) -> None:
         """
         Create a new neural network, whereas the structure is passed as a list of numbers, representing the size of
@@ -32,78 +43,86 @@ class MultilayerPerceptron(nn.Module, Syncable):
         :param act_fn: A string encoding the activation function.
         :param layer_norm: Activate layer normalization in between.
         :param init: A string representing the initialization method.
+        :param key: The random key for the initialization.
 
         """
-        nn.Module.__init__(self)
-
         assert len(act_fn) == len(hidden_neurons) - 1 or len(act_fn) == 1
 
         # save settings
-        self.mc = mc
-        self.structure = hidden_neurons
+        self.structure = tuple(int(n) for n in hidden_neurons)
         self.layer_norm = layer_norm
         self.init = init
 
-        # select the correct activation functions.
-        self.act_fn: list[Any] = [
-            [select_activation(ae) for ae in a] if isinstance(a, list) else select_activation(a) for a in act_fn
+        # select the correct activation functions (tuples, the static structure has to be hashable).
+        self.act_fn = tuple(
+            tuple(select_activation(ae) for ae in a) if isinstance(a, list | tuple) else select_activation(a)
+            for a in act_fn
+        )
+
+        # create the layers and initialize
+        num_layers = len(self.structure) - 1
+        keys = jax.random.split(key, 2 * num_layers)
+        layers = [
+            eqx.nn.Linear(self.structure[i], self.structure[i + 1], key=keys[i], dtype=DTYPE) for i in range(num_layers)
         ]
+        self.layers = self.initialize_layers(layers, init, keys[num_layers:])
 
-        # create the layers, add internally and initialize
-        self.layers = [nn.Linear(self.structure[i], self.structure[i + 1]) for i in range(len(self.structure) - 1)]
-        for i in range(len(self.layers)):
-            self.add_module(f"layer_{i}", self.layers[i])
-        self.initialize_layers(init)
-
-    def initialize_layers(self, init: str) -> None:
+    @staticmethod
+    def initialize_layers(layers: list[eqx.nn.Linear], init: str, keys: Any) -> list[eqx.nn.Linear]:
         """
         This method can be used to initialize a layer
         """
 
-        for layer in self.layers:
-            nn.init.zeros_(layer.bias)
+        layers = [eqx.tree_at(lambda la: la.bias, layer, jnp.zeros_like(layer.bias)) for layer in layers]
+        normal, uniform = jax.random.normal, jax.random.uniform
         if init == "xavier_gaussian":
-            for layer in self.layers:
-                nn.init.xavier_normal_(layer.weight)
+            w_init = jax.nn.initializers.variance_scaling(1.0, "fan_avg", "normal", in_axis=-1, out_axis=-2)
 
         elif init == "xavier_uniform":
-            for layer in self.layers:
-                nn.init.xavier_uniform_(layer.weight)
+            w_init = jax.nn.initializers.variance_scaling(1.0, "fan_avg", "uniform", in_axis=-1, out_axis=-2)
 
         elif init == "orthogonal":
-            for layer in self.layers:
-                nn.init.orthogonal_(layer.weight, m.sqrt(2))
+            w_init = jax.nn.initializers.orthogonal(m.sqrt(2))
 
         elif init == "gaussian":
-            for layer in self.layers:
-                nn.init.normal_(layer.weight, 0, 0.1)
+
+            def w_init(k: Any, shape: Any, dtype: Any) -> Any:
+                return 0.1 * normal(k, shape, dtype)
 
         elif init == "uniform":
-            for layer in self.layers:
-                nn.init.uniform_(layer.weight, -0.1, 0.1)
+
+            def w_init(k: Any, shape: Any, dtype: Any) -> Any:
+                return uniform(k, shape, dtype, -0.1, 0.1)
 
         elif init == "high":
-            for layer in self.layers:
-                nn.init.uniform_(layer.weight, 0.05, 0.1)
+
+            def w_init(k: Any, shape: Any, dtype: Any) -> Any:
+                return uniform(k, shape, dtype, 0.05, 0.1)
 
         elif init == "none":
-            return
+            return layers
         else:
             raise NotImplementedError("initialization method not defined.")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return [
+            eqx.tree_at(lambda la: la.weight, layer, w_init(k, layer.weight.shape, DTYPE))
+            for layer, k in zip(layers, keys, strict=True)
+        ]
+
+    def forward(self, x: Float[Array, "*D n_in"]) -> Float[Array, "*D n_out"]:
         """
         Apply represented function to x.
         :param x: The input to the network.
         :return: The outputted values of the network.
         """
 
-        # apply layer norm if wanted
+        # apply layer norm if wanted (torch nn.LayerNorm created per call: unit weight, zero bias, eps 1e-5)
         out = x
-        out = self.layers[0](out)
+        out = out @ self.layers[0].weight.T + self.layers[0].bias
         if self.layer_norm:
-            layer_norm = nn.LayerNorm(out.shape[-1])
-            out = layer_norm(out)
+            mean = jnp.mean(out, axis=-1, keepdims=True)
+            var = jnp.var(out, axis=-1, keepdims=True)
+            out = (out - mean) / jnp.sqrt(var + 1e-5)
 
         out = self.act_fn[0](out)
 
@@ -111,13 +130,13 @@ class MultilayerPerceptron(nn.Module, Syncable):
         num_layers = len(self.layers)
         for layer_idx in range(1, num_layers):
             # assemble linear part, layer norm and activation for each layer
-            linear_f = self.layers[layer_idx](out)
+            linear_f = out @ self.layers[layer_idx].weight.T + self.layers[layer_idx].bias
             act = self.act_fn[layer_idx] if len(self.act_fn) > 1 else self.act_fn[0]
-            if isinstance(act, list):
-                splitted_ts = list(torch.split(linear_f, 1, dim=1))
+            if isinstance(act, tuple):
+                splitted_ts = [linear_f[..., i : i + 1] for i in range(linear_f.shape[-1])]
                 for i in range(len(splitted_ts)):
                     splitted_ts[i] = act[i](splitted_ts[i])
-                out = torch.cat(splitted_ts, dim=1)
+                out = jnp.concatenate(splitted_ts, axis=-1)
 
             else:
                 out = act(linear_f)
@@ -129,14 +148,12 @@ class MultilayerPerceptron(nn.Module, Syncable):
         Count parameters of module.
         """
 
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+        return sum(p.size for p in jax.tree.leaves(eqx.filter(self, eqx.is_inexact_array)))
 
     def sync(self, v: "MultilayerPerceptron") -> "MultilayerPerceptron":
         """
-        Copies the content of the current instance to the supplied parameter instance.
+        Copies the content of the current instance to the supplied parameter instance. Modules are immutable, so the
+        synced instance is the current one.
         :param v: The other instance, where the current values should be copied to.
         """
-
-        # check if it can be copied
-        v.load_state_dict(self.state_dict())
-        return v
+        return self
