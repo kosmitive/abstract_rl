@@ -3871,3 +3871,13 @@ Each will be written with the writing-plans skill after this plan is merged, and
 5. Remove torch and gymnasium from `src`, `default_settings`, the dm-control extra and `acrobot_swingup.py`, then add
    `scripts/bench_jax.py`, update the README with benchmark and threshold re-validation, and run the final
    `test_imports`.
+
+### Carry-over from Plan 1 execution (must be honoured by Plan 2/3)
+
+- **F5, before P1 donation:** `clone()` returns `self`, so `mc.state()` holds online and target as the same buffers. XLA rejects donating the same buffer twice. Copy the target arrays in `ModelConfiguration.state()` or `run_seeds`, e.g. `jax.tree.map(jnp.copy, ...)` over the array leaves.
+- **F6:** `likelihood_ratio` and the univariate `entropy` read the policy from `state`. `TrustRegionGradient` must therefore differentiate through `state.set("policy", p)`, and its test must assert a non-zero gradient.
+- **Opt-state keys:** opt states are registered host-side as `mc.add_main("<mc_key>_opt", net.init_opt())` before `mc.state()`. `ModelState.set` raises `KeyError` on unknown keys.
+- **Masks:** every padded batch, buffer and dual input must have at least one valid row, because an all-False mask divides by zero. When building masked batches, use float dones (`jnp.where(mask, x, 0)` promotes bool to int32) or fill with `jnp.zeros_like(x)`.
+- **Host state:** `RunningCenteredFilter` and obs-norm stats must become `jnp` pytrees. `ModelConfiguration.state()` skips numpy leaves, so numpy stats would silently stay on the host.
+- **Metal:** MJX envs fail on `mps` ("Unsupported device MPS:0"), so `jax_platform` defaults to `cpu` and tests pin `JAX_PLATFORMS=cpu`. One option is to step the MJX envs on CPU while the networks run on MPS. That needs two jitted stages per epoch, so evaluate it against the fused CPU epoch.
+- **Smoke tests:** the TRPO smokes are re-enabled in Plan 2. The MPO, eval and best-policy smokes are re-enabled in Plan 3.
