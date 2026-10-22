@@ -15,6 +15,9 @@ class ResampleOperator(TrajectoryOperator):
     Samples for each state additional actionsa and equips
     """
 
+    # the annotations written by ``transform``
+    FIELDS = ("add_act", "add_q", "add_pi")
+
     def __repr__(self) -> str:
         return "resample"
 

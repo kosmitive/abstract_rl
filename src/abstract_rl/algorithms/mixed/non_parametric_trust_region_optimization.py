@@ -40,8 +40,7 @@ def find_optimal_temperature(
 ) -> Float[Array, "1"]:
     """
     Uses a batch of data to find the optimal temperature eta for reweighting by minimizing the convex dual with Adam.
-    The statistics of the problem, eta* and the dual value are printed on the host from the returned metrics
-    (NonParametricVariationalPolicyBuilder.calc_eta), not inside the traced solve.
+    Nothing is printed inside the traced solve: the run loop logs the resulting eta on the host.
     :param q_tensor: A tensor of [NxA] with N states and A actions.
     :param eps: The eps to use.
     :param eta0: The initial eta

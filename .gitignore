@@ -12,3 +12,6 @@ results/
 outputs/
 *.log
 MUJOCO_LOG.TXT
+
+# editor swap files
+*.swp

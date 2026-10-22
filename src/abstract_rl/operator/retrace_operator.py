@@ -76,8 +76,9 @@ class RetraceOperator(TrajectoryOperator):
         coeff = jnp.ones(tl)
         for k in range(1, min(self.ret_bootstrap, tl)):
             same_episode = (_shift(episode, k) == episode) & _shift(trajectory.mask, k)
-            coeff = coeff * discount * _shift(c, k) * same_episode
-            tq = tq + coeff * _shift(td_errors_q, k)
+            # where, not a multiplication by the mask, so that NaN in invalid rows cannot leak
+            coeff = jnp.where(same_episode, coeff * discount * _shift(c, k), 0.0)
+            tq = tq + jnp.where(same_episode, coeff * _shift(td_errors_q, k), 0.0)
 
         return trajectory.set("q", q_vals.reshape(-1, 1)).set("tq", tq.reshape(-1, 1))
 

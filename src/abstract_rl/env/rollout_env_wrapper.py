@@ -156,7 +156,7 @@ class RolloutEnvWrapper:
         if record:
             buf["raw_next_states"] = zeros(sd)
         if record_qpos:
-            buf["qpos"] = zeros(self.env.qpos(env_state).shape[-1])
+            buf["qpos"] = zeros(self.env.qpos(env_state).shape[-1])  # type: ignore[attr-defined]
         carry = (
             jnp.asarray(0),
             key,
@@ -219,7 +219,7 @@ class RolloutEnvWrapper:
             if record:
                 step_vals["raw_next_states"] = jnp.asarray(raw_nxt, DTYPE)
             if record_qpos:
-                step_vals["qpos"] = jnp.asarray(self.env.qpos(stepped), DTYPE)
+                step_vals["qpos"] = jnp.asarray(self.env.qpos(stepped), DTYPE)  # type: ignore[attr-defined]
             # index i is written once, so selecting on the slice instead of the whole buffer gives identical outputs
             buf = {
                 k: buf[k].at[:, i].set(jnp.where(active.reshape(active.shape + (1,) * (v.ndim - 1)), v, buf[k][:, i]))

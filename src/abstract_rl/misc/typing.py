@@ -19,5 +19,20 @@ LogProbs = Float[Array, "D K"]
 Mask = Bool[Array, "D"]
 Step = Int[Array, ""]
 
-__all__ = ["DTYPE", "Actions", "Array", "Bool", "Float", "Int", "Key", "LogProbs", "Mask", "MultiActions",
-           "Scalar", "States", "Step", "SuffStats", "UniActions"]
+__all__ = [
+    "DTYPE",
+    "Actions",
+    "Array",
+    "Bool",
+    "Float",
+    "Int",
+    "Key",
+    "LogProbs",
+    "Mask",
+    "MultiActions",
+    "Scalar",
+    "States",
+    "Step",
+    "SuffStats",
+    "UniActions",
+]

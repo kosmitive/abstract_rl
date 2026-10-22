@@ -65,7 +65,10 @@ class TrajectoryCollection(eqx.Module):
 
     def occupied_rows(self) -> Int[Array, ""]:
         """The number of leading memory rows that were ever written: the insert pointer until the ring first wraps,
-        afterwards the highest pointer reached. All valid rows lie below it."""
+        afterwards the highest pointer reached. All valid rows lie below it. A collection that is not a replay memory
+        is occupied throughout: all rows of a lane."""
+        if self._high_water is None:
+            return jnp.asarray(self._trajectories.mask.shape[1], jnp.int32)
         return self._high_water
 
     def with_trajectories(self, trajectories: Trajectory) -> "TrajectoryCollection":
@@ -157,6 +160,9 @@ class TrajectoryCollection(eqx.Module):
         """Merges the valid rows of a rollout collection into this replay memory and drops the oldest episodes until
         at most ``max_l`` transitions remain (the newest episode is always kept).
 
+        The annotations of the merged rows are stale (the rollout's, or the overwritten rows' own): the operators
+        recompute every annotation each epoch, so nothing reads them before that.
+
         :param collection: The rollout to merge, lanes of whole episodes with at most ``capacity`` valid rows.
         :param max_l: The maximum number of transitions.
         """
@@ -173,7 +179,8 @@ class TrajectoryCollection(eqx.Module):
         write = jnp.arange(n_new) < count
         rows = jnp.where(write, ptr + jnp.arange(n_new), capacity)  # out of bounds rows are dropped
 
-        # a kept episode that the insert partly overwrites is dropped as a whole
+        # a kept episode that the insert partly overwrites is dropped as a whole; it only drops episodes that capping
+        # would drop anyway, because the insert is newer than every kept episode and the ring holds tc_size + 2R rows
         written = (slots >= ptr) & (slots < ptr + count) & mem.mask
         old_episode = jnp.cumsum(mem.ends) - mem.ends
         hit = jax.ops.segment_max(written.astype(jnp.int32), old_episode, num_segments=capacity) > 0
@@ -197,8 +204,8 @@ class TrajectoryCollection(eqx.Module):
         mem = mem.set("time", insert(mem["time"], new["time"]))
         mem = mem.set("insert_id", insert(mem["insert_id"], jnp.full(n_new, self._inserted, jnp.int32)))
 
-        # capping: newest episodes first (insert id, then the time of their last step, then the lane), longest prefix
-        # within max_l
+        # capping: newest episodes first (insert id, then the time of their last step, then the segment index, i.e. the
+        # slot order of the episodes), longest prefix within max_l
         ends = mem.ends & mem.mask
         episode = jnp.cumsum(mem.ends) - mem.ends
         length = jax.ops.segment_sum(mem.mask.astype(jnp.int32), episode, num_segments=capacity)

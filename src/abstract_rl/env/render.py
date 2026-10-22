@@ -67,12 +67,14 @@ def _mujoco_frames(model: object, qpos: np.ndarray, env_name: str = "") -> list[
     frames = []
     renderer = mujoco.Renderer(model, 240, 240)
     data = mujoco.MjData(model)
-    for q in qpos:
-        data.qpos[:] = q
-        mujoco.mj_forward(model, data)
-        renderer.update_scene(data, camera=camera)
-        frames.append(renderer.render())
-    renderer.close()
+    try:
+        for q in qpos:
+            data.qpos[:] = q
+            mujoco.mj_forward(model, data)
+            renderer.update_scene(data, camera=camera)
+            frames.append(renderer.render())
+    finally:
+        renderer.close()
     return frames
 
 

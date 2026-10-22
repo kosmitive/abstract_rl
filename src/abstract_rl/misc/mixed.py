@@ -10,6 +10,7 @@ def default_settings(num_threads: int = 1) -> None:
     Apply default settings to all.
     :param num_threads: Unused, kept for the callers' signature (the torch thread setting is gone).
     """
+
     def float_formatter(x: Any) -> str:
         return f"{x: 10.4f}"
 

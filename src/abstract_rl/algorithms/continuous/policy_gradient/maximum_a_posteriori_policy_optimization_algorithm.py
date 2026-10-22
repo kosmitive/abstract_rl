@@ -156,7 +156,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         return constraints
 
-    def obj(self, state: ModelState, batch: Any, policy: Any, lagrange_mults: Any, v: list[Any]) -> Any:  # type: ignore[override]
+    def obj(self, state: ModelState, batch: Any, policy: Any, lagrange_mults: Any, v: list[Any]) -> Any:
         """
         Calculate the objective based on the objective and the splitted kl divergence constraints.
         :param batch: Batch to estimate objective and constraints

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from os.path import join
 from typing import Any
@@ -43,6 +43,7 @@ def annotate_chunked(
     tc: TrajectoryCollection,
     key: PRNGKeyArray,
     chunk: int,
+    fields: Sequence[str],
 ) -> TrajectoryCollection:
     """
     Annotates the single lane of a replay memory chunk by chunk, but only the chunks covering its occupied rows.
@@ -50,6 +51,7 @@ def annotate_chunked(
     :param tc: The replay memory, a single lane.
     :param key: The random key passed to every chunk (``fn`` keys its rows by their index).
     :param chunk: The static number of rows per chunk.
+    :param fields: The annotations ``fn`` writes, only these are written back.
     :return: The memory with the new annotations on its occupied rows, the rows beyond keep their previous ones.
     """
     lane = jax.tree.map(lambda x: x[0], tc.trajectories())
@@ -64,9 +66,8 @@ def annotate_chunked(
         part = jax.tree.map(lambda x: jax.lax.dynamic_slice_in_dim(x, start, chunk), lane)
         out = fn(part, key, rows)
         keep = rows < occupied
-        for k, v in out._annotations.items():
-            if v is part._annotations.get(k):
-                continue
+        for k in fields:
+            v = out[k]
             v = jnp.where(keep.reshape(-1, *([1] * (v.ndim - 1))), v, part[k])
             lane = lane.set(k, jax.lax.dynamic_update_slice_in_dim(lane[k], v.astype(lane[k].dtype), start, 0))
         return lane
@@ -161,6 +162,8 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     mc.add_main("eta", runs.broadcast(rnk.b.init_state()["eta"]))
 
     def annotate(state: ModelState, tc: TrajectoryCollection, key: Any) -> TrajectoryCollection:
+        # only used to derive the annotation structure of the memory: it duplicates the operator chain of ``epoch``
+        # (resample, ranking, retrace), keep the two in sync
         k_res, k_ret = jax.random.split(key)
         tc = res.transform_all(state, tc, k_res)
         tc = rnk.transform_all(state, tc)
@@ -195,8 +198,11 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         tc = state.get("tc").merge(new_tc, tc_size)
 
         # e-step: resample extra actions and q values on the occupied rows, temperature (on the merged memory), ranking
+        # the second key is unused, but the split is kept: it fixes the resample key stream the benchmarks were run with
         k_res, _ = jax.random.split(k_annotate)
-        tc = annotate_chunked(lambda lane, k, rows: res.transform(state, lane, k, rows), tc, k_res, res_chunk)
+        tc = annotate_chunked(
+            lambda lane, k, rows: res.transform(state, lane, k, rows), tc, k_res, res_chunk, res.FIELDS
+        )
         state = rnk.hook(state, tc)
         tc = rnk.transform_all(state, tc)
 
@@ -210,8 +216,14 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         # copy target_networks
         state = state.set("tc", tc).sync().set("key", key)
         memory_size = jnp.sum(tc.trajectories().mask)
-        return state, {"rollout": rollout, "m_step": m_step, "v_step": v_step, "pre": pre, "eta": state.get("eta"),
-                       "memory_size": memory_size}
+        return state, {
+            "rollout": rollout,
+            "m_step": m_step,
+            "v_step": v_step,
+            "pre": pre,
+            "eta": state.get("eta"),
+            "memory_size": memory_size,
+        }
 
     def chunk(state: ModelState, batch_size: int, num: int) -> tuple[ModelState, dict[str, Any]]:
         EPOCH_TRACES.append(batch_size)
@@ -314,8 +326,11 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
                     )
                     m_step = jax.tree.map(lambda x, c=c: x[0, c], metrics["m_step"])
                     for s in range(0, len(m_step["obj"]), 10):
-                        vals = [float(v) for pair in zip(m_step["lagrange_mults"][s], m_step["constraints"][s],
-                                                         strict=True) for v in pair]
+                        vals = [
+                            float(v)
+                            for pair in zip(m_step["lagrange_mults"][s], m_step["constraints"][s], strict=True)
+                            for v in pair
+                        ]
                         cli.print(alg.fmtstr % (s, float(m_step["obj"][s]), *vals))
 
                 with cli.header("v-step", True):

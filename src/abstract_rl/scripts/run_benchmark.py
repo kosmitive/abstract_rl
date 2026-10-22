@@ -12,8 +12,9 @@ Every cell trains its seeds as one vmapped program (``scripts.run.train`` with `
 ``<root>/runs/<env>_<alg>/<env id>/<alg>/<timestamp>/``. With ``--mpo-processes`` every MPO seed is trained in its own
 process instead. Cells are independent, so several invocations with disjoint ``--envs``/``--algs`` can run in parallel
 on the same ``--root``. Invocations of one cell with disjoint ``--seeds`` (e.g. one seed at a time when the vmapped
-seeds do not fit into memory) must run one after the other: new runs are found by a before/after diff of the cell
-directory, which would also pick up the runs of a parallel invocation. Each invocation writes its wall time and
+seeds do not fit into memory) should run one after the other: this invocation's runs are the new run directories of
+the cell with one of its seeds (read from ``run.conf``) that were created after it started, so disjoint seeds do not
+clobber each other, but the same seed run twice in parallel would. Each invocation writes its wall time and
 env-steps/s per cell to ``<root>/timing/<env>_<alg>_seeds<seeds>.json`` and ``--report`` merges these into
 ``<root>/timing.json``.
 ``--threads 1`` disables XLA's multi-threaded CPU kernels (set before JAX is imported). Hydra overrides after
@@ -131,13 +132,19 @@ def run_cell(env: str, alg: str, args: argparse.Namespace) -> dict[str, Any]:
     os.makedirs(root, exist_ok=True)
     before = run_dirs(root)
 
+    start_wall = time.time()
     start = time.perf_counter()
     if alg == "mpo" and args.mpo_processes and len(args.seeds) > 1:
         train_processes(env, alg, args.seeds, args, root)
     else:
         train_cell(env, alg, args.seeds, root, args.set or [])
     train_time = time.perf_counter() - start
-    dirs = sorted(run_dirs(root) - before)
+    # new run directories of this invocation's seeds, whose run.conf was written after it started (clock slack 2 s)
+    dirs = sorted(
+        d
+        for d in run_dirs(root) - before
+        if seed_of(d) in args.seeds and os.path.getmtime(os.path.join(d, "run.conf")) >= start_wall - 2
+    )
 
     start = time.perf_counter()
     eval_returns.main([*dirs, "--episodes", str(args.episodes), "--save"])

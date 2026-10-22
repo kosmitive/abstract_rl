@@ -137,8 +137,13 @@ class BraxEnv:
         self, env_state: Any, action: Float[Array, " A"], key: PRNGKeyArray
     ) -> tuple[Any, Float[Array, " Ds"], Float[Array, ""], Bool[Array, ""], Bool[Array, ""]]:
         env_state = self._env.step(env_state, action)
-        return (env_state, jnp.asarray(env_state.obs, DTYPE), jnp.asarray(env_state.reward, DTYPE).reshape(()),
-                jnp.asarray(env_state.done).reshape(()) > 0.5, jnp.asarray(False))
+        return (
+            env_state,
+            jnp.asarray(env_state.obs, DTYPE),
+            jnp.asarray(env_state.reward, DTYPE).reshape(()),
+            jnp.asarray(env_state.done).reshape(()) > 0.5,
+            jnp.asarray(False),
+        )
 
 
 class PlaygroundEnv:
@@ -171,8 +176,13 @@ class PlaygroundEnv:
     ) -> tuple[Any, Float[Array, " Ds"], Float[Array, ""], Bool[Array, ""], Bool[Array, ""]]:
         env_state = self._env.step(env_state, action)
         obs = jnp.asarray(env_state.obs, DTYPE).reshape(-1)
-        return (env_state, obs, jnp.asarray(env_state.reward, DTYPE).reshape(()),
-                jnp.asarray(env_state.done).reshape(()) > 0.5, jnp.asarray(False))
+        return (
+            env_state,
+            obs,
+            jnp.asarray(env_state.reward, DTYPE).reshape(()),
+            jnp.asarray(env_state.done).reshape(()) > 0.5,
+            jnp.asarray(False),
+        )
 
 
 _ASSETS = Path(__file__).parent / "assets"
@@ -288,10 +298,15 @@ class InvertedDoublePendulumV5(MjxGymEnv):
 
     def observe(self, env_state: Any) -> Float[Array, " Ds"]:
         qpos, qvel = env_state.qpos, env_state.qvel
-        return jnp.concatenate([
-            qpos[:1], jnp.sin(qpos[1:]), jnp.cos(qpos[1:]), jnp.clip(qvel, -10, 10),
-            jnp.clip(env_state.qfrc_constraint, -10, 10)[:1],
-        ]).astype(DTYPE)
+        return jnp.concatenate(
+            [
+                qpos[:1],
+                jnp.sin(qpos[1:]),
+                jnp.cos(qpos[1:]),
+                jnp.clip(qvel, -10, 10),
+                jnp.clip(env_state.qfrc_constraint, -10, 10)[:1],
+            ]
+        ).astype(DTYPE)
 
     def _reset_qpos_qvel(self, key: PRNGKeyArray) -> tuple[Float[Array, " Q"], Float[Array, " V"]]:
         k_pos, k_vel = jax.random.split(key)

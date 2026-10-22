@@ -70,9 +70,7 @@ class VanillaGradient(eqx.Module):
         obj, grads = eqx.filter_value_and_grad(lambda m: m.tr_obj(batch))(self)
         updates, opt_state = opt.update(grads, opt_state, eqx.filter(self, eqx.is_inexact_array))
         model = eqx.apply_updates(self, updates)
-        new_obj = jax.lax.cond(
-            curst % 10 == 0, lambda: model.tr_obj(batch), lambda: jnp.asarray(jnp.nan, obj.dtype)
-        )
+        new_obj = jax.lax.cond(curst % 10 == 0, lambda: model.tr_obj(batch), lambda: jnp.asarray(jnp.nan, obj.dtype))
         return model, opt_state, obj, new_obj
 
     def tr_obj(self, batch: Batch) -> Float[Array, ""]:

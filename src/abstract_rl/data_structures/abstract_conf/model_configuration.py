@@ -114,8 +114,12 @@ class ModelConfiguration:
         models = dict(models) if models is not None else {k: v[1] for k, v in self.syncables.items()}
         obs_rms = models.pop("obs_rms", None)
         if obs_rms is not None:
-            np.savez(join(self.model_root, "obs_rms.npz"), mean=np.asarray(obs_rms.mean), var=np.asarray(obs_rms.var),
-                     count=np.asarray(obs_rms.count, np.float64))
+            np.savez(
+                join(self.model_root, "obs_rms.npz"),
+                mean=np.asarray(obs_rms.mean),
+                var=np.asarray(obs_rms.var),
+                count=np.asarray(obs_rms.count, np.float64),
+            )
         model_path = join(self.model_root, name)
         if not exists(model_path):
             mkdir(model_path)

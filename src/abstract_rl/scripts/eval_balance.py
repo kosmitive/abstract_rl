@@ -98,7 +98,8 @@ def run_episode(
     total = float(np.sum(np.asarray(traj.raw_rewards, np.float64)[mask]))
     # the angle of the raw observation, the stored next states are normalised if obs_norm is set
     obs = np.asarray(traj["raw_next_states"])[mask]
-    thetas = np.arctan2(obs[:, 1], obs[:, 0])
+    # environments without an (cos, sin) pair in the first two observations have no angle
+    thetas = np.arctan2(obs[:, 1], obs[:, 0]) if obs.shape[-1] >= 2 else np.full(len(obs), np.nan)
     if frames is not None:
         frames.extend(render_frames(env_wrapper, traj))
     return total, thetas

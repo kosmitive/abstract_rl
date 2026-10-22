@@ -32,19 +32,26 @@ def bench(env: str, seeds: int, epochs: int, alg: str = "trpo") -> dict[str, Any
         times.append(time.perf_counter())
         original(self, name, models)
 
-    module.SeedRuns.store = timed_store  # type: ignore[method-assign,assignment]
+    module.SeedRuns.store = timed_store
     try:
         start = time.perf_counter()
         conf["num_epochs"] = epochs
         returns = run(conf)
     finally:
-        module.SeedRuns.store = original  # type: ignore[method-assign]
+        module.SeedRuns.store = original
     # every epoch collects at least policy_batch_size (TRPO) or env_sample (MPO) steps
     steps_per_epoch = conf["policy_batch_size" if alg == "trpo" else "env_sample"] * seeds
     first = times[0] - start
     steady = (times[-1] - times[0]) / max(len(times) - 1, 1)
-    return {"alg": alg, "env": env, "seeds": seeds, "first_epoch_s": first, "epoch_s": steady,
-            "env_steps_per_s": steps_per_epoch / steady, "final_return_mean": float(returns[:, -1, 0].mean())}
+    return {
+        "alg": alg,
+        "env": env,
+        "seeds": seeds,
+        "first_epoch_s": first,
+        "epoch_s": steady,
+        "env_steps_per_s": steps_per_epoch / steady,
+        "final_return_mean": float(returns[:, -1, 0].mean()),
+    }
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -61,8 +68,10 @@ def main(argv: list[str] | None = None) -> None:
     os.environ.setdefault("JAX_PLATFORMS", args.platform)
     results = [bench(args.env, s, args.epochs, args.alg) for s in args.seeds]
     for r in results:
-        print(f"{r['alg']:4s} {r['env']:12s} seeds {r['seeds']:3d} | first call {r['first_epoch_s']:7.2f}s "
-              f"| epoch {r['epoch_s']:7.3f}s | {r['env_steps_per_s']:10.0f} env-steps/s")
+        print(
+            f"{r['alg']:4s} {r['env']:12s} seeds {r['seeds']:3d} | first call {r['first_epoch_s']:7.2f}s "
+            f"| epoch {r['epoch_s']:7.3f}s | {r['env_steps_per_s']:10.0f} env-steps/s"
+        )
     if args.out:
         with open(args.out, "w") as handle:
             json.dump(results, handle, indent=2)
