@@ -1,5 +1,9 @@
 # Abstract RL
 
+[![CI](https://github.com/kosmitive/abstract_rl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kosmitive/abstract_rl/actions/workflows/ci.yml)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
 (environment wrapper, trajectory operators, policies, value functions). Python 3.13, [uv](https://docs.astral.sh/uv/),
 ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
@@ -157,6 +161,80 @@ module layout and operator design. In short:
   Gaussian actions (now tanh-squashed with the Jacobian in the log-likelihood), Retrace policy mismatch, KL check
   in the TRPO line search, a larger ELU critic for MPO, and a state-dependent sigma that stays positive without
   being passed through softplus twice.
+
+## Acknowledgements
+
+- The running state filter (`misc/running_centered_filter.py`) is adapted from John Schulman's
+  [modular_rl](https://github.com/joschu/modular_rl) and Ilya Kostrikov's
+  [pytorch-trpo](https://github.com/ikostrikov/pytorch-trpo).
+- The baselines use [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3),
+  [SB3-Contrib](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib) and hyper-parameters from
+  [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo); the environments come from
+  [Gymnasium](https://gymnasium.farama.org) and [MuJoCo](https://mujoco.org).
+
+## Citing
+
+If you use this code, please cite the repository (see [`CITATION.cff`](CITATION.cff)) and the papers of the methods:
+
+```bibtex
+@software{semmler_abstract_rl,
+  author = {Semmler, Markus},
+  title  = {Abstract RL: modular PyTorch TRPO and MPO},
+  url    = {https://github.com/kosmitive/abstract_rl},
+  year   = {2026}
+}
+
+@inproceedings{peters2010reps,
+  author    = {Peters, Jan and M{\"u}lling, Katharina and Alt{\"u}n, Yasemin},
+  title     = {Relative Entropy Policy Search},
+  booktitle = {Proceedings of the 24th AAAI Conference on Artificial Intelligence (AAAI)},
+  year      = {2010},
+  pages     = {1607--1612},
+  url       = {https://ojs.aaai.org/index.php/AAAI/article/view/7727}
+}
+
+@inproceedings{schulman2015trpo,
+  author    = {Schulman, John and Levine, Sergey and Moritz, Philipp and Jordan, Michael I. and Abbeel, Pieter},
+  title     = {Trust Region Policy Optimization},
+  booktitle = {Proceedings of the 32nd International Conference on Machine Learning (ICML)},
+  year      = {2015},
+  url       = {https://arxiv.org/abs/1502.05477}
+}
+
+@inproceedings{schulman2016gae,
+  author    = {Schulman, John and Moritz, Philipp and Levine, Sergey and Jordan, Michael I. and Abbeel, Pieter},
+  title     = {High-Dimensional Continuous Control Using Generalized Advantage Estimation},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2016},
+  url       = {https://arxiv.org/abs/1506.02438}
+}
+
+@inproceedings{abdolmaleki2018mpo,
+  author    = {Abdolmaleki, Abbas and Springenberg, Jost Tobias and Tassa, Yuval and Munos, Remi and Heess, Nicolas
+               and Riedmiller, Martin},
+  title     = {Maximum a Posteriori Policy Optimisation},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2018},
+  url       = {https://arxiv.org/abs/1806.06920}
+}
+
+@article{abdolmaleki2018rerpi,
+  author    = {Abdolmaleki, Abbas and Springenberg, Jost Tobias and Degrave, Jonas and Bohez, Steven and Tassa, Yuval
+               and Belov, Dan and Heess, Nicolas and Riedmiller, Martin},
+  title     = {Relative Entropy Regularized Policy Iteration},
+  journal   = {arXiv preprint arXiv:1812.02256},
+  year      = {2018},
+  url       = {https://arxiv.org/abs/1812.02256}
+}
+
+@inproceedings{munos2016retrace,
+  author    = {Munos, R{\'e}mi and Stepleton, Tom and Harutyunyan, Anna and Bellemare, Marc G.},
+  title     = {Safe and Efficient Off-Policy Reinforcement Learning},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2016},
+  url       = {https://arxiv.org/abs/1606.02647}
+}
+```
 
 ## License
 

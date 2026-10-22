@@ -1,9 +1,13 @@
+"""Running mean / standard deviation filter for states and rewards.
+
+Adapted from the running statistics in John Schulman's modular_rl (https://github.com/joschu/modular_rl) and Ilya
+Kostrikov's pytorch-trpo (https://github.com/ikostrikov/pytorch-trpo/blob/master/running_state.py), which use the
+update of https://www.johndcook.com/blog/standard_deviation/.
+"""
+
 import numpy as np
 from numpy import ndarray
 
-# from https://github.com/joschu/modular_rl
-# http://www.johndcook.com/blog/standard_deviation/
-# https://github.com/ikostrikov/pytorch-trpo/blob/master/running_state.py
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
