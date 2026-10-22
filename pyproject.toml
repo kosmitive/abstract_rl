@@ -6,10 +6,11 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Markus Semmler" }]
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.12,<3.14"
 keywords = ["reinforcement learning", "trpo", "mpo", "policy gradient", "gymnasium", "pytorch"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -23,6 +24,11 @@ dependencies = [
     "numpy>=2.1",
     "pandas>=2.2",
     "torch>=2.5",
+    "jax>=0.11,<0.12",
+    "equinox>=0.13",
+    "optax>=0.2",
+    "jaxtyping>=0.3",
+    "beartype>=0.19",
 ]
 
 [project.urls]
@@ -31,6 +37,9 @@ Source = "https://github.com/kosmitive/abstract_rl"
 Issues = "https://github.com/kosmitive/abstract_rl/issues"
 
 [project.optional-dependencies]
+mps = [
+    "jax-mps>=0.11,<0.12; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 mujoco = [
     "gymnasium[mujoco]>=1.0",
 ]
@@ -65,7 +74,7 @@ explicit = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -79,7 +88,7 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.12"
 files = ["src"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

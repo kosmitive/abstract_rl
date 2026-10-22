@@ -124,7 +124,7 @@ Python `if`s on it stay plain `if`s.
 | `algorithms/mixed/vanilla_gradient.py` | Adam mixin | `perform_mult_sgd(state, key, num_steps, tc, batch_size, fields)` keeps today's name and argument order, with `state` and `key` added (R1, R2, R6). It is a `lax.scan` over `num_steps` Optax Adam updates. Optax defaults `b1=.9, b2=.999, eps=1e-8` equal the PyTorch defaults. |
 | `algorithms/mixed/conjugate_gradient.py` | Python `while` | `lax.while_loop`, carrying `(k, x, r, p, rdotr)`, with the same `max_k` and `rdotr <= tol` stop and the same `A(v)` callable interface |
 | `algorithms/mixed/trust_region_gradient.py` | `perform_tr_sgd`, `line_search` | `jax.flatten_util.ravel_pytree` replaces `flat_params`. The FVP is a forward-over-reverse HVP (`jax.jvp(jax.grad(kl))`) plus damping. The line search is a `lax.while_loop` over `lr = 1, 1/2, ...` for up to 10 steps, with the same acceptance test, and restores `x` on failure. |
-| `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | 200 fixed Adam steps on `log η` | `lax.fori_loop` with a fresh Adam per call, as today, run in float64 on CPU (section 7) |
+| `algorithms/mixed/non_parametric_trust_region_optimizatioon.py` | 200 fixed Adam steps on `log η` | `lax.fori_loop` with a fresh Adam per call, as today, run in float32 (section 7) |
 | `algorithms/continuous/policy_gradient/*` | algorithm classes | `TRPOAlgorithm.perform_tr_sgd(state, batch)` and `MPOAlgorithm.perform_mult_steps(state, key)`. The MPO step order is kept: max step, then min step on the same batch, then the logging recompute. `shuffle_up_stats`, the split objective and the split constraints, `exp(λ)` multipliers with λ initialised to 1, the persistent Adam states, and `sample_v` drawing from a key are all kept. |
 | `operator/*` | per-trajectory Python loops | `transform_all(buffer, ...) -> buffer`, vmapped over episodes and run as a reverse `lax.scan` over time with the episode mask. TD, GAE and Retrace (truncated at B = `mem_bootstrap_steps`) keep their exact recurrences. Resample, ranking (log-softmax of `add_q/η`) and the filter work the same. |
 | `data_structures/temporal_difference_data/*` | pandas, lists, numpy | `EpisodeBuffer`, `Batch` and `ReplayBuffer` pytrees (section 6). `Trajectory` and `TrajectoryBuilder` become thin views over one padded row. They are kept for the eval scripts and tests. |
@@ -152,7 +152,7 @@ Each one is shown in its smallest form.
 | R2 | `VanillaGradient` and the MPO algorithm own `torch.optim.Adam` objects, holding parameters and state, inside the module or algorithm. | Optimiser state has to be a separate pytree, threaded in and out. It cannot be a field of the module being differentiated. | Same method names (`perform_mult_sgd`, `perform_adam_step`). `opt_state` moves into the algorithm state under keys named after today's attributes (`opt_outer`, `opt_inner`, `v_network.opt`, ...). |
 | R3 | `Syncable.clone()` uses `deepcopy`. `mc.sync()` mutates targets with `overall_step % sync_steps`. | It mutates in place, and the branch depends on a traced counter. | Target models become separate leaves in the state. `sync` is a `jnp.where(overall_step % sync_steps == 0, online, target)` tree-map. `overall_step` moves into the state. |
 | R4 | `Trajectory` and `TrajectoryCollection` are Python lists of pandas and numpy objects with ragged lengths. `Batch` is numpy. | Static shapes, and pytrees only. | These are padded pytrees (section 6) with the **same attribute and property names**: `states`, `next_states`, `all_states`, `actions`, `rewards`, `dones`, `log_likelihoods`, `traj["field"]`, `batch[field]`, `to_batch`, `sample`, `merge`. They gain a `mask`. |
-| R5 | `transform(trajectory)` mutates its annotations, and `transform_all` loops over a list. | In-place writes, and a Python loop over traced data. | `transform(trajectory) -> trajectory` stays per episode, with the same body converted to a reverse `lax.scan`. `TrajectoryOperator.transform_all` becomes `vmap(self.transform)` over the padded episode axis. This is the one base-class edit, and every operator subclass is otherwise untouched. |
+| R5 | `transform(trajectory)` mutates its annotations, and `transform_all` loops over a list. | In-place writes, and a Python loop over traced data. | `transform(trajectory) -> trajectory` stays per episode, with the same body converted to a reverse `lax.scan`. `TrajectoryOperator.transform_all` becomes `vmap(self.transform)` over the padded episode axis. The operator subclasses keep their bodies. Their model lookups move from `__init__` into `transform`, as `state.get(...)`. |
 | R6 | Global `torch.manual_seed` and `np.random`. | vmap over seeds needs a separate random stream per seed. | Stochastic functions (`sample_actions`, `sample`, `sample_v`, rollout, `v_val`) take an extra leading `key` argument. Nothing else changes. |
 | R7 | Python `while` or `if` on tensor values: the CG break, the line search, the dual loop, `step % 10` logging. | Traced values can't drive Python control flow. | The same function, rewritten in place with `lax.while_loop` or `lax.fori_loop`. The loop-variable names stay. |
 | R8 | `RunningCenteredFilter` and obs-norm update numpy state on every env step. `MCMCEnvWrapper` counters (`total_steps`, `epoch`, `best_reward`, `max_traj_len`, `created_trajectories`) are Python attributes. | Host mutation inside the rollout | Same class names and fields. The stats become pytree leaves carried through the rollout scan, and the counters live in the state. The thread lock is dropped, because nothing is concurrent any more. |
@@ -283,9 +283,8 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 - **float32 everywhere.** This matches torch, where `torch.Tensor(np.float64)` becomes float32.
   - Env observations are float32 too (today they are float64 until the policy sees them). The difference is below the
     policy's float32 resolution and is listed in section 10.
-- **The temperature dual is float64 on CPU.** The process enables `jax_enable_x64`, every array dtype is explicit
-  float32, and only the dual casts `q` to float64, as today.
-  - On `mps` the dual runs in float32, because Metal has no float64. This is deviation D4, logged once at startup.
+- **The temperature dual runs in float32 on every backend.** `jax_enable_x64` is never enabled, because x64 would
+  turn MJX, Brax and the networks into float64 on CPU.
 - **Squash.**
   - `y = clip((a - center)/scale, ±tanh(5))`, `u = atanh(y)`, `log_jac = log(scale·(1 - y²))`.
   - Sampling clamps `u` to ±5, and `mode = center + scale·tanh(mu)`.
@@ -371,7 +370,7 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 | D1 | Random streams differ from torch and numpy. Every draw uses explicit keys. | Different RNG designs, and vmap needs per-seed keys. |
 | D2 | Episodes per epoch are rounded up to a multiple of E. E = 1 is exact. | Static shapes for the vmapped envs |
 | D3 | `run.conf` stores the real seed, not `np.random.randint(1e6)`. | The overwrite was a bug that broke `compare.py`. |
-| D4 | On `mps` the temperature dual runs in float32. CPU keeps float64. | Metal has no float64. |
+| D4 | The temperature dual runs in float32 instead of float64. Parity is checked at rtol 1e-3. | x64 globally would make MJX and all networks float64, and Metal has no float64. |
 | D5 | Env dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control. | Vectorisable, jittable envs |
 | D6 | Observations are float32 from the env on. | Metal has no float64, and the policy already consumes float32. |
 

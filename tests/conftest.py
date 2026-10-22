@@ -1,3 +1,9 @@
+from jaxtyping import install_import_hook
+
+# modules ported to JAX are checked against their jaxtyping annotations at runtime (beartype)
+JAXTYPED_MODULES = ["abstract_rl.misc.typing"]
+install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
+
 import copy
 
 import gymnasium as gym
