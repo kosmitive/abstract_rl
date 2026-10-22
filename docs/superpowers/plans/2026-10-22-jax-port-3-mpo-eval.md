@@ -64,7 +64,7 @@ Plus these:
 ### Task 1: The `execute_policy` lane count and frozen statistics; spec revision
 
 **Files:**
-- Modify: `src/abstract_rl/env/mcmc_env_wrapper.py`
+- Modify: `src/abstract_rl/env/rollout_env_wrapper.py`
 - Modify: `tests/test_env_wrapper.py` (append)
 - Modify: `docs/superpowers/specs/2026-10-22-jax-port-design.md` (section 6.2, section 10, section 12)
 
@@ -165,7 +165,7 @@ Run: `uv run pytest -o addopts="" -q tests/test_env_wrapper.py tests/test_obs_no
 Expected: all pass. Then run the full suite.
 
 ```bash
-git add src/abstract_rl/env/mcmc_env_wrapper.py tests/test_env_wrapper.py docs/superpowers/specs/2026-10-22-jax-port-design.md
+git add src/abstract_rl/env/rollout_env_wrapper.py tests/test_env_wrapper.py docs/superpowers/specs/2026-10-22-jax-port-design.md
 git commit -m "Choose the lane count per rollout and allow frozen statistics.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -508,7 +508,7 @@ def test_eta_ignores_invalid_memory_rows(make_pendulum_mc):
     memory = memory.with_trajectories(t)
     state = ModelState.create(rnk.b.init_state(), {})
     eta = rnk.hook(state, memory).get("eta")
-    from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+    from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 
     np.testing.assert_allclose(eta, find_optimal_temperature(q[0], rnk.b.non_parametric_variational_eps, 1.0, rnk.b.non_parametric_variational_lr), rtol=1e-5)
     ranked = rnk.transform_all(ModelState.create({"eta": eta}, {}), memory).trajectories()["grad_ranking"]
@@ -1184,7 +1184,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces, in `eval_balance.py`:
   - `load_policy(run_dir, model="last") -> (env_wrapper, policy, state)`. It reloads the `ModelConfiguration`, builds
-    `MCMCEnvWrapper`, deserialises `model/<model>/policy.eqx` into an unbatched `select_policy(mc, key(0))` template,
+    `RolloutEnvWrapper`, deserialises `model/<model>/policy.eqx` into an unbatched `select_policy(mc, key(0))` template,
     and loads frozen `obs_rms`: `model/obs_rms.npz` for `last` and `model/best/obs_rms.npz` for `best` (Plan 2 final
     review I-5).
   - `run_episode(env_wrapper, policy, state, seed, frames=None) -> (return, thetas)` uses
@@ -1269,7 +1269,7 @@ Expected: all pass, and nothing is skipped in `test_training_smoke.py`. Then run
 
 ```bash
 git add src/abstract_rl/scripts/eval_balance.py src/abstract_rl/scripts/eval_returns.py src/abstract_rl/run/run_policy.py \
-    src/abstract_rl/env/render.py src/abstract_rl/env/jax_envs.py src/abstract_rl/env/mcmc_env_wrapper.py tests/test_eval.py tests/test_training_smoke.py
+    src/abstract_rl/env/render.py src/abstract_rl/env/jax_envs.py src/abstract_rl/env/rollout_env_wrapper.py tests/test_eval.py tests/test_training_smoke.py
 git commit -m "Evaluate, replay and render stored policies on the JAX environments.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -1282,19 +1282,17 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `pyproject.toml`, `uv.lock`, `src/abstract_rl/__init__.py`, `src/abstract_rl/misc/mixed.py`,
   `src/abstract_rl/scripts/run_baselines.py`, `tests/conftest.py`, `tests/test_hydra_config.py`,
-  `tests/test_acrobot_swingup.py`, `README.md`
-- Delete: `tests/fixtures/record_torch_golden.py`. It stays reproducible from commit 4f7828e, and its docstring already
+  `README.md`
+- Delete: `tests/fixtures/record_torch_golden.py`. It stays reproducible from commit ab552fb, and its docstring already
   says so.
 - Create: `tests/test_no_torch.py`
 
 **Interfaces:**
 - Produces:
   - core dependencies without `torch` and `gymnasium`;
-  - a `baselines` extra holding `stable-baselines3`, `sb3-contrib`, `gymnasium[classic-control,mujoco]` and
-    `dm-control`;
+  - a `baselines` extra holding `stable-baselines3`, `sb3-contrib` and `gymnasium[classic-control,mujoco]`;
   - a `dev` group holding `gymnasium[classic-control]` for the Hydra and baseline tests;
-  - the Gymnasium acrobot adapter (`env/acrobot_swingup.py`) is kept and registered lazily by `run_baselines.py`, which
-    keeps the SB3 acrobot baseline working.
+  - (main already removed the dm_control acrobot env, its configs and its test.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1308,7 +1306,7 @@ import sys
 import abstract_rl
 
 # the optional SB3 baseline runner imports torch (through SB3) only inside its run function
-OPTIONAL = {"abstract_rl.scripts.run_baselines", "abstract_rl.env.acrobot_swingup"}
+OPTIONAL = {"abstract_rl.scripts.run_baselines"}
 
 
 def test_library_does_not_import_torch(monkeypatch):
@@ -1325,25 +1323,23 @@ Expected: FAIL. `misc/mixed.py` or another module still imports torch.
 
 - [ ] **Step 3: Implement**
 
-- `pyproject.toml`: drop `torch>=2.5` and `gymnasium[classic-control]>=1.0` from `dependencies`, drop the `mujoco` extra
-  (MJX is core), and move `dm-control` into `baselines`. Add `"gymnasium[classic-control]>=1.0"` to the dev group, and
+- `pyproject.toml`: drop `torch>=2.5` and `gymnasium[classic-control]>=1.0` from `dependencies`, and drop the `mujoco`
+  extra (MJX is core). Add `"gymnasium[classic-control]>=1.0"` to the dev group, and
   remove `torch` from the dev group if present. Keep the pytorch-cpu index, which the baselines extra uses through SB3.
   Then run `uv sync --extra mps --extra baselines`.
-- `src/abstract_rl/__init__.py`: remove the acrobot auto-registration.
-- `scripts/run_baselines.py`: import `gymnasium` and call `register_acrobot_swingup()` lazily inside the function that
-  builds environments.
+- `scripts/run_baselines.py`: import `gymnasium` lazily inside the function that builds environments.
 - `misc/mixed.py`: no torch import remains.
 - `tests/conftest.py`: remove the Gymnasium `PointMass` class and its `gym.register`, keeping the JAX `PointMassEnv`
   registration.
 - `tests/test_hydra_config.py`: check `make_env(conf["env_name"])` succeeds instead of `gym.spec`.
-- `tests/test_acrobot_swingup.py`: keep the budget test. Move the Gymnasium/dm_control half behind
-  `pytest.importorskip("dm_control")` / `pytest.importorskip("gymnasium")`, and keep the JAX wrapper half.
-- Delete `tests/fixtures/record_torch_golden.py`, after checking its docstring names commit 4f7828e.
+- Delete `tests/fixtures/record_torch_golden.py`, after checking its docstring names the last torch commit (ab552fb
+  after the rebase).
 - `README.md`:
   - rewrite the intro and install section for JAX: `uv sync`, `uv sync --extra mps`, `uv sync --extra baselines`;
   - make the "JAX: many seeds at once" section cover MPO, using the Task 5 benchmark numbers;
   - keep the historical torch benchmark tables, labelled "torch implementation (before the JAX port)";
-  - list deviations D1–D7 with one line each, linking the spec.
+  - list deviations D1–D7 with one line each, linking the spec;
+  - the Results section itself is rewritten in Task 9 with the JAX benchmark.
 
 - [ ] **Step 4: Run the checks and commit**
 
@@ -1365,3 +1361,129 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 (When staging `src` and `tests`, check `git status` first, so that the untracked
 `src/abstract_rl/env/.jax_envs.py.swp` is not added. Stage the changed files by explicit path.)
+
+---
+
+### Task 8: Annotate only the occupied memory while it fills (MPO speed-up)
+
+Plan 3's Task 5 review measured full-memory annotation at 50–64 % of the MPO epoch.
+
+**Files:**
+- Modify: `src/abstract_rl/run/run_mpo_non_parametric.py`
+- Modify: `src/abstract_rl/data_structures/temporal_difference_data/trajectory_collection.py`
+- Create: `tests/test_occupied_annotation.py`
+
+**Interfaces:**
+- Produces: `TrajectoryCollection.occupied_rows() -> Int[Array, ""]`. This is the number of leading memory rows that
+  have ever been written: `ptr` until the ring first wraps, `capacity` afterwards. It is tracked as a new int32 field,
+  `_high_water`, which `merge` updates to `max(_high_water, ptr + count)`.
+- Produces: a helper `annotate_chunked(fn, tc, key, chunk: int)` in `run_mpo_non_parametric.py`. It applies the
+  per-lane annotation `fn(state, lane, key)` to the single memory lane in chunks of `chunk` rows, with a
+  `lax.fori_loop` whose trip count is `ceil(occupied_rows / chunk)`. Rows beyond `occupied_rows` keep their previous
+  annotations. They are invalid, so sampling never draws them and the dual and ranking ignore them.
+- The operators stay row-independent except Retrace, which looks ahead `mem_bootstrap_steps` rows within an episode.
+  Episodes never wrap and never straddle the occupied boundary, so chunks need an overlap of `mem_bootstrap_steps - 1`
+  rows at their end. The simpler alternative is to run Retrace over the whole lane and chunk only the resample
+  annotation, which holds 20/31 of the annotation FLOPs.
+
+- [ ] **Step 1: Write a test that chunked and full annotation agree on every valid row**
+
+The test builds a memory with three merges, about a third full. It then runs the resample annotation (a) over the full
+lane and (b) chunked over the occupied rows with `chunk=64`, using the same key per row. Make the per-row sampling key
+deterministic by folding the row index into the epoch key, so chunked and full runs draw the same noise. Assert
+`add_act`, `add_q` and `add_pi` are equal on all valid rows (atol 1e-6).
+
+- [ ] **Step 2: Implement**
+
+Implement `_high_water`, `occupied_rows` and `annotate_chunked`. Use it in the MPO epoch for the resample annotation;
+keep Retrace whole-lane unless the overlap version is equally simple. Make the per-row resample keys
+`fold_in(epoch_key, row)` in both paths, so results do not depend on chunking. This changes the random stream relative
+to the unchunked version, which spec D1 allows.
+
+- [ ] **Step 3: Measure and commit**
+
+Run `uv run python -m abstract_rl.scripts.bench_jax --alg mpo --env pendulum --seeds 1 4 --epochs 6` before and after,
+and record both.
+
+Run the MPO tests and the smoke tests, then commit with:
+"Annotate only the occupied replay memory while it fills."
+
+---
+
+### Task 9: Reproduce main's benchmark with JAX; README and eval artefacts
+
+This task follows the user's instruction: "look that you can match performance using the jax implementation; update
+README.md and everything eval related in the repository to match the results obtained by using jax".
+
+The targets are main's README Results table: 5 seeds (1–5) per cell; per-env step budgets from `conf/env/*.yaml`; the
+greedy return as the mean of 20 seeded episodes with the policy mean; and "Solved" and "Steps to threshold" defined as
+in main's README.
+
+**Files:**
+- Create: `src/abstract_rl/scripts/run_benchmark.py`. It is a driver that runs every env × alg cell with
+  `seeds=[1..5]`, then runs `eval_returns --save` on each run directory and `compare.py` into `docs/`.
+- Modify: `README.md` (Results section and the notes under it), `docs/benchmark.png`, the GIFs in `docs/`, and
+  `src/abstract_rl/scripts/README.md`.
+- Modify, only when a cell needs it: `src/abstract_rl/conf/tune/*.yaml`.
+
+- [ ] **Step 1: Write the driver**
+
+`run_benchmark.py --envs pendulum mountaincar inverted_pendulum inverted_double_pendulum halfcheetah --algs trpo mpo --seeds 1 2 3 4 5 --root data/bench`.
+
+The driver:
+- runs each cell through `scripts.run.train` with `seeds` set, in-process, with `jax_platform: cpu`;
+- runs MPO cells as one process per seed when `--mpo-processes` is set (the Task 5 review showed MPO is compute-bound,
+  so separate processes can beat vmap);
+- calls `eval_returns.main([...run dirs..., "--episodes", "20", "--save"])` after each cell;
+- appends wall time and env-steps/s per cell to `data/bench/timing.json`.
+
+- [ ] **Step 2: Smoke-run the driver**
+
+Run Pendulum TRPO with `--seeds 1 2` and a 2-epoch override to confirm the whole pipeline: run directories,
+`eval.json`, and a `compare.py` table.
+
+- [ ] **Step 3: Run the full benchmark in the background**
+
+Run every cell at main's budgets, logging to `data/bench/*.log`. Expected wall time is several hours, dominated by
+HalfCheetah MPO. Monitor the runs and do not sit idle: draft the README while they run.
+
+- [ ] **Step 4: Compare against main's table**
+
+Compare the greedy return mean ± std, solved count and steps to threshold for every cell.
+
+A JAX cell fails when its solved count is below main's for the same cell, or its greedy mean is more than 10 % worse
+(Pendulum: more than 10 return points). For each failure:
+- (a) Check whether the environment differs (spec D5): the Brax/MJX dynamics, observation and reward scale against
+  Gymnasium v5. For example, compute the maximum achievable return of the JAX env for a "do nothing" or "perfect
+  balance" policy and compare it with the threshold.
+- (b) Check the algorithm with a short torch-vs-JAX run at equal seeds on the classic-control environment, where the
+  dynamics match.
+- (c) If the environment differs, record that the threshold is not comparable, re-derive a JAX threshold from the
+  environment's achievable return, and document it.
+- (d) If it is a tuning issue, tune one setting at a time in `conf/tune/<env>_<alg>.yaml`, re-run the cell with 5 seeds
+  and document the change, as main's README does for its tuned settings.
+
+Never weaken a threshold to make a cell pass without stating why the environment differs.
+
+- [ ] **Step 5: Regenerate the eval artefacts**
+
+- `compare.py` writes `docs/benchmark.png` and the Markdown table.
+- `eval_balance` runs on the Pendulum runs (5/5 seeds, 20/20 episodes check).
+- `eval_balance --gif` writes `docs/mpo_pendulum_best.gif`.
+- Task 6's renderer writes the MuJoCo GIFs (`docs/mpo_{halfcheetah,inverted_pendulum,inverted_double_pendulum}_best.gif`)
+  and the gymnax MountainCar GIF (`docs/mpo_mountaincar_best.gif`).
+
+- [ ] **Step 6: README**
+
+Replace the Results table with the JAX results, keeping the same columns and the same SB3 rows, which stay as measured
+on Gymnasium and are labelled so. Then:
+- note per environment whether it is the Gymnasium (SB3) or the JAX port (abstract_rl) version, and where thresholds
+  were re-derived;
+- update the notes about tuned settings, the balance check and the runtime (seeds vmapped, CPU, wall time per cell from
+  `timing.json`);
+- update the Architecture and Changes sections for JAX;
+- keep main's Acknowledgements, Citing and License sections.
+
+- [ ] **Step 7: Commit**
+
+Commit the code changes, the docs and the tune changes as separate commits. Do not commit `data/`, which is ignored.
