@@ -1,46 +1,63 @@
 from typing import Any
 
-import numpy as np
-import pandas as pd
-
-from abstract_rl.misc.cli_printer import CliPrinter
+import equinox as eqx
 
 
-class Trajectory:
+class Trajectory(eqx.Module):
     """
-    Represents a simple Trajectory, which can be used by the remaining software.
+    One lane of a rollout: L consecutive steps holding one or more whole episodes. ``ends`` marks the last step of every
+    episode (terminated, truncated by the environment or cut at max_steps); ``dones`` marks true terminations only;
+    ``mask`` marks the valid steps (the lane is padded after its last episode). A trajectory collection holds the lanes
+    of one rollout with a leading lane axis.
     """
+
+    _states: Any
+    _next_states: Any
+    _actions: Any
+    _rewards: Any
+    _raw_rewards: Any
+    _dones: Any
+    _log_likelihoods: Any
+    _ends: Any
+    _mask: Any
+    _annotations: dict[str, Any]
 
     def __init__(
-        self, id: int, env: Any, pandas_frame: pd.DataFrame, annotations: dict[str, Any] | None = None
+        self,
+        states: Any,
+        next_states: Any,
+        actions: Any,
+        rewards: Any,
+        raw_rewards: Any,
+        dones: Any,
+        log_likelihoods: Any,
+        ends: Any,
+        mask: Any,
+        annotations: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize a new trajectory, therefore a initial state s0
-        has to be given.
-
-        :param pandas_frame: The pandas __data frame to use.
-        """
-        # the list for collecting
-        self.traj_id = id
-        self._annotations = annotations if annotations is not None else {}
-        self._trajectory = pandas_frame
-        self.env = env
-        self._sd = self.env.observation_dim
-        self._ad = self.env.action_dim
-        self.cli = CliPrinter().instance
-        self._states = self.__data_frame.loc[:, "s_0" : f"s_{self._sd - 1}"].to_numpy(copy=True)
-        self._rewards = self.__data_frame.loc[:, "r":"r"].to_numpy(copy=True)[:-1]
-        # return of the environment, differs from total_reward if the training reward is scaled or shifted
-        self.raw_return = np.sum(self._rewards)
-        # pandas .values is a non-writable view; torch.Tensor warns and refuses in-place writes on it
-        self._actions = self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].to_numpy(copy=True)[:-1]
-        self._dones = self.__data_frame.loc[:, "d":"d"].to_numpy(copy=True)[:-1]
-        self._log_likelihoods = self.__data_frame.loc[:, "ll":"ll"].to_numpy(copy=True)[:-1]
+        """Initialize a new trajectory from the (padded) step arrays of one lane."""
+        self._states = states
+        self._next_states = next_states
+        self._actions = actions
+        self._rewards = rewards
+        self._raw_rewards = raw_rewards
+        self._dones = dones
+        self._log_likelihoods = log_likelihoods
+        self._ends = ends
+        self._mask = mask
+        self._annotations = dict(annotations) if annotations is not None else {}
 
     def __len__(self) -> int:
-        return len(self._trajectory.index) - 1
+        return int(self._mask.shape[-1])
 
-    def __setitem__(self, key: str, item: Any) -> None:
-        self._annotations[key] = item
+    def set(self, key: str, item: Any) -> "Trajectory":
+        """A new trajectory with the annotation ``key`` set (trajectories are immutable)."""
+        return eqx.tree_at(lambda t: t._annotations, self, {**self._annotations, key: item})
+
+    def replace(self, **fields: Any) -> "Trajectory":
+        """A new trajectory with some step arrays replaced, e.g. ``replace(states=...)``."""
+        names = tuple(f"_{k}" for k in fields)
+        return eqx.tree_at(lambda t: tuple(getattr(t, n) for n in names), self, tuple(fields.values()))
 
     def __getitem__(self, key: str) -> Any:
         return self._annotations[key]
@@ -51,15 +68,15 @@ class Trajectory:
     # --- standard reinforcement learning fields
 
     @property
-    def states(self) -> np.ndarray:
+    def states(self) -> Any:
         """
         States of trajectory.
         :return: All states of the trajectory.
         """
-        return self._states[:-1]
+        return self._states
 
     @property
-    def actions(self) -> np.ndarray:
+    def actions(self) -> Any:
         """
         Actions of trajectory.
         :return: All actions of the trajectory.
@@ -67,15 +84,15 @@ class Trajectory:
         return self._actions
 
     @property
-    def dones(self) -> np.ndarray:
+    def dones(self) -> Any:
         """
-        Log likelihoods of trajectory.
-        :return: All log likelihoods of the trajectory.
+        True terminations of the trajectory (truncations are not done).
+        :return: The done flags.
         """
         return self._dones
 
     @property
-    def log_likelihoods(self) -> np.ndarray:
+    def log_likelihoods(self) -> Any:
         """
         Log likelihoods of trajectory.
         :return: All log likelihoods of the trajectory.
@@ -83,7 +100,7 @@ class Trajectory:
         return self._log_likelihoods
 
     @property
-    def rewards(self) -> np.ndarray:
+    def rewards(self) -> Any:
         """
         Rewards of trajectory.
         :return: All rewards of the trajectory.
@@ -91,60 +108,24 @@ class Trajectory:
         return self._rewards
 
     @property
-    def next_states(self) -> np.ndarray:
+    def raw_rewards(self) -> Any:
+        """Rewards of the environment, before the training transform (for the logged return)."""
+        return self._raw_rewards
+
+    @property
+    def next_states(self) -> Any:
         """
         Next states of trajectory.
         :return: All next states of the trajectory.
         """
-        return self._states[1:]
+        return self._next_states
 
     @property
-    def all_states(self) -> np.ndarray:
-        """
-        Next states of trajectory.
-        :return: All next states of the trajectory.
-        """
-        return self._states
+    def ends(self) -> Any:
+        """Last step of every episode."""
+        return self._ends
 
     @property
-    def __data_frame(self) -> pd.DataFrame:
-        """
-        Get internal data frame of trajectory.
-        :return: Returns the internal saved pandas frame.
-        """
-        return self._trajectory
-
-    # --- evaluate rewards
-
-    @property
-    def average_reward(self) -> float:
-        """
-        Cumulative reward of the trajectory.
-        :return: Simply sum of all rewards.
-        """
-        T = len(self)
-        return np.sum(self.rewards / T)
-
-    @property
-    def total_reward(self) -> float:
-        """
-        Cumulative reward of the trajectory.
-        :return: Simply sum of all rewards.
-        """
-        return np.sum(self.rewards)
-
-    def discounted_reward(self, discount: float) -> float:
-        """
-        Cumulative reward of the trajectory.
-        :return: Simply sum of all rewards.
-        """
-
-        tl = len(self)
-        return (1 - discount) * np.sum(discount ** np.arange(tl) * self.rewards)
-
-    @property
-    def entropy(self) -> float:
-        """Calculate entropy of policy.
-        :return: The calculated entropy.
-        """
-        return float(-np.mean(self.log_likelihoods))
+    def mask(self) -> Any:
+        """Valid steps."""
+        return self._mask

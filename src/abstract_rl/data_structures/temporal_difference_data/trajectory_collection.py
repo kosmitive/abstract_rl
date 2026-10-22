@@ -20,189 +20,89 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
-from collections.abc import Iterator
 from typing import Any
 
-import numpy as np
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array, PRNGKeyArray
 
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
-from abstract_rl.misc.cli_printer import CliPrinter
 
 
-class TrajectoryCollection:
-    """Represents a simple trajectory collection."""
+def _flat(x: Any) -> Any:
+    return x.reshape((-1, *x.shape[2:]))
 
-    def __init__(self, env: Any, max_l: int | None = None) -> None:
-        self.max_l = max_l
-        self.__num_data_points = 0
-        self.__trajectories: list[Trajectory] = []
-        self._env = env
 
-        self._sd = self._env.observation_dim
-        self._ad = self._env.action_dim
-        self.cli = CliPrinter().instance
+class TrajectoryCollection(eqx.Module):
+    """Represents a simple trajectory collection: the lanes [E] of one rollout, each a padded Trajectory of L steps."""
+
+    _trajectories: Trajectory
+
+    def __init__(self, env: Any, trajectories: Trajectory) -> None:
+        self._trajectories = trajectories
 
     def __len__(self) -> int:
-        return len(self.__trajectories)
+        return int(self._trajectories.mask.shape[0])
 
-    def merge(self, collection: "TrajectoryCollection") -> None:
-        """Merges an existing collection into this object.
+    def trajectories(self) -> Trajectory:
+        return self._trajectories
 
-        :param collection: The collection to merge into
-        """
-        self.extend(collection.trajectories())
-
-    def print(self) -> None:
-        """
-        print information
-        """
-
-        titstr = "%16s | %10s | %28s | %29s | %10s %10s %10s"
-        fmtstr = "%10i [%3i] | %10.5f | a ~ %10.5f +- %10.5f | %10.5f <= r <= %10.5f | %10.5f %10.5f %10.5f"
-
-        self.cli.empty().print(
-            titstr % ("id [len]", "entropy", "action_stats", "reward_stats", "avg_rew", "tot_rew", "disc_rew")
-        ).line()
-        for traj in self.__trajectories:
-            print_str = fmtstr % (
-                traj.traj_id,
-                len(traj),
-                traj.entropy,
-                np.mean(traj.actions),
-                np.std(traj.actions),
-                np.min(traj.rewards),
-                np.max(traj.rewards),
-                traj.average_reward,
-                traj.total_reward,
-                traj.discounted_reward(traj.env.discount()),
-            )
-            self.cli.print(print_str)
-
-    def extend(self, trajectories: list[Trajectory]) -> None:
-        """
-        Add an existing list of trajectories to the internal list. If a maximum number of transitions is set, the
-        oldest trajectories are dropped until the collection fits again.
-        :param trajectories: The trajectories to add.
-        """
-        self.__trajectories.extend(trajectories)
-
-        if self.max_l is not None:
-            k = 0
-            i = len(self.__trajectories)
-            while i > 0 and k + len(self.__trajectories[i - 1]) <= self.max_l:
-                i -= 1
-                k += len(self.__trajectories[i])
-
-            # always keep at least the newest trajectory
-            i = min(i, len(self.__trajectories) - 1)
-            self.__trajectories = self.__trajectories[i:]
-
-        self.__num_data_points = sum([len(t) for t in self.__trajectories])
-
-    def __iter__(self) -> Iterator[Trajectory]:
-        return iter(self.__trajectories)
-
-    def trajectories(self) -> list[Trajectory]:
-        return self.__trajectories
+    def with_trajectories(self, trajectories: Trajectory) -> "TrajectoryCollection":
+        return eqx.tree_at(lambda c: c._trajectories, self, trajectories)
 
     def to_batch(self, copy_fields: list[str] | None = None) -> Batch:
         """Convert the trajectory collection to a batch.
 
         :param copy_fields: The fields to copy into the batch.
-        :return: The final created batch.
+        :return: The final created batch, padded steps are masked.
         """
-
-        # define basic lists
-        states: Any = []
-        nxt_states: Any = []
-        actions: Any = []
-        rewards: Any = []
-        lls: Any = []
-        ds: Any = []
-
-        # make space for annotations
+        t = self._trajectories
         fields = copy_fields if copy_fields is not None else []
-        annots: dict[str, Any] = {a: [] for a in fields}
+        annots = {a: _flat(t[a]) for a in fields}
+        return Batch(
+            _flat(t.states),
+            _flat(t.actions),
+            _flat(t.log_likelihoods),
+            _flat(t.rewards),
+            _flat(t.next_states),
+            _flat(t.dones),
+            annots,
+            mask=_flat(t.mask),
+        )
 
-        # if it should be continued
-        for t in range(len(self.__trajectories)):
-            # obtain possible length
-            traj = self.__trajectories[t]
-
-            # append infos
-            states.append(traj.states)
-            nxt_states.append(traj.next_states)
-            actions.append(traj.actions)
-            rewards.append(traj.rewards)
-            lls.append(traj.log_likelihoods)
-            ds.append(traj.dones)
-
-            # append rest
-            for a in fields:
-                annots[a].append(traj[a])
-
-        states = np.concatenate(states, 0)
-        actions = np.concatenate(actions, 0)
-        lls = np.concatenate(lls, 0)
-        nxt_states = np.concatenate(nxt_states, 0)
-        rewards = np.concatenate(rewards, 0)
-        ds = np.concatenate(ds, 0)
-        for a in fields:
-            annots[a] = np.concatenate(annots[a], 0)
-
-        batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
-        assert len(batch) > 0
-        return batch
-
-    def sample(self, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
-
+    def sample(self, key: PRNGKeyArray, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
+        """Uniformly sample ``batch_size`` valid transitions with replacement."""
+        t = self._trajectories
         fields = copy_fields if copy_fields is not None else []
-        batch_size = min(batch_size, self.__num_data_points)
-        tindices = np.sort(np.random.randint(0, self.__num_data_points, size=batch_size))  # noqa: NPY002
+        mask = _flat(t.mask)
+        p = mask.astype(jnp.float32) / jnp.sum(mask)
+        tindices = jax.random.choice(key, mask.shape[0], (batch_size,), replace=True, p=p)
 
-        # define basic lists
-        states: Any = []
-        nxt_states: Any = []
-        actions: Any = []
-        rewards: Any = []
-        lls: Any = []
-        ds: Any = []
+        def take(x: Any) -> Any:
+            return _flat(x)[tindices]
 
-        # make space for annotations
-        annots: dict[str, Any] = {a: [] for a in fields}
+        annots = {a: take(t[a]) for a in fields}
+        return Batch(
+            take(t.states),
+            take(t.actions),
+            take(t.log_likelihoods),
+            take(t.rewards),
+            take(t.next_states),
+            take(t.dones),
+            annots,
+        )
 
-        # map the global indices onto the trajectories
-        traj_offset = 0
-        for traj in self.__trajectories:
-            traj_len = len(traj)
-            lo, hi = np.searchsorted(tindices, [traj_offset, traj_offset + traj_len])
-            m_indices = tindices[lo:hi] - traj_offset
-            traj_offset += traj_len
-            if len(m_indices) == 0:
-                continue
-
-            # append infos
-            states.append(traj.states[m_indices])
-            nxt_states.append(traj.next_states[m_indices])
-            actions.append(traj.actions[m_indices])
-            rewards.append(traj.rewards[m_indices])
-            lls.append(traj.log_likelihoods[m_indices])
-            ds.append(traj.dones[m_indices])
-
-            # append rest
-            for a in fields:
-                annots[a].append(traj[a][m_indices])
-
-        states = np.concatenate(states, 0)
-        actions = np.concatenate(actions, 0)
-        lls = np.concatenate(lls, 0)
-        nxt_states = np.concatenate(nxt_states, 0)
-        rewards = np.concatenate(rewards, 0)
-        ds = np.concatenate(ds, 0)
-        for a in fields:
-            annots[a] = np.concatenate(annots[a], 0)
-
-        batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
-        assert len(batch) > 0
-        return batch
+    def episode_stats(self) -> dict[str, Array]:
+        """Raw return and length of every episode: one slot per possible episode, ``valid`` marks the real ones."""
+        t = self._trajectories
+        e, length = t.mask.shape
+        ends = t.ends & t.mask
+        episode = jnp.cumsum(ends, axis=1) - ends + jnp.arange(e)[:, None] * length
+        seg = episode.reshape(-1)
+        raw = jnp.where(t.mask, t.raw_rewards, 0.0).reshape(-1)
+        returns = jax.ops.segment_sum(raw, seg, num_segments=e * length)
+        lengths = jax.ops.segment_sum(t.mask.reshape(-1).astype(jnp.int32), seg, num_segments=e * length)
+        valid = jax.ops.segment_sum(ends.reshape(-1).astype(jnp.int32), seg, num_segments=e * length) > 0
+        return {"returns": returns, "lengths": lengths, "valid": valid}

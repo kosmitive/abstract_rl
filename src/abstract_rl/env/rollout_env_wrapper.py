@@ -8,7 +8,6 @@ import torch
 from gymnasium.spaces import Box
 from gymnasium.wrappers import NormalizeObservation
 
-from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
@@ -185,7 +184,7 @@ class RolloutEnvWrapper:
             new_id = self.created_trajectories
             self.created_trajectories += 1
 
-        traj_builder = TrajectoryBuilder(new_id, self, cs)
+        traj_builder = TrajectoryBuilder(new_id, self, cs)  # noqa: F821  (removed builder, Task 5 rewrites)
         t = 0
         raw_return = 0.0
 

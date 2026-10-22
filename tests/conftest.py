@@ -24,6 +24,8 @@ JAXTYPED_MODULES = [
     "abstract_rl.env.jax_envs",
     "abstract_rl.misc.running_centered_filter",
     "abstract_rl.misc.running_mean_std",
+    "abstract_rl.data_structures.temporal_difference_data.trajectory",
+    "abstract_rl.data_structures.temporal_difference_data.trajectory_collection",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
