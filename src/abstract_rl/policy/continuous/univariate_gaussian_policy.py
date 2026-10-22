@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.model_state import ModelState
-from abstract_rl.data_structures.temporal_difference_data.batch import Batch, batch_mask, masked_mean, masked_reduce
+from abstract_rl.data_structures.temporal_difference_data.batch import batch_mask, masked_mean, masked_reduce
 from abstract_rl.misc.typing import DTYPE
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
@@ -233,7 +233,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         """
         return self
 
-    def entropy(self, state: ModelState, batch: Batch) -> Float[Array, ""]:
+    def entropy(self, state: ModelState | None, batch: Any) -> Float[Array, ""]:
         if self.squash:
             # tanh squashed gaussians have no closed form entropy, the gaussian entropy would ignore the jacobian
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
@@ -246,7 +246,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         return ent
 
     def kl_divergence(
-        self, state: ModelState, batch: Batch, suff_stats: Any = None, mode: str = "i-projection", est: str = "sum"
+        self, state: ModelState, batch: Any, suff_stats: Any = None, mode: str = "i-projection", est: str = "sum"
     ) -> Float[Array, ""]:
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.

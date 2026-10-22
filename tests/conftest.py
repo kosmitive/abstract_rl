@@ -12,6 +12,8 @@ JAXTYPED_MODULES = [
     "abstract_rl.policy.policy",
     "abstract_rl.policy.continuous.continuous_policy",
     "abstract_rl.policy.continuous.univariate_gaussian_policy",
+    "abstract_rl.policy.continuous.diagonal_gaussian_policy",
+    "abstract_rl.policy.continuous.select_policy",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 

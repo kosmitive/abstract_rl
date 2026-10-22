@@ -91,3 +91,25 @@ def test_univariate_policy_matches_torch(make_pendulum_mc, name):
     np.testing.assert_allclose(lr, g["lr"], rtol=1e-4, atol=1e-6)
     lr_grads = eqx.filter_grad(lambda p: p.likelihood_ratio(state.set("policy", p), batch))(policy)
     _close_grads(lr_grads, sub(golden(f"{name}_lr"), "grads"))
+
+
+@pytest.mark.parametrize("name", [n for n in POLICY_CASES if n.startswith("diag")])
+def test_diagonal_policy_matches_torch(make_pendulum_mc, name):
+    policy, state, g = _golden_policy(make_pendulum_mc, name)
+    states, stats = jnp.asarray(g["states"]), policy.forward(jnp.asarray(g["states"]))
+    np.testing.assert_allclose(stats, g["stats"], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(policy.log_prob(jnp.asarray(g["actions"]), suff_stats=stats), g["lp"], atol=1e-4)
+    np.testing.assert_allclose(policy.log_prob(jnp.asarray(g["single"]), states=states), g["lp1"], atol=1e-4)
+    np.testing.assert_allclose(policy.mode(states=states), g["mode"], atol=1e-6)
+    batch = _batch(g)
+    for mode in ("i", "m"):
+        for est in ("mean", "sum"):
+            kl = policy.kl_divergence(state, batch, mode=f"{mode}-projection", est=est)
+            np.testing.assert_allclose(kl, g[f"kl_{mode}_{est}"], rtol=1e-4, atol=1e-6)
+    if "entropy" in g:
+        np.testing.assert_allclose(policy.entropy(state, batch), g["entropy"], rtol=1e-5)
+    grads = eqx.filter_grad(lambda p: p.kl_divergence(state, batch, mode="m-projection", est="mean"))(policy)
+    _close_grads(grads, sub(g, "grads"))
+    np.testing.assert_allclose(policy.likelihood_ratio(state, batch), g["lr"], rtol=1e-4, atol=1e-6)
+    lr_grads = eqx.filter_grad(lambda p: p.likelihood_ratio(state.set("policy", p), batch))(policy)
+    _close_grads(lr_grads, sub(golden(f"{name}_lr"), "grads"))

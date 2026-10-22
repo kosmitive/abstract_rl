@@ -6,7 +6,6 @@ import jax.numpy as jnp
 from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import (
-    Batch,
     batch_mask,
     masked_mean,
     masked_reduce,
@@ -58,7 +57,7 @@ class ContinuousPolicy(Policy, Syncable):
     def kl_divergence(
         self,
         state: ModelState,
-        batch: Batch,
+        batch: Any,
         suff_stats: Any = None,
         mode: str = "i-projection",
         est: str = "sum",
@@ -98,7 +97,7 @@ class ContinuousPolicy(Policy, Syncable):
         kl = jnp.exp(p) * (p - q)
         return masked_reduce(kl, batch_mask(batch), est)
 
-    def likelihood_ratio(self, state: ModelState, batch: Batch) -> Any:
+    def likelihood_ratio(self, state: ModelState, batch: Any) -> Any:
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param state: The traced model state (gives the current policy).

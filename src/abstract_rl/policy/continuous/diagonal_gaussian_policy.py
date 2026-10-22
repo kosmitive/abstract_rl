@@ -2,18 +2,46 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.distributions import MultivariateNormal, Normal
-from torch.nn import Parameter
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.data_structures.temporal_difference_data.batch import Batch
-from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
+from abstract_rl.data_structures.temporal_difference_data.batch import batch_mask, masked_mean, masked_reduce
+from abstract_rl.misc.typing import DTYPE
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
-from abstract_rl.policy.continuous.univariate_gaussian_policy import SIGMA_MIN, SQUASH_BOUND, SQUASH_U_MAX
+from abstract_rl.policy.continuous.univariate_gaussian_policy import (
+    SIGMA_MIN,
+    SQUASH_BOUND,
+    SQUASH_U_MAX,
+    normal_entropy,
+    normal_kl,
+    normal_log_prob,
+)
+
+
+def _mvn_log_prob(value: Array, loc: Array, scale_tril: Array) -> Array:
+    """``torch.distributions.MultivariateNormal(loc, scale_tril=scale_tril).log_prob(value)``."""
+    diff = value - loc
+    factor = jnp.broadcast_to(scale_tril, diff.shape + diff.shape[-1:])
+    z = jax.scipy.linalg.solve_triangular(factor, diff[..., None], lower=True)[..., 0]
+    half_log_det = jnp.log(jnp.diagonal(scale_tril, axis1=-2, axis2=-1)).sum(-1)
+    return -0.5 * (value.shape[-1] * math.log(2 * math.pi) + jnp.sum(z**2, axis=-1)) - half_log_det
+
+
+def _mvn_kl(p_loc: Array, p_tril: Array, q_loc: Array, q_tril: Array) -> Array:
+    """``torch.distributions.kl.kl_divergence(MultivariateNormal(p...), MultivariateNormal(q...))``."""
+    n = p_loc.shape[-1]
+    half_term1 = jnp.log(jnp.diagonal(q_tril, axis1=-2, axis2=-1)).sum(-1) - jnp.log(
+        jnp.diagonal(p_tril, axis1=-2, axis2=-1)
+    ).sum(-1)
+    term2 = jnp.sum(jax.scipy.linalg.solve_triangular(q_tril, p_tril, lower=True) ** 2, axis=(-2, -1))
+    term3 = jnp.sum(jax.scipy.linalg.solve_triangular(q_tril, (q_loc - p_loc)[..., None], lower=True)[..., 0] ** 2, -1)
+    return half_term1 + 0.5 * (term2 + term3 - n)
 
 
 def head_activations(act_fn: Any, num_actions: int) -> tuple[list[Any], list[Any]]:
@@ -71,19 +99,29 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
     can also be passed as ``[D, A]``. Log probabilities are ``[D, K]``.
     """
 
-    def __init__(self, mc: ModelConfiguration) -> None:
+    cov_type: str = eqx.field(static=True)
+    action_dim: int = eqx.field(static=True)
+    num_output_net: int = eqx.field(static=True)
+    squash: bool = eqx.field(static=True)
+    action_center: tuple[float, ...] = eqx.field(static=True)
+    action_scale: tuple[float, ...] = eqx.field(static=True)
+    _sigma_is_softplus: bool = eqx.field(static=True)
+    network: MultilayerPerceptron
+    # log sigma of cov_type fixed: a constant, so it is static (torch buffer) and never a parameter
+    _fixed_cov: tuple[float, ...] | None = eqx.field(static=True, default=None)
+    # log sigma of cov_type single
+    cov: Float[Array, "1 A"] | None = None
+
+    def __init__(self, mc: ModelConfiguration, key: PRNGKeyArray) -> None:
         """
         Initializes a new diagonal gaussian policy.
         :param mc: The model configuration to use.
+        :param key: The random key of the network initialization.
         """
-        super().__init__(mc)
         assert isinstance(mc, ModelConfiguration)
 
-        self.mc = mc
         run_conf = mc.get("conf")
-        self.conf = run_conf
         self.cov_type = run_conf["cov_type"]
-        self.cli = CliPrinter().instance
         self.action_dim = mc.env.action_dim
         a_dim = self.action_dim
 
@@ -91,11 +129,11 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             self.num_output_net = 2 * a_dim
         elif self.cov_type == "fixed":
             # constant standard deviation, stored in log space and not trained
-            self.register_buffer("cov", torch.full([1, a_dim], np.log(run_conf["sigma"])))
+            self._fixed_cov = (float(np.log(run_conf["sigma"])),) * a_dim
             self.num_output_net = a_dim
         elif self.cov_type == "single":
             # one state independent standard deviation per action dimension, stored in log space
-            self.cov = Parameter(torch.full([1, a_dim], np.log(run_conf.get("sigma", 1.0))))
+            self.cov = jnp.full([1, a_dim], np.log(run_conf.get("sigma", 1.0)), DTYPE)
             self.num_output_net = a_dim
         elif self.cov_type == "full":
             # mean and the packed lower-triangular Cholesky factor L(s)
@@ -112,10 +150,9 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         center, scale = np.zeros(a_dim), np.ones(a_dim)
         if self.squash:
             center, scale = (high + low) / 2, (high - low) / 2
-        self.action_center: torch.Tensor
-        self.action_scale: torch.Tensor
-        self.register_buffer("action_center", torch.as_tensor(center, dtype=torch.float32))
-        self.register_buffer("action_scale", torch.as_tensor(scale, dtype=torch.float32))
+        # float32 like the torch buffers, kept as static tuples so they are constants and never parameters
+        self.action_center = tuple(float(c) for c in center.astype(np.float32))
+        self.action_scale = tuple(float(s) for s in scale.astype(np.float32))
 
         # create policy network, the activations of the mu / sigma outputs are applied inside of the network.
         # a full covariance keeps one activation name per layer and softplus-es only diag L
@@ -132,24 +169,30 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         else:
             af, sigma_acts = head_activations(run_conf["act_fn"], a_dim)
         self._sigma_is_softplus = sigma_is_softplus(sigma_acts)
-        self.network = MultilayerPerceptron(
-            mc, hidden_neurons=structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
+        network = MultilayerPerceptron(
+            mc, hidden_neurons=structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"], key=key
         )
-        self.add_module("nn", self.network)
         if self.cov_type in ("state", "full"):
             # softplus(bias) + SIGMA_MIN = policy_sigma, matching the std single and fixed start from
             raw = math.log(math.expm1(float(run_conf.get("sigma", 1.0)) - SIGMA_MIN))
-            with torch.no_grad():
-                layer = self.network.layers[-1]
-                bias = layer.bias
-                assert bias is not None
-                # covariance outputs are the bias alone, so sigma and L(s) = policy_sigma * I at every state
-                layer.weight[a_dim:].zero_()
-                if self.cov_type == "state":
-                    bias[a_dim:] = raw
-                else:
-                    bias[a_dim:].zero_()
-                    bias[[a_dim + i for i in self._diag_index()]] = raw
+            layer = network.layers[-1]
+            # covariance outputs are the bias alone, so sigma and L(s) = policy_sigma * I at every state
+            weight = layer.weight.at[a_dim:].set(0.0)
+            if self.cov_type == "state":
+                bias = layer.bias.at[a_dim:].set(raw)
+            else:
+                diag = np.array([a_dim + i for i in self._diag_index()])
+                bias = layer.bias.at[a_dim:].set(0.0).at[diag].set(raw)
+            network = eqx.tree_at(lambda n: (n.layers[-1].weight, n.layers[-1].bias), network, (weight, bias))
+        self.network = network
+
+    @property
+    def _center(self) -> Float[Array, "A"]:
+        return jnp.asarray(self.action_center, DTYPE)
+
+    @property
+    def _scale(self) -> Float[Array, "A"]:
+        return jnp.asarray(self.action_scale, DTYPE)
 
     def get_suff_stats_dim(self) -> int:
         """
@@ -160,64 +203,64 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             return a_dim + a_dim * (a_dim + 1) // 2
         return 2 * a_dim
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: Float[Array, "D Ds"]) -> Float[Array, "D S"]:
         """
         Produces the sufficient statistics of the policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
         :return: A matrix of shape [D, 2A], ``[mu, sigma]`` with sigma strictly positive, or ``[mu, packed L]`` when
             ``cov_type`` is ``full``.
         """
+        states = jnp.asarray(states, DTYPE)
         a_dim = self.action_dim
         if self.cov_type == "full":
             out = self.network.forward(states)
             mu, raw = out[:, :a_dim], out[:, a_dim:]
-            return torch.cat([mu, self._with_positive_diagonal(raw)], dim=1)
+            return jnp.concatenate([mu, self._with_positive_diagonal(raw)], axis=1)
         if self.cov_type == "state":
             out = self.network.forward(states)
             mu, sigma = out[:, :a_dim], out[:, a_dim:]
             # the configured activation of the sigma outputs already is a softplus: only guard against underflow,
             # otherwise the unconstrained output is made positive here (never both, a second softplus floors sigma)
-            sigma = torch.clamp(sigma, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(sigma) + SIGMA_MIN
+            sigma = jnp.maximum(sigma, SIGMA_MIN) if self._sigma_is_softplus else jax.nn.softplus(sigma) + SIGMA_MIN
         else:
             mu = self.network.forward(states)
-            sigma = torch.exp(self.cov).expand_as(mu)
-        return torch.cat([mu, sigma], dim=1)
+            log_sigma = self.cov if self.cov_type == "single" else jnp.asarray(self._fixed_cov, DTYPE)[None]
+            sigma = jnp.broadcast_to(jnp.exp(log_sigma), mu.shape)
+        return jnp.concatenate([mu, sigma], axis=1)
 
     def _diag_index(self) -> list[int]:
         """Row-major index of each diagonal entry inside a packed lower triangle."""
         return [i * (i + 3) // 2 for i in range(self.action_dim)]
 
-    def _with_positive_diagonal(self, packed: torch.Tensor) -> torch.Tensor:
+    def _with_positive_diagonal(self, packed: Float[Array, "D L"]) -> Float[Array, "D L"]:
         """``softplus(raw) + SIGMA_MIN`` on the diagonal of a packed Cholesky factor. Off-diagonals stay raw."""
-        idx = self._diag_index()
+        idx = np.array(self._diag_index())
         diagonal = packed[:, idx]
-        diagonal = torch.clamp(diagonal, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(diagonal) + SIGMA_MIN
-        index = torch.tensor(idx, device=packed.device).view(1, -1).expand(packed.shape[0], -1)
-        return packed.scatter(1, index, diagonal)
+        if self._sigma_is_softplus:
+            diagonal = jnp.maximum(diagonal, SIGMA_MIN)
+        else:
+            diagonal = jax.nn.softplus(diagonal) + SIGMA_MIN
+        return packed.at[:, idx].set(diagonal)
 
-    def _mu_factor(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _mu_factor(self, suff_stats: Float[Array, "D S"]) -> tuple[Float[Array, "D A"], Float[Array, "D A A"]]:
         """Mean and the lower-triangular Cholesky factor ``L`` of a full-covariance statistic row."""
         a_dim = self.action_dim
         mu, packed = suff_stats[:, :a_dim], suff_stats[:, a_dim:]
-        rows, cols = torch.tril_indices(a_dim, a_dim, device=suff_stats.device)
-        flat_index = (rows * a_dim + cols).view(1, -1).expand(packed.shape[0], -1)
-        flat = packed.new_zeros(packed.shape[0], a_dim * a_dim)
-        factor = flat.scatter(1, flat_index, packed).view(packed.shape[0], a_dim, a_dim)
+        rows, cols = np.tril_indices(a_dim)
+        factor = jnp.zeros((packed.shape[0], a_dim, a_dim), packed.dtype).at[:, rows, cols].set(packed)
         return mu, factor
 
-    def _split(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _split(self, suff_stats: Float[Array, "D S"]) -> tuple[Float[Array, "D A"], Float[Array, "D _"]]:
         return suff_stats[:, : self.action_dim], suff_stats[:, self.action_dim :]
 
-    def _suff_stats(self, states: torch.Tensor | None, suff_stats: torch.Tensor | None) -> torch.Tensor:
+    def _suff_stats(self, states: Any, suff_stats: Any) -> Float[Array, "D S"]:
         assert (states is None) != (suff_stats is None), "pass either states or suff_stats"
         if suff_stats is None:
             assert states is not None
             return self.forward(states)
         return suff_stats
 
-    def log_prob(
-        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def log_prob(self, actions: Any, states: Any = None, suff_stats: Any = None) -> Float[Array, "D K"]:
         """
         Log probability of actions relative to states.
         :param actions: A tensor of size [D, K, A], or [D, A] for one action per state.
@@ -226,146 +269,137 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         :return: A matrix [D, K] containing the log probability of each action.
         """
         stats = self._suff_stats(states, suff_stats)
+        actions = jnp.asarray(actions, DTYPE)
         if self.cov_type == "full":
             return self._full_log_prob(actions, stats)
         mu, sigma = self._split(stats)
-        if actions.dim() == 2:
-            actions = actions.unsqueeze(1)
-        mu, sigma = mu.unsqueeze(1), sigma.unsqueeze(1)
+        if actions.ndim == 2:
+            actions = actions[:, None]
+        mu, sigma = mu[:, None], sigma[:, None]
         if not self.squash:
-            return Normal(mu, sigma).log_prob(actions).sum(dim=-1)
+            return normal_log_prob(actions, mu, sigma).sum(axis=-1)
 
         # change of variables a = center + scale * tanh(u): log p(a) = log N(u) - sum log(scale * (1 - tanh(u)^2))
-        y = torch.clamp((actions - self.action_center) / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
-        u = torch.atanh(y)
-        log_jac = torch.log(self.action_scale * (1 - y.pow(2)))
-        return (Normal(mu, sigma).log_prob(u) - log_jac).sum(dim=-1)
+        y = jnp.clip((actions - self._center) / self._scale, -SQUASH_BOUND, SQUASH_BOUND)
+        u = jnp.arctanh(y)
+        log_jac = jnp.log(self._scale * (1 - y**2))
+        return (normal_log_prob(u, mu, sigma) - log_jac).sum(axis=-1)
 
-    def _full_log_prob(self, actions: torch.Tensor, suff_stats: torch.Tensor) -> torch.Tensor:
+    def _full_log_prob(self, actions: Any, suff_stats: Float[Array, "D S"]) -> Float[Array, "D K"]:
         """Log density of ``N(mu, L L^T)``, with the same squash as the diagonal policy."""
         mu, factor = self._mu_factor(suff_stats)
-        if actions.dim() == 2:
-            actions = actions.unsqueeze(1)
-        dist = MultivariateNormal(mu.unsqueeze(1), scale_tril=factor.unsqueeze(1))
+        if actions.ndim == 2:
+            actions = actions[:, None]
+        mu, factor = mu[:, None], factor[:, None]
         if not self.squash:
-            return dist.log_prob(actions)
-        y = torch.clamp((actions - self.action_center) / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
-        u = torch.atanh(y)
-        log_jac = torch.log(self.action_scale * (1 - y.pow(2))).sum(dim=-1)
-        return dist.log_prob(u) - log_jac
+            return _mvn_log_prob(actions, mu, factor)
+        y = jnp.clip((actions - self._center) / self._scale, -SQUASH_BOUND, SQUASH_BOUND)
+        u = jnp.arctanh(y)
+        log_jac = jnp.log(self._scale * (1 - y**2)).sum(axis=-1)
+        return _mvn_log_prob(u, mu, factor) - log_jac
 
-    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
+    def mode(self, states: Any = None, suff_stats: Any = None) -> Float[Array, "D A"]:
         """
         :return: A matrix [D, A] with the most likely (mean) action of each state.
         """
         mu, _ = self._split(self._suff_stats(states, suff_stats))
-        return self.action_center + self.action_scale * torch.tanh(mu) if self.squash else mu
+        return self._center + self._scale * jnp.tanh(mu) if self.squash else mu
 
     def sample_actions(
-        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
-    ) -> torch.Tensor:
+        self, key: PRNGKeyArray, states: Any = None, suff_stats: Any = None, num_actions: int = 1
+    ) -> Float[Array, "D K A"]:
         """
         Samples K actions for each state.
+        :param key: The random key.
         :param states: A matrix of size [D, Ds]. If this None => suff_stats not None
         :param suff_stats: A matrix of size [D, 2A]. If this None => states is not None
         :param num_actions: The number of actions K.
         :return: A tensor [D, K, A] of (reparametrised) action samples.
         """
         stats = self._suff_stats(states, suff_stats)
+        eps = jax.random.normal(key, (stats.shape[0], num_actions, self.action_dim), DTYPE)
         if self.cov_type == "full":
             mu, factor = self._mu_factor(stats)
-            u = MultivariateNormal(mu, scale_tril=factor).rsample((num_actions,)).transpose(0, 1)
+            u = mu[:, None, :] + jnp.einsum("dij,dkj->dki", factor, eps)
         else:
             mu, sigma = self._split(stats)
-            u = Normal(mu.unsqueeze(1), sigma.unsqueeze(1)).rsample([num_actions]).transpose(0, 1).squeeze(2)
+            u = mu[:, None, :] + eps * sigma[:, None, :]
         if self.squash:
-            u = self.action_center + self.action_scale * torch.tanh(torch.clamp(u, -SQUASH_U_MAX, SQUASH_U_MAX))
-        return u.contiguous()
+            u = self._center + self._scale * jnp.tanh(jnp.clip(u, -SQUASH_U_MAX, SQUASH_U_MAX))
+        return u
 
     def clone(self) -> "DiagonalGaussianPolicy":
         """
-        Clones the current instance.
+        Clones the current instance. Modules are immutable, so the clone is the instance itself.
         :return: A new identical clones instance of the current.
         """
-        v = DiagonalGaussianPolicy(self.mc)
-        self.sync(v)
-        return v
+        return self
 
     def sync(self, v: "DiagonalGaussianPolicy") -> "DiagonalGaussianPolicy":
         """
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
         """
-        v.load_state_dict(self.state_dict())
-        return v
+        return self
 
-    def entropy(self, batch: Batch) -> torch.Tensor:
+    def entropy(self, state: ModelState | None, batch: Any) -> Float[Array, ""]:
         if self.squash:
             # tanh squashed gaussians have no closed form entropy, the gaussian entropy would ignore the jacobian
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
-        stats = self.forward(torch.Tensor(batch.states))
+        stats = self.forward(jnp.asarray(batch.states, DTYPE))
+        mask = batch_mask(batch)
         if self.cov_type == "full":
             # 1/2 * A * log(2 pi e) + sum log diag(L), mean over the batch
             _, factor = self._mu_factor(stats)
-            log_diag = torch.log(torch.diagonal(factor, dim1=-2, dim2=-1)).sum(dim=-1)
-            return (0.5 * self.action_dim * math.log(2 * math.pi * math.e) + log_diag).mean()
+            log_diag = jnp.log(jnp.diagonal(factor, axis1=-2, axis2=-1)).sum(axis=-1)
+            return masked_mean(0.5 * self.action_dim * math.log(2 * math.pi * math.e) + log_diag, mask)
         _, sigma = self._split(stats)
-        return (0.5 * math.log(2 * math.pi * math.e) + torch.log(sigma)).sum(dim=1).mean()
+        return masked_mean(normal_entropy(sigma).sum(axis=1), mask)
 
     def kl_divergence(
         self,
-        batch: Batch,
-        suff_stats: torch.Tensor | None = None,
+        state: ModelState,
+        batch: Any,
+        suff_stats: Any = None,
         mode: str = "i-projection",
         est: str = "sum",
-    ) -> torch.Tensor:
+    ) -> Float[Array, ""]:
         """
         Analytic KL divergence between the gaussian of the current policy (or the passed sufficient statistics) and the
         target policy. A diagonal covariance sums the per-dimension KL. A full covariance is the KL of
         ``N(mu, L L^T)``, the total of the mean and covariance terms. TRPO constrains that KL, and MPO constrains the
         same total. For the tanh squashed policy this equals the KL of the underlying gaussians, as the (shared)
         squashing is a bijection.
+        :param state: The traced model state (gives the target policy).
         :param batch: The batch containing the states.
         :param suff_stats: Optional sufficient statistics replacing the current policy.
         :param mode: i-projection computes KL(current, target), m-projection KL(target, current).
         :param est: Sum or mean over the states of the batch.
         """
-        states = torch.Tensor(batch.states)
+        states = jnp.asarray(batch.states, DTYPE)
+        mask = batch_mask(batch)
         if suff_stats is None:
             assert states is not None
             suff_stats = self.forward(states)
+        t_stats = jax.lax.stop_gradient(state.get("policy", True).forward(states))
         if self.cov_type == "full":
             mu, factor = self._mu_factor(suff_stats)
-            with torch.no_grad():
-                t_mu, t_factor = self._mu_factor(self.mc.get("policy", True).forward(states))
-            current_full = MultivariateNormal(mu, scale_tril=factor)
-            target_full = MultivariateNormal(t_mu, scale_tril=t_factor)
+            t_mu, t_factor = self._mu_factor(t_stats)
             if mode == "i-projection":
-                kl_full = torch.distributions.kl.kl_divergence(current_full, target_full)
+                kl_full = _mvn_kl(mu, factor, t_mu, t_factor)
             elif mode == "m-projection":
-                kl_full = torch.distributions.kl.kl_divergence(target_full, current_full)
+                kl_full = _mvn_kl(t_mu, t_factor, mu, factor)
             else:
                 raise NotImplementedError(mode)
-            if est == "sum":
-                return kl_full.sum()
-            elif est == "mean":
-                return kl_full.mean()
-            raise NotImplementedError(est)
+            return masked_reduce(kl_full, mask, est)
         mu, sigma = self._split(suff_stats)
-        with torch.no_grad():
-            t_mu, t_sigma = self._split(self.mc.get("policy", True).forward(states))
+        t_mu, t_sigma = self._split(t_stats)
 
-        current, target = Normal(mu, sigma), Normal(t_mu, t_sigma)
         if mode == "i-projection":
-            kl = torch.distributions.kl.kl_divergence(current, target)
+            kl = normal_kl(mu, sigma, t_mu, t_sigma)
         elif mode == "m-projection":
-            kl = torch.distributions.kl.kl_divergence(target, current)
+            kl = normal_kl(t_mu, t_sigma, mu, sigma)
         else:
             raise NotImplementedError(mode)
-        kl = kl.sum(dim=1)
-
-        if est == "sum":
-            return kl.sum()
-        elif est == "mean":
-            return kl.mean()
-        raise NotImplementedError(est)
+        kl = kl.sum(axis=1)
+        return masked_reduce(kl, mask, est)
