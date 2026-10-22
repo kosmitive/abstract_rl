@@ -34,6 +34,33 @@ uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 PyTorch comes from the CPU wheel index (enough for these small networks); remove the `[tool.uv.sources]` entry in
 `pyproject.toml` for the default CUDA build.
 
+## JAX: many seeds at once
+
+TRPO trains all seeds in one jitted, vmapped program:
+
+```bash
+uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seeds=[1,2,3,4]
+uv run python -m abstract_rl.scripts.bench_jax --env pendulum --seeds 1 4 16 --epochs 6   # throughput
+```
+
+The `mps` extra (`uv sync --extra mps`) installs the Metal backend for JAX, selected with `jax_platform=mps`. Metal
+runs the networks; the MJX environments need `jax_platform=cpu` (the default).
+
+Measured on an Apple M3 Max (16 cores), JAX on CPU, 6 epochs (3 for HalfCheetah), TRPO with `policy_batch_size=4000`.
+JAX env-steps/s is summed over seeds and excludes the compiling first call.
+
+| env | seeds | JAX env-steps/s (cpu) | torch env-steps/s (1 seed) | speedup | first call (compile) |
+|---|---|---|---|---|---|
+| Pendulum | 1 | 55156 | 1879 | 29x | 4.0 s |
+| Pendulum | 4 | 65374 | 1879 | 35x | 3.0 s |
+| Pendulum | 16 | 71182 | 1879 | 38x | 4.1 s |
+| HalfCheetah | 1 | 2043 | n/a (not measured) | n/a | 27.7 s |
+| HalfCheetah | 4 | 2757 | n/a (not measured) | n/a | 18.2 s |
+
+The torch figure is the last torch commit (4f7828e) running Pendulum TRPO for 6 epochs: 24000 steps in 12.77 s of
+wall time, which includes interpreter startup and imports, so it understates the torch steady state somewhat. The
+speedup is against that single-seed figure. MPO is still the torch implementation; a later plan ports it.
+
 ## Results
 
 Configurations are Hydra YAML files in [`src/abstract_rl/conf/`](src/abstract_rl/conf) (`run env=<env> alg=<alg> seed=N`),

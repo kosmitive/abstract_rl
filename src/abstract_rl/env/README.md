@@ -1,21 +1,13 @@
 # Environment
 
-In order to speed up the handling of the creation of executed policy a wrapper for
-gymnasium environments is introduced it can be used to execute a policy for a given number of time steps.
-
+`RolloutEnvWrapper` wraps the JAX environments of `jax_envs.py` (Gymnax, Brax, MJX/Playground) and runs a policy for a
+given number of transitions. The rollout runs in E lanes inside one jitted loop (E follows from `policy_batch_size`
+and `max_steps`), and the observation statistics live in the traced model state.
 
 ```
-[...]
-
-# create an environment wrapper
-with conf.ns('env'):
-    num_traj = conf['traj_evaluations']
-    env = RolloutEnvWrapper(mc)
-    mc.add_environment(env)
-
-[...]
-
-tc = env.execute_policy(policy, max_steps, policy_batch_size, exploration=True, render=False, rew_field_name=stoch_reward)
-    
-[...]
+env = RolloutEnvWrapper(mc)
+state, tc, info = env.execute_policy(state, key, policy, max_steps, policy_batch_size, exploration=True)
 ```
+
+`state` is the traced `ModelState`, `key` a JAX PRNG key, and `tc` the resulting `TrajectoryCollection` with one
+episode per lane.
