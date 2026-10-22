@@ -5,6 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
 from abstract_rl.policy.continuous.select_policy import select_policy
@@ -57,3 +58,10 @@ def test_broadcast_adds_the_seed_axis(trpo_conf):
     out = runs.broadcast({"x": jnp.zeros(4)})
     assert out["x"].shape == (3, 4)
     runs.close()
+
+
+def test_failed_checkpoint_write_is_raised_on_close(trpo_conf):
+    runs = SeedRuns({**trpo_conf, "seeds": [1]}, "trpo")
+    runs.store_best(0, -5.0, 0)  # no "last" checkpoint yet, so the copy fails
+    with pytest.raises(FileNotFoundError):
+        runs.close()

@@ -2,7 +2,7 @@
 
 import copy
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, TypeVar
 
 import equinox as eqx
@@ -34,6 +34,7 @@ class SeedRuns:
         self.keys = jax.vmap(jax.random.key)(jnp.asarray(self.seeds, jnp.uint32))
         # checkpoints are written by one background thread, in submission order (spec P5)
         self._writer = ThreadPoolExecutor(max_workers=1)
+        self._pending: list[Future] = []
 
     def build(self, fn: Callable[[Any], T]) -> T:
         """``fn(key)`` for every seed, batched along a leading seed axis."""
@@ -56,17 +57,27 @@ class SeedRuns:
         """The unbatched value of seed ``i``."""
         return jax.tree.map(lambda x: x[i], tree)
 
+    def _submit(self, fn: Callable[..., Any], *args: Any) -> None:
+        """Queue a write, first re-raising the error of any write which already failed."""
+        for f in [f for f in self._pending if f.done()]:
+            self._pending.remove(f)
+            f.result()
+        self._pending.append(self._writer.submit(fn, *args))
+
     def store(self, name: str, models_per_seed: dict[str, Any]) -> None:
         """Store the batched models of every seed into its own run directory (asynchronously)."""
         host = jax.device_get(models_per_seed)
         for i, mc in enumerate(self.mcs):
             models = {k: self.seed_slice(v, i) for k, v in host.items()}
-            self._writer.submit(mc.store, name, models)
+            self._submit(mc.store, name, models)
 
     def store_best(self, i: int, ret: float, epoch: int) -> None:
         """Keep the last stored models of seed ``i`` as its best ones if ``ret`` is a new best return."""
-        self._writer.submit(self.mcs[i].store_best, ret, epoch)
+        self._submit(self.mcs[i].store_best, ret, epoch)
 
     def close(self) -> None:
-        """Wait for all pending checkpoint writes."""
+        """Wait for all pending checkpoint writes, re-raising the first failed one."""
         self._writer.shutdown(wait=True)
+        pending, self._pending = self._pending, []
+        for f in pending:
+            f.result()
