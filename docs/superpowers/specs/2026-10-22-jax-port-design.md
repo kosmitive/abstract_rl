@@ -52,7 +52,7 @@ the class and module architecture must stay recognisable. Torch, Gymnasium and d
 | JAX version | `jax>=0.11,<0.12` everywhere, because jax-mps 0.11 needs jaxlib 0.11.x. jaxlib is never pinned separately. |
 | Python | `requires-python = ">=3.12,<3.14"`, `.python-version` = `3.12`. jax-mps needs Python 3.12 or later. |
 | Rollouts | **Padded full episodes**. E parallel envs (lanes) each run whole episodes back to back into `[E, L]` with a validity mask, until at least `batch_size` valid steps are collected. |
-| Environments | Pure JAX only. gymnax covers Pendulum and MountainCarContinuous, Brax with the MJX backend covers InvertedPendulum, InvertedDoublePendulum and HalfCheetah, and MuJoCo Playground covers AcrobotSwingup. Gymnasium and dm_control are dropped. SB3 baselines keep Gymnasium inside the `baselines` extra only. |
+| Environments | Pure JAX only. gymnax covers Pendulum and MountainCarContinuous, MJX covers InvertedPendulum and InvertedDoublePendulum (rebuilt from Gymnasium's vendored XML), Brax with the MJX backend covers HalfCheetah, and MuJoCo Playground covers AcrobotSwingup. Gymnasium and dm_control are dropped. SB3 baselines keep Gymnasium inside the `baselines` extra only. |
 
 ## 3. Stack and dependencies
 
@@ -256,15 +256,15 @@ Each adapter maps a backend onto Gymnasium's terminated and truncated semantics.
 |---|---|---|
 | `Pendulum-v1` | gymnax `Pendulum-v1`, `step_env` without auto-reset | gymnax reports its 200-step limit as `done`. The adapter maps it to `truncated`. Pendulum never terminates. |
 | `MountainCarContinuous-v0` | gymnax `MountainCarContinuous-v0` | `terminated` = goal reached, computed from the state. The time limit is `truncated`. |
-| `InvertedPendulum-v5` | Brax `inverted_pendulum`, `backend="mjx"` | Brax `done` is termination. The time limit is handled by `max_steps`. |
-| `InvertedDoublePendulum-v5` | Brax `inverted_double_pendulum`, MJX | same as above |
+| `InvertedPendulum-v5` | `InvertedPendulumV5`: MJX on Gymnasium's XML (`env/assets`), frame_skip 2, RK4 | Gymnasium v5 reward, termination, observation and reset noise; `ctrl = action`. The time limit is handled by `max_steps`. |
+| `InvertedDoublePendulum-v5` | `InvertedDoublePendulumV5`: MJX on Gymnasium's XML, frame_skip 5, RK4 | same as above, 9-dim observation with `qfrc_constraint[0]` |
 | `HalfCheetah-v5` | Brax `halfcheetah`, MJX | never terminates |
 | `AcrobotSwingup-v0` | Playground `AcrobotSwingup` (MJX) | 1000 steps, reward in [0, 1] |
 | `TestPointMass-v0` (tests) | pure-JAX reimplementation of the conftest env | A = 2, asymmetric bounds, 30-step truncation |
 
 The `env_name` keys stay the same, so configs and run directories don't change.
-- The Brax and gymnax envs are faithful ports, but not byte-identical to Gymnasium v5. Observation layout, reset noise
-  and reward constants can differ slightly.
+- The gymnax and HalfCheetah Brax envs are faithful ports, but not byte-identical to Gymnasium v5 (see D5). The two
+  pendulums are pinned against Gymnasium step by step in `tests/test_mujoco_fidelity.py`.
 - Each adapter therefore gets a test that pins its observation and action dims, bounds, reward range and done
   semantics.
 - The README `success` thresholds are re-validated in the final benchmark phase.
@@ -370,7 +370,7 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 | D2 | An epoch overshoots `batch_size` by at most the episode still running in each of the E lanes (torch: one episode). E = 1 is identical to torch. | Static shapes for the vmapped envs, with memory linear in `batch_size + E·max_steps` |
 | D3 | `run.conf` stores the real seed, not `np.random.randint(1e6)`. | The overwrite was a bug that broke `compare.py`. |
 | D4 | The temperature dual runs in float32 instead of float64. Parity is checked at rtol 1e-3. | x64 globally would make MJX and all networks float64, and Metal has no float64. |
-| D5 | Env dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control. | Vectorisable, jittable envs |
+| D5 | Env dynamics come from gymnax, MJX, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control. InvertedPendulum-v5 and InvertedDoublePendulum-v5 run Gymnasium's own XML (RK4, Gymnasium's frame_skip) on MJX with Gymnasium's reward, termination, 4- and 9-dim observations, reset noise and `ctrl = action`; the residual is float32 vs float64 (observations within about 1e-6 per step from the same state, growing to about 1e-3 once a pendulum has fallen) and JAX instead of NumPy reset samples. HalfCheetah-v5 stays on Brax: same dt, gear, reward weights, observation and reset noise; the solver runs 4 instead of 100 iterations, only head, thighs and feet collide with the floor, and the forward velocity is taken from the torso `xpos`, which `mjx.step` leaves one 0.01 s substep behind `qpos`, so per-step rewards shift by up to about 0.3 while an episode's return differs only by the last substep's displacement. (Before task 10 the pendulums ran Brax's models: IP had 3x action gain with saturation above \|a\| = 1 and reward 1 on the falling step, IDP had dt 0.02 instead of 0.05, an 8-dim observation and 10x smaller reset noise, both used Euler.) | Vectorisable, jittable envs |
 | D6 | Observations are float32 from the env on. | Metal has no float64, and the policy already consumes float32. |
 | D7 | When capping drops part of one epoch's episodes, ties between lanes finishing at the same rollout step are broken by lane order. | Lockstep lanes finish episodes simultaneously; torch collected them one after another. |
 
