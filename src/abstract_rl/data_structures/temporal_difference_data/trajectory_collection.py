@@ -25,7 +25,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, Int, PRNGKeyArray
 
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
@@ -41,17 +41,32 @@ class TrajectoryCollection(eqx.Module):
     _trajectories: Trajectory
     _ptr: Any = None
     _inserted: Any = None
+    _high_water: Any = None
 
-    def __init__(self, env: Any, trajectories: Trajectory, *, ptr: Any = None, inserted: Any = None) -> None:
+    def __init__(
+        self,
+        env: Any,
+        trajectories: Trajectory,
+        *,
+        ptr: Any = None,
+        inserted: Any = None,
+        high_water: Any = None,
+    ) -> None:
         self._trajectories = trajectories
         self._ptr = ptr
         self._inserted = inserted
+        self._high_water = high_water
 
     def __len__(self) -> int:
         return int(self._trajectories.mask.shape[0])
 
     def trajectories(self) -> Trajectory:
         return self._trajectories
+
+    def occupied_rows(self) -> Int[Array, ""]:
+        """The number of leading memory rows that were ever written: the insert pointer until the ring first wraps,
+        afterwards the highest pointer reached. All valid rows lie below it."""
+        return self._high_water
 
     def with_trajectories(self, trajectories: Trajectory) -> "TrajectoryCollection":
         return eqx.tree_at(lambda c: c._trajectories, self, trajectories)
@@ -127,7 +142,8 @@ class TrajectoryCollection(eqx.Module):
             jnp.zeros((1, capacity), bool),
             {"insert_id": jnp.full((1, capacity), -1, jnp.int32), "time": jnp.zeros((1, capacity), jnp.int32)},
         )
-        return cls(env, trajectories, ptr=jnp.asarray(0, jnp.int32), inserted=jnp.asarray(0, jnp.int32))
+        zero = jnp.asarray(0, jnp.int32)
+        return cls(env, trajectories, ptr=zero, inserted=zero, high_water=zero)
 
     def with_annotations(self, template: dict[str, Any]) -> "TrajectoryCollection":
         """Zero-filled annotations with the given per-row shapes, e.g. the output structure of the MPO operators."""
@@ -197,4 +213,7 @@ class TrajectoryCollection(eqx.Module):
         mem = mem.replace(mask=mem.mask & keep[episode])
 
         out = self.with_trajectories(jax.tree.map(lambda x: x[None], mem))
-        return eqx.tree_at(lambda c: (c._ptr, c._inserted), out, (ptr + count, self._inserted + 1))
+        high_water = jnp.maximum(self._high_water, ptr + count).astype(jnp.int32)
+        return eqx.tree_at(
+            lambda c: (c._ptr, c._inserted, c._high_water), out, (ptr + count, self._inserted + 1, high_water)
+        )

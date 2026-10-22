@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from functools import partial
 from os.path import join
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jaxtyping import Array, Int, PRNGKeyArray
 
 from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
     MPOAlgorithm,
@@ -12,6 +14,7 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_state import ModelState
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.misc.cli_printer import CliPrinter
@@ -30,6 +33,46 @@ EPOCH_TRACES: list[int] = []
 
 # number of valid transitions in the memory of every seed after every epoch of the last run
 LAST_MEMORY_SIZES: list[int] = []
+
+# memory rows the resample annotation processes at once (only the chunks covering the occupied rows run)
+ANNOTATE_CHUNK = 2048
+
+
+def annotate_chunked(
+    fn: Callable[[Trajectory, PRNGKeyArray, Int[Array, " C"]], Trajectory],
+    tc: TrajectoryCollection,
+    key: PRNGKeyArray,
+    chunk: int,
+) -> TrajectoryCollection:
+    """
+    Annotates the single lane of a replay memory chunk by chunk, but only the chunks covering its occupied rows.
+    :param fn: The row-independent annotation ``fn(lane, key, rows)`` of a chunk of rows, ``rows`` are their indices.
+    :param tc: The replay memory, a single lane.
+    :param key: The random key passed to every chunk (``fn`` keys its rows by their index).
+    :param chunk: The static number of rows per chunk.
+    :return: The memory with the new annotations on its occupied rows, the rows beyond keep their previous ones.
+    """
+    lane = jax.tree.map(lambda x: x[0], tc.trajectories())
+    capacity = len(lane)
+    chunk = min(chunk, capacity)
+    occupied = tc.occupied_rows()
+
+    def body(i: Int[Array, ""], lane: Trajectory) -> Trajectory:
+        # the last chunk ends at the capacity at the latest, rows it shares with the previous chunk get the same values
+        start = jnp.minimum(i * chunk, capacity - chunk)
+        rows = start + jnp.arange(chunk)
+        part = jax.tree.map(lambda x: jax.lax.dynamic_slice_in_dim(x, start, chunk), lane)
+        out = fn(part, key, rows)
+        keep = rows < occupied
+        for k, v in out._annotations.items():
+            if v is part._annotations.get(k):
+                continue
+            v = jnp.where(keep.reshape(-1, *([1] * (v.ndim - 1))), v, part[k])
+            lane = lane.set(k, jax.lax.dynamic_update_slice_in_dim(lane[k], v.astype(lane[k].dtype), start, 0))
+        return lane
+
+    lane = jax.lax.fori_loop(0, (occupied + chunk - 1) // chunk, body, lane)
+    return tc.with_trajectories(jax.tree.map(lambda x: x[None], lane))
 
 
 # title of the script
@@ -133,6 +176,10 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     }
     mc.add_main("tc", runs.broadcast(empty.with_annotations(template_ann)))
 
+    # equal chunks of at most ANNOTATE_CHUNK rows, so a full memory is annotated without (almost) any extra rows
+    num_chunks = -(-capacity // ANNOTATE_CHUNK)
+    res_chunk = -(-capacity // num_chunks)
+
     def epoch(state: ModelState, batch_size: int) -> tuple[ModelState, dict[str, Any]]:
         """One epoch of one seed: rollout into the memory, e-step, m-step on the policy, retrace fit of q, sync."""
         key, k_rollout, k_annotate, k_m, k_ret, k_q = jax.random.split(state.get("key"), 6)
@@ -147,9 +194,9 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         new_tc = filter.transform_all(state, new_tc)
         tc = state.get("tc").merge(new_tc, tc_size)
 
-        # e-step: resample extra actions and q values, temperature (on the merged memory), ranking
+        # e-step: resample extra actions and q values on the occupied rows, temperature (on the merged memory), ranking
         k_res, _ = jax.random.split(k_annotate)
-        tc = res.transform_all(state, tc, k_res)
+        tc = annotate_chunked(lambda lane, k, rows: res.transform(state, lane, k, rows), tc, k_res, res_chunk)
         state = rnk.hook(state, tc)
         tc = rnk.transform_all(state, tc)
 
