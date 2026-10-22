@@ -11,9 +11,11 @@ Usage::
 Every cell trains its seeds as one vmapped program (``scripts.run.train`` with ``seeds``) on the CPU, writing to
 ``<root>/runs/<env>_<alg>/<env id>/<alg>/<timestamp>/``. With ``--mpo-processes`` every MPO seed is trained in its own
 process instead. Cells are independent, so several invocations with disjoint ``--envs``/``--algs`` can run in parallel
-on the same ``--root``, as can invocations of one cell with disjoint ``--seeds`` (e.g. one seed after the other when
-the vmapped seeds do not fit into memory). Each invocation writes its wall time and env-steps/s per cell to
-``<root>/timing/<env>_<alg>_seeds<seeds>.json`` and ``--report`` merges these into ``<root>/timing.json``.
+on the same ``--root``. Invocations of one cell with disjoint ``--seeds`` (e.g. one seed at a time when the vmapped
+seeds do not fit into memory) must run one after the other: new runs are found by a before/after diff of the cell
+directory, which would also pick up the runs of a parallel invocation. Each invocation writes its wall time and
+env-steps/s per cell to ``<root>/timing/<env>_<alg>_seeds<seeds>.json`` and ``--report`` merges these into
+``<root>/timing.json``.
 ``--threads 1`` disables XLA's multi-threaded CPU kernels (set before JAX is imported). Hydra overrides after
 ``--set`` apply to every cell, e.g. ``--set max_env_steps=8000`` or ``--set alg.num_epochs=2``. A cell which already
 holds runs of a requested seed is refused unless ``--fresh`` deletes these runs.

@@ -24,3 +24,11 @@ def test_pendulum_gif_frames(trpo_conf, tmp_path):
     gif = tmp_path / "x.gif"
     eval_balance.save_gif(str(run_dir), str(gif))
     assert gif.exists() and gif.stat().st_size > 0
+
+
+def test_mountaincar_frames():
+    from abstract_rl.env.render import _mountaincar_frames
+
+    frames = _mountaincar_frames(np.array([[-0.5, 0.0], [0.45, 0.01]], np.float32))
+    assert len(frames) == 2 and frames[0].shape == (187, 280, 3) and frames[0].dtype == np.uint8
+    assert not np.array_equal(frames[0], frames[1])  # the car moves
