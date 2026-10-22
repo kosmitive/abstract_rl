@@ -23,9 +23,9 @@ uv run python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/*/<run> --out
 uv run python -m abstract_rl.scripts.plot_learning_curve data/Pendulum-v1/trpo/<run> -o trpo.png
 ```
 
-Baselines (`uv sync --extra baselines`, Stable-Baselines3 PPO and sb3-contrib TRPO) and the comparison of everything:
+Baselines (`uv sync --extra baselines`, Stable-Baselines3 TD3 and sb3-contrib TRPO) and the comparison of everything:
 
 ```
-uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 ppo --seed 1 --data-root results
+uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 td3 --seed 1 --data-root results
 uv run python -m abstract_rl.scripts.compare results --out docs/
 ```
