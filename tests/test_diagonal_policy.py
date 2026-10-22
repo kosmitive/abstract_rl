@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 import torch
-from torch.distributions import Normal
+from torch.distributions import MultivariateNormal, Normal
 
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import (
     DiagonalGaussianPolicy,
@@ -39,6 +39,10 @@ def test_select_policy_uses_the_diagonal_policy_for_multi_dimensional_actions(ma
     assert isinstance(_policy(make_pendulum_mc, cls=select_policy), DiagonalGaussianPolicy)
     assert isinstance(_policy(make_pendulum_mc, "Pendulum-v1", select_policy), UnivariateGaussianPolicy)
     assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_type="diagonal"), DiagonalGaussianPolicy)
+    assert isinstance(_policy(make_pendulum_mc, cls=select_policy, policy_cov_type="full"), DiagonalGaussianPolicy)
+    assert isinstance(
+        _policy(make_pendulum_mc, "Pendulum-v1", select_policy, policy_cov_type="full"), DiagonalGaussianPolicy
+    )
 
 
 def test_shapes(make_pendulum_mc):
@@ -195,6 +199,82 @@ def test_one_dimensional_diagonal_policy_equals_the_univariate_policy(make_pendu
         diag.log_prob(actions.unsqueeze(-1), suff_stats=sd), uni.log_prob(actions, suff_stats=su), atol=1e-5
     )
     assert torch.allclose(diag.mode(suff_stats=sd), uni.mode(suff_stats=su))
+
+
+def _unpack_tril(packed: torch.Tensor, action_dim: int) -> torch.Tensor:
+    rows, cols = torch.tril_indices(action_dim, action_dim)
+    factor = packed.new_zeros(packed.shape[0], action_dim, action_dim)
+    factor[:, rows, cols] = packed
+    return factor
+
+
+def test_full_covariance_log_prob_matches_multivariate_normal(make_pendulum_mc):
+    policy = _policy(make_pendulum_mc, policy_cov_type="full", policy_squash=False)
+    # packed row-major triangle for two actions: L00, L10, L11
+    _force_head(policy, [0.2, -0.4], [0.0, 0.5, -0.3])
+    states = torch.zeros(3, 4)
+    stats = policy.forward(states)
+    diagonal = torch.nn.functional.softplus(torch.tensor([0.0, -0.3])) + 1e-6
+    assert torch.allclose(stats[0, :2], torch.tensor([0.2, -0.4]))
+    assert torch.allclose(stats[0, 2:], torch.tensor([diagonal[0], 0.5, diagonal[1]]), atol=1e-6)
+    actions = torch.tensor(
+        [[[0.1, -0.2], [0.0, 0.3]], [[-0.4, 0.2], [0.2, -0.1]], [[0.3, 0.1], [-0.2, 0.0]]], dtype=torch.float32
+    )
+    factor = _unpack_tril(stats[:, 2:], 2)
+    dist = MultivariateNormal(stats[:, :2], scale_tril=factor)
+    expected = torch.stack([dist.log_prob(actions[:, k]) for k in range(actions.shape[1])], dim=1)
+    assert torch.allclose(policy.log_prob(actions, suff_stats=stats), expected, atol=1e-5)
+    # one action per state, the shape stored on a batch
+    assert torch.allclose(policy.log_prob(actions[:, 0], suff_stats=stats).squeeze(1), expected[:, 0], atol=1e-5)
+
+
+def test_full_covariance_kl_of_a_policy_with_itself_is_zero(make_pendulum_mc):
+    mc = make_pendulum_mc(env_name="TestPointMass-v0", policy_cov_type="full", policy_squash=True)
+    with mc["conf"].ns("policy"):
+        policy = DiagonalGaussianPolicy(mc)
+        mc.add_syncable("policy", policy, 1)
+    batch = _Batch(np.random.default_rng(0).normal(size=(6, 4)).astype(np.float32))
+    # TRPO uses the m-projection mean, MPO the same total KL
+    assert policy.kl_divergence(batch, mode="i-projection", est="mean").item() == pytest.approx(0.0, abs=1e-6)
+    assert policy.kl_divergence(batch, mode="m-projection", est="sum").item() == pytest.approx(0.0, abs=1e-5)
+
+    torch.manual_seed(0)
+    with torch.no_grad():
+        for p in policy.parameters():
+            p.add_(0.2 * torch.randn_like(p))
+    states = torch.as_tensor(batch.states)
+    with torch.no_grad():
+        stats, target = policy.forward(states), mc.get("policy", True).forward(states)
+    current = MultivariateNormal(stats[:, :2], scale_tril=_unpack_tril(stats[:, 2:], 2))
+    old = MultivariateNormal(target[:, :2], scale_tril=_unpack_tril(target[:, 2:], 2))
+    kl = policy.kl_divergence(batch, mode="m-projection", est="mean")
+    expected = torch.distributions.kl.kl_divergence(old, current).mean()
+    assert torch.allclose(kl, expected, atol=1e-5)
+    assert kl.detach().item() > 0
+    kl.backward()
+    assert any(p.grad is not None and float(p.grad.abs().sum()) > 0 for p in policy.parameters())
+
+
+def test_full_covariance_is_isotropic_at_init(make_pendulum_mc):
+    sigma = 0.4
+    policy = _policy(make_pendulum_mc, policy_cov_type="full", policy_sigma=sigma)
+    states = torch.randn(16, 4)
+    factor = _unpack_tril(policy.forward(states)[:, policy.action_dim :], policy.action_dim)
+    cov = factor @ factor.transpose(-1, -2)
+    expected = (sigma**2) * torch.eye(policy.action_dim)
+    assert torch.allclose(cov, expected.expand_as(cov), atol=1e-5)
+
+
+def test_state_and_full_covariance_start_at_policy_sigma(make_pendulum_mc):
+    sigma = 0.4
+    state = _policy(make_pendulum_mc, policy_cov_type="state", policy_sigma=sigma)
+    assert torch.allclose(state.forward(torch.zeros(1, 4))[:, 2:], torch.full((2,), sigma), atol=1e-5)
+    full = _policy(make_pendulum_mc, policy_cov_type="full", policy_sigma=sigma)
+    assert torch.allclose(full.forward(torch.zeros(1, 4))[0, [2, 4]], torch.full((2,), sigma), atol=1e-5)
+    uni = _policy(
+        make_pendulum_mc, "Pendulum-v1", UnivariateGaussianPolicy, policy_cov_type="state", policy_sigma=sigma
+    )
+    assert torch.allclose(uni.forward(torch.zeros(1, 3))[:, 1], torch.tensor([sigma]), atol=1e-5)
 
 
 def test_entropy_of_the_unsquashed_policy_and_refusal_for_squashed(make_pendulum_mc):

@@ -20,9 +20,9 @@ from abstract_rl.scripts.eval_balance import load_policy
 from abstract_rl.scripts.hydra_conf import success
 
 
-def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000) -> tuple[str, np.ndarray]:
+def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000, model: str = "last") -> tuple[str, np.ndarray]:
     """Returns of ``episodes`` greedy (policy mean) episodes of a stored run on the unmodified environment."""
-    env_wrapper, policy = load_policy(run_dir)
+    env_wrapper, policy = load_policy(run_dir, model)
     env = env_wrapper.env
     max_steps = env_wrapper.conf.get_root("max_steps")
     returns = []
@@ -50,11 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=10_000, help="start states are seeded with seed + episode")
     parser.add_argument("--json", default=None, help="write the results as JSON to this file")
     parser.add_argument("--save", action="store_true", help="store the returns as eval.json in each run directory")
+    parser.add_argument("--model", choices=["last", "best"], default="last", help="stored policy to evaluate")
     args = parser.parse_args(argv)
 
     results, ok = {}, True
     for run_dir in args.run_dirs:
-        env_id, returns = evaluate(run_dir, args.episodes, args.seed)
+        env_id, returns = evaluate(run_dir, args.episodes, args.seed, args.model)
         threshold = success().get(env_id)
         solved = bool(threshold is not None and returns.mean() >= threshold)
         ok &= solved

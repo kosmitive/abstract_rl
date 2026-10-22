@@ -11,7 +11,9 @@ uv run python -m abstract_rl.scripts.mpo_pendulum
 
 MuJoCo environments need the `mujoco` extra (`uv sync --extra mujoco`).
 Every run writes to `data/<env>/<alg>/<timestamp>/` (configuration, logged returns, model checkpoints, a
-performance plot and per-epoch CLI logs).
+performance plot and per-epoch CLI logs). `model/last` holds the final policy, `model/best` the policy of the epoch with
+the highest mean training return (epoch and return in `model/best.json`); pass `--model best` to the evaluation scripts
+to use it.
 
 Evaluation:
 

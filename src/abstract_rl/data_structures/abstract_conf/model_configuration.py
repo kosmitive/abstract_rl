@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from os import makedirs, mkdir
 from os.path import exists, join
+from shutil import copy, copytree
 from typing import Any
 
 import numpy as np
@@ -49,6 +50,7 @@ class ModelConfiguration:
                     continue
 
             self.overall_step = 0
+            self.best_return = -np.inf
             self.env: Any = None
             conf["reload_dir"] = self.run_root
             self.add_main("conf", SharedConf(conf))
@@ -112,6 +114,19 @@ class ModelConfiguration:
             if not exists(torch_path):
                 mkdir(torch_path)
             torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
+
+    def store_best(self, ret: float, epoch: int) -> None:
+        """Copy the stored ``last`` models (and observation statistics) to ``best`` if ``ret`` is a new best return."""
+
+        if ret <= self.best_return:
+            return
+        self.best_return = ret
+        best_path = join(self.model_root, "best")
+        copytree(join(self.model_root, "last"), best_path, dirs_exist_ok=True)
+        if exists(join(self.model_root, "obs_rms.npz")):
+            copy(join(self.model_root, "obs_rms.npz"), best_path)
+        with open(join(self.model_root, "best.json"), "w") as file_best:
+            json.dump({"epoch": epoch, "return": ret}, file_best)
 
     def get(self, key: str, target: bool = False) -> Any:
         """

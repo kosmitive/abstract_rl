@@ -147,4 +147,4 @@ class Trajectory:
         """Calculate entropy of policy.
         :return: The calculated entropy.
         """
-        return -np.sum(self.log_likelihoods * np.exp(self.log_likelihoods))
+        return float(-np.mean(self.log_likelihoods))

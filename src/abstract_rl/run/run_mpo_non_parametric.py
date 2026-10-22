@@ -149,8 +149,9 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
             rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
             rew_plot.save(join(mc.plot_root, "performance.png"))
 
-            # save last model
+            # save last model and keep it as best model if its epoch return is the highest so far
             mc.store("last")
+            mc.store_best(float(res_log[0][e, 0]), e)
             cli.empty().print("last model saved")
 
         # --------------------------------

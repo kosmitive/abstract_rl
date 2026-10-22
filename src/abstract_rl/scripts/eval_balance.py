@@ -14,7 +14,7 @@ Usage::
 import argparse
 import os
 import sys
-from os.path import basename, join, normpath
+from os.path import basename, exists, join, normpath
 from typing import Any
 
 import gymnasium as gym
@@ -30,17 +30,22 @@ from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
-def load_policy(run_dir: str) -> tuple[MCMCEnvWrapper, ContinuousPolicy]:
-    """Rebuild environment wrapper and policy of a stored run and load the last policy parameters."""
+def load_policy(run_dir: str, model: str = "last") -> tuple[MCMCEnvWrapper, ContinuousPolicy]:
+    """Rebuild environment wrapper and policy of a stored run and load the policy parameters of ``model``.
+
+    ``model`` is ``last`` (final policy) or ``best`` (policy of the epoch with the highest return).
+    """
     mc = ModelConfiguration({"reload": True, "reload_dir": run_dir})
     conf = mc["conf"]
     conf["env_render"] = False
     with conf.ns("env"):
         env = MCMCEnvWrapper(mc)
         mc.add_environment(env)
+    if exists(join(run_dir, "model", model, "obs_rms.npz")):
+        env.load_obs_rms(join(run_dir, "model", model, "obs_rms.npz"))
     with conf.ns("policy"):
         policy = select_policy(mc)
-        policy.load_state_dict(torch.load(join(run_dir, "model/last", "policy.data")))
+        policy.load_state_dict(torch.load(join(run_dir, "model", model, "policy.data")))
     policy.eval()
     return env, policy
 
@@ -64,9 +69,9 @@ def run_episode(
     return total, np.asarray(thetas)
 
 
-def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000) -> tuple[ndarray, ndarray]:
+def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000, model: str = "last") -> tuple[ndarray, ndarray]:
     """Evaluate a run. Returns (returns [E], thetas [E, T])."""
-    env_wrapper, policy = load_policy(run_dir)
+    env_wrapper, policy = load_policy(run_dir, model)
     returns, thetas = [], []
     for i in range(episodes):
         ret, th = run_episode(env_wrapper, policy, env_wrapper.env, seed + i)
@@ -76,10 +81,10 @@ def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000) -> tuple[ndar
     return np.asarray(returns), np.stack(thetas)
 
 
-def save_gif(run_dir: str, path: str, seed: int = 10_000, fps: int = 30) -> float:
+def save_gif(run_dir: str, path: str, seed: int = 10_000, fps: int = 30, model: str = "last") -> float:
     """Render one episode (rgb_array, no display needed) into a GIF."""
-    env_wrapper, policy = load_policy(run_dir)
-    env = gym.make(env_wrapper.env_name, render_mode="rgb_array")
+    env_wrapper, policy = load_policy(run_dir, model)
+    env = env_wrapper.frozen_eval_env("rgb_array")
     frames: list[Any] = []
     ret, _ = run_episode(env_wrapper, policy, env, seed, frames)
     env.close()
@@ -117,12 +122,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-balanced", type=float, default=1.0, help="required fraction of balanced episodes")
     parser.add_argument("--out", default="eval", help="output directory for plots and GIFs")
     parser.add_argument("--gif", action="store_true", help="also render the episode with the lowest return as GIF")
+    parser.add_argument("--model", choices=["last", "best"], default="last", help="stored policy to evaluate")
     args = parser.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
     ok, means = True, []
     for run_dir in args.run_dirs:
-        returns, thetas = evaluate(run_dir, args.episodes, args.seed)
+        returns, thetas = evaluate(run_dir, args.episodes, args.seed, args.model)
         upright = np.abs(thetas[:, -args.window :]) < args.tol
         balanced = upright.all(axis=1)
         means.append(returns.mean())
@@ -134,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.gif:
             # render the hardest episode (lowest return, usually a swing-up from the bottom)
             gif_seed = args.seed + int(np.argmin(returns))
-            gif_ret = save_gif(run_dir, join(args.out, f"{name}.gif"), gif_seed)
+            gif_ret = save_gif(run_dir, join(args.out, f"{name}.gif"), gif_seed, model=args.model)
             gif_msg = f", gif (seed {gif_seed}) return {gif_ret:.1f}"
 
         print(
