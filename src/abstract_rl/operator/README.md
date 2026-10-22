@@ -1,7 +1,7 @@
 # Operator System
 
-The operator system builds on trajectories. They are collected in a `TrajectoryCollection`, which stacks E lanes (one
-episode each) as JAX arrays. An operator transforms one lane into an annotated one; `transform_all` vmaps it over all
+The operator system builds on trajectories. They are collected in a `TrajectoryCollection`, which stacks E lanes (each
+holding several whole episodes back to back) as JAX arrays. An operator transforms one lane into an annotated one; `transform_all` vmaps it over all
 lanes, e.g.
 
 ```

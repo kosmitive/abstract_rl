@@ -49,7 +49,7 @@ the class and module architecture must stay recognisable. Torch, Gymnasium and d
 | Accelerator | **jax-mps** (Metal through MLX) as the GPU backend, `JAX_PLATFORMS=mps`. CPU stays the reference backend. |
 | JAX version | `jax>=0.11,<0.12` everywhere, because jax-mps 0.11 needs jaxlib 0.11.x. jaxlib is never pinned separately. |
 | Python | `requires-python = ">=3.12,<3.14"`, `.python-version` = `3.12`. jax-mps needs Python 3.12 or later. |
-| Rollouts | **Padded full episodes**. E parallel envs each run one whole episode into `[E, max_steps]` with a validity mask. Rounds repeat until at least `batch_size` valid steps are collected. |
+| Rollouts | **Padded full episodes**. E parallel envs (lanes) each run whole episodes back to back into `[E, L]` with a validity mask, until at least `batch_size` valid steps are collected. |
 | Environments | Pure JAX only. gymnax covers Pendulum and MountainCarContinuous, Brax with the MJX backend covers InvertedPendulum, InvertedDoublePendulum and HalfCheetah, and MuJoCo Playground covers AcrobotSwingup. Gymnasium and dm_control are dropped. SB3 baselines keep Gymnasium inside the `baselines` extra only. |
 
 ## 3. Stack and dependencies
@@ -98,7 +98,7 @@ host:  for each seed: logger.log(metrics[s]), plots, store("last"), store_best(.
 - **Seed vmap** is the outer axis.
 - **Env vmap** is an inner `vmap` over E envs inside the rollout.
   - E comes from config (`env_num_envs`). The default is `ceil(batch_size / max_steps)`, so Pendulum TRPO uses
-    4000/200 = 20 envs and finishes in a single round, exactly like today.
+    4000/200 = 20 envs and collects the epoch in a single pass, like torch.
 - **Host-only objects**, untouched apart from their torch imports:
   - `SharedConf`, `ModelConfiguration` (wiring, run dirs, `store`/`store_best`),
   - `DataLogger`, `CliPrinter`, plots, Hydra.
@@ -193,15 +193,14 @@ Explicitly **not** proposed, because each would change logic or go against the m
 
 ### 6.1 Padded episode buffer (one epoch of rollouts)
 
-Shapes are `[R*E, T]`, with T = `max_steps`, R = rounds and E = parallel envs.
+Shapes are `[E, L]`, with E = parallel envs (lanes) and `L = ceil(batch_size / E) + max_steps`.
 
 ```
-states      Float[Array, "eps T+1 obs"]   # includes the final next-state for bootstrapping
-actions     Float[Array, "eps T act"]
-log_likelihoods, rewards, raw_rewards, dones  Float[Array, "eps T"]   # dones = terminated only
-mask        Bool[Array, "eps T"]          # step valid (before episode end)
-length      Int[Array, "eps"]
-valid_eps   Bool[Array, "eps"]            # this round was actually needed
+states, next_states  Float[Array, "E L obs"]   # next_states stored explicitly, used for bootstrapping
+actions     Float[Array, "E L act"]
+log_likelihoods, rewards, raw_rewards, dones  Float[Array, "E L"]   # dones = terminated only
+ends        Bool[Array, "E L"]            # last step of every episode
+mask        Bool[Array, "E L"]            # step valid
 annotations dict[str, Array]              # "tv", "td", "a", "add_act", "add_q", "grad_ranking", "tq", ...
 ```
 
@@ -213,13 +212,13 @@ annotations dict[str, Array]              # "tv", "td", "a", "add_act", "add_q",
 - **Episode end.** Each env steps until `terminated` or until `max_steps` is reached. Steps after the end are masked,
   and the env state is frozen with `jnp.where`.
   - A `max_steps` cut and an env time-limit truncation are both stored as not done. TD and Retrace therefore bootstrap
-    from `states[:, length]` exactly as today.
+    from the stored `next_states` exactly as today.
 - **Reset seeding.** Reset keys come from the state's PRNG key, which keeps successive resets independent.
 - **Logging.**
   - The logged return is the mean and std of the raw episodic returns over valid episodes.
   - `steps` counts the valid transitions.
-  - `best_reward`, `max_traj_len` and `total_steps` are carried in the state.
-- **Batch building.** `to_batch(fields)` flattens to `[eps*T]` and carries `mask` along. Every mean and std then uses
+  - `best_reward`, `max_traj_len` and `total_steps` are tracked by the host run loop.
+- **Batch building.** `to_batch(fields)` flattens to `[E*L]` and carries `mask` along. Every mean and std then uses
   the mask, so the TRPO advantage normalisation and surrogate means equal the unpadded torch values.
 
 ### 6.2 Replay buffer (MPO)
@@ -351,11 +350,11 @@ The `env_name` keys stay the same, so configs and run directories don't change.
      `test_hydra_config`, `test_imports`;
    - `test_env_wrapper`, now checking that only `terminated` is stored as done, on the padded rollout.
 4. **New tests:**
-   - padded rollout semantics: rounds, masks, a ≥ batch_size guarantee, and E = 1 equivalence;
+   - padded rollout semantics: lanes, masks, a ≥ batch_size guarantee, and E = 1 equivalence;
    - replay capping against the old list-based rule on random episode lengths;
    - one env-contract test per adapter;
    - vmap over seeds gives the same result as running each seed alone (`vmap(epoch)(stack(s)) == stack(epoch(s_i))`);
-   - jit stability, so that a second epoch triggers no recompile (checked with `jax.log_compiles`).
+   - jit stability, so that a second epoch triggers no recompile (checked with the run loop's `EPOCH_TRACES` trace counter, the accepted equivalent of `jax.log_compiles`).
 5. **Smoke tests.** 2 seeds and 2 epochs of TRPO and MPO on Pendulum and PointMass. The returns have shape
    `[seeds, epochs, 2]` and checkpoints exist.
 6. **Removed tests.** `test_acrobot_swingup` (dm_control) is replaced by the Playground adapter test.
@@ -368,7 +367,7 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 | ID | Deviation | Why |
 |---|---|---|
 | D1 | Random streams differ from torch and numpy. Every draw uses explicit keys. | Different RNG designs, and vmap needs per-seed keys. |
-| D2 | An epoch overshoots `batch_size` by at most the episodes still running in the other E−1 lanes; torch overshoots by at most one episode. E = 1 is identical to torch. | Static shapes for the vmapped envs, with memory linear in `batch_size + E·max_steps` |
+| D2 | An epoch overshoots `batch_size` by at most the episode still running in each of the E lanes (torch: one episode). E = 1 is identical to torch. | Static shapes for the vmapped envs, with memory linear in `batch_size + E·max_steps` |
 | D3 | `run.conf` stores the real seed, not `np.random.randint(1e6)`. | The overwrite was a bug that broke `compare.py`. |
 | D4 | The temperature dual runs in float32 instead of float64. Parity is checked at rtol 1e-3. | x64 globally would make MJX and all networks float64, and Metal has no float64. |
 | D5 | Env dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control. | Vectorisable, jittable envs |
@@ -398,6 +397,8 @@ Anything else that changes behaviour counts as a bug against this spec.
   releases that still accept jax 0.11, found and recorded in S1.
 - **Padded compute waste.** On envs that terminate early (the inverted pendulums early in training), most padded steps
   are masked out. That is acceptable, because throughput still dominates torch, and E is configurable.
+- **Padding in the TRPO update.** Padding makes the TRPO update process about 2x the batch rows
+  (`L = batch_size / E + max_steps`). This is accepted.
 - **Replay capacity.** Very short episodes could overflow the static slot count `C`. The design raises on the host and
   is configurable through `tc_max_episodes`.
 - **Compile time.** The whole epoch is one program, which means a long first compile on MJX. Python's own `max_steps`
