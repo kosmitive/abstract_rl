@@ -47,6 +47,7 @@ baselines = [
     "gymnasium[classic-control,mujoco]>=1.0",
     "sb3-contrib>=2.4",
     "stable-baselines3>=2.4",
+    "torch>=2.5",
 ]
 
 [dependency-groups]
