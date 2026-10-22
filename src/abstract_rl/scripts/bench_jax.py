@@ -2,10 +2,15 @@
 
 ``uv run python -m abstract_rl.scripts.bench_jax --env pendulum --seeds 1 4 16 --epochs 6``. The first epoch call
 compiles and is reported separately.
+
+``--platform`` (default ``cpu``) sets ``JAX_PLATFORMS`` before JAX is imported. With the ``mps`` extra installed JAX
+would otherwise default to the Metal backend, which is about 10x slower for Pendulum and does not support buffer
+donation.
 """
 
 import argparse
 import json
+import os
 import tempfile
 import time
 from typing import Any
@@ -25,7 +30,7 @@ def bench(env: str, seeds: int, epochs: int) -> dict[str, Any]:
         times.append(time.perf_counter())
         original(self, name, models)
 
-    module.SeedRuns.store = timed_store  # type: ignore[method-assign]
+    module.SeedRuns.store = timed_store  # type: ignore[method-assign,assignment]
     try:
         start = time.perf_counter()
         conf["num_epochs"] = epochs
@@ -44,8 +49,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--env", default="pendulum")
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 4, 16])
     parser.add_argument("--epochs", type=int, default=6)
+    parser.add_argument("--platform", choices=["cpu", "mps"], default="cpu")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    if args.epochs < 2:
+        parser.error("at least 2 epochs are needed for a steady-state interval")
+    os.environ.setdefault("JAX_PLATFORMS", args.platform)
     results = [bench(args.env, s, args.epochs) for s in args.seeds]
     for r in results:
         print(f"{r['env']:12s} seeds {r['seeds']:3d} | first call {r['first_epoch_s']:7.2f}s "

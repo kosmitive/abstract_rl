@@ -49,17 +49,19 @@ runs the networks; the MJX environments need `jax_platform=cpu` (the default).
 Measured on an Apple M3 Max (16 cores), JAX on CPU, 6 epochs (3 for HalfCheetah), TRPO with `policy_batch_size=4000`.
 JAX env-steps/s is summed over seeds and excludes the compiling first call.
 
-| env | seeds | JAX env-steps/s (cpu) | torch env-steps/s (1 seed) | speedup | first call (compile) |
+| env | seeds | JAX env-steps/s (cpu) | torch env-steps/s (1 seed, steady state) | speedup | first call (compile) |
 |---|---|---|---|---|---|
-| Pendulum | 1 | 55156 | 1879 | 29x | 4.0 s |
-| Pendulum | 4 | 65374 | 1879 | 35x | 3.0 s |
-| Pendulum | 16 | 71182 | 1879 | 38x | 4.1 s |
-| HalfCheetah | 1 | 2043 | n/a (not measured) | n/a | 27.7 s |
-| HalfCheetah | 4 | 2757 | n/a (not measured) | n/a | 18.2 s |
+| Pendulum | 1 | 55156 | 5333 | 10x | 4.0 s |
+| Pendulum | 4 | 65374 | 5333 | 12x | 3.0 s |
+| Pendulum | 16 | 71182 | 5333 | 13x | 4.1 s |
+| HalfCheetah | 1 | 2043 | n/a | n/a | 27.7 s |
+| HalfCheetah | 4 | 2757 | n/a | n/a | 18.2 s |
 
-The torch figure is the last torch commit (4f7828e) running Pendulum TRPO for 6 epochs: 24000 steps in 12.77 s of
-wall time, which includes interpreter startup and imports, so it understates the torch steady state somewhat. The
-speedup is against that single-seed figure. MPO is still the torch implementation; a later plan ports it.
+The torch figure is the last torch commit (4f7828e) running Pendulum TRPO (default config, one seed). Its steady state
+is `6 * 4000 / (T12 - T6)`, where T6 = 6.93 s and T12 = 11.43 s are the wall times of a 6 and a 12 epoch run, so
+interpreter startup and imports cancel out (a single 6 epoch run, startup included, gives only 1879 env-steps/s).
+Torch HalfCheetah is not measured: the torch MuJoCo env is Gymnasium v5, with different dynamics and rewards. The
+speedup is against the single-seed torch figure. MPO is still the torch implementation; a later plan ports it.
 
 ## Results
 
