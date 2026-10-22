@@ -50,7 +50,6 @@ install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 import copy
 from typing import NamedTuple
 
-import gymnasium as gym
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -61,37 +60,6 @@ from abstract_rl.scripts.mpo_pendulum import run_config as mpo_config
 from abstract_rl.scripts.trpo_pendulum import run_config as trpo_config
 
 
-class PointMass(gym.Env):
-    """Two dimensional point mass which has to reach the origin; actions are accelerations with asymmetric bounds."""
-
-    observation_space = gym.spaces.Box(-np.inf, np.inf, (4,), np.float64)
-    action_space = gym.spaces.Box(np.array([-1.0, -2.0], np.float32), np.array([1.0, 2.0], np.float32))
-
-    def __init__(self, render_mode=None):
-        self.render_mode = render_mode
-
-    def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)
-        self.pos = self.np_random.uniform(-1, 1, 2)
-        self.vel = np.zeros(2)
-        self.t = 0
-        return self._obs(), {}
-
-    def _obs(self):
-        return np.concatenate([self.pos, self.vel])
-
-    def step(self, action):
-        a = np.clip(action, self.action_space.low, self.action_space.high)
-        self.vel = 0.9 * self.vel + 0.1 * a
-        self.pos = self.pos + 0.1 * self.vel
-        self.t += 1
-        reward = -float(self.pos @ self.pos) - 0.01 * float(a @ a)
-        return self._obs(), reward, False, self.t >= 30, {}
-
-
-gym.register("TestPointMass-v0", entry_point=PointMass, max_episode_steps=30)
-
-
 class _PointMassState(NamedTuple):
     pos: jax.Array
     vel: jax.Array
@@ -99,7 +67,8 @@ class _PointMassState(NamedTuple):
 
 
 class PointMassEnv:
-    """JAX twin of the Gymnasium PointMass above: same dynamics, reward, bounds and 30-step truncation."""
+    """Two dimensional point mass which has to reach the origin; actions are accelerations with asymmetric bounds.
+    Truncated after 30 steps."""
 
     observation_dim, action_dim = 4, 2
     action_low = np.array([-1.0, -2.0], np.float32)

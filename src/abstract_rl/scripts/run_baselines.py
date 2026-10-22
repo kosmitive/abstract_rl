@@ -23,7 +23,6 @@ import os
 from datetime import datetime
 from typing import Any
 
-import gymnasium as gym
 import numpy as np
 
 from abstract_rl.scripts.hydra_conf import steps as steps_budget
@@ -236,6 +235,7 @@ def _budget(env_id: str, steps: int | None) -> int:
 
 def evaluate(model: Any, env_id: str, episodes: int = 20, seed: int = 10_000, norm: Any = None) -> np.ndarray:
     """Returns of ``episodes`` greedy episodes on the unmodified environment."""
+    import gymnasium as gym  # optional (`baselines` extra): the library itself does not depend on Gymnasium
 
     env = gym.make(env_id)
     returns = []
@@ -262,6 +262,7 @@ def run(
     hyper: dict[str, Any] | None = None,
 ) -> str:
     """Train and evaluate one run, returns the run directory."""
+    import gymnasium as gym
     import torch
     from stable_baselines3.common.monitor import Monitor
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize

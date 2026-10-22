@@ -1,6 +1,6 @@
-import gymnasium as gym
 import pytest
 
+from abstract_rl.env.jax_envs import make_env
 from abstract_rl.scripts.hydra_conf import CONFIG_DIR, load, run_dict
 
 ENVS = sorted(path.stem for path in (CONFIG_DIR / "env").glob("*.yaml"))
@@ -11,7 +11,7 @@ ALGS = ("mpo", "trpo")
 @pytest.mark.parametrize("alg", ALGS)
 def test_composed_config_names_a_registered_environment(env, alg):
     conf = run_dict(load([f"env={env}", f"alg={alg}"]))
-    assert gym.spec(conf["env_name"]).id == conf["env_name"]
+    assert make_env(conf["env_name"]) is not None
 
 
 def test_deliberate_environment_overrides():

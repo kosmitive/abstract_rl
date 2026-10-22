@@ -4,10 +4,13 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
-(environment wrapper, trajectory operators, policies, value functions). Python 3.13, [uv](https://docs.astral.sh/uv/),
-ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
-Stable-Baselines3.
+Modular [JAX](https://docs.jax.dev) ([Equinox](https://docs.kidger.site/equinox/), [Optax](https://optax.readthedocs.io))
+implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces (environment
+wrapper, trajectory operators, policies, value functions). Python 3.12+, [uv](https://docs.astral.sh/uv/), ruff, mypy.
+The environments are jittable JAX ports ([gymnax](https://github.com/RobertTLange/gymnax),
+[Brax](https://github.com/google/brax) with MJX, [MuJoCo Playground](https://github.com/google/mujoco_playground)), so
+a whole epoch, rollouts included, is one jitted program and many seeds train at once under `vmap`. The library depends
+on neither PyTorch nor Gymnasium; both are only used by the optional Stable-Baselines3 baselines.
 
 | MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 | MPO on InvertedPendulum-v5 |
 |---|---|---|
@@ -27,20 +30,21 @@ The GIFs show one greedy episode of the best MPO policy per environment (highest
 
 ```bash
 git clone https://github.com/kosmitive/abstract_rl.git && cd abstract_rl
-uv sync                                   # add --extra mujoco and/or baselines for the benchmark extras
+uv sync                     # CPU
+uv sync --extra mps         # plus the Metal backend for JAX on Apple silicon
+uv sync --extra baselines   # plus Stable-Baselines3, SB3-Contrib and Gymnasium for the baseline runner
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
-PyTorch comes from the CPU wheel index (enough for these small networks); remove the `[tool.uv.sources]` entry in
-`pyproject.toml` for the default CUDA build.
-
 ## JAX: many seeds at once
 
-TRPO trains all seeds in one jitted, vmapped program:
+TRPO and MPO train all seeds in one jitted, vmapped program:
 
 ```bash
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seeds=[1,2,3,4]
+uv run python -m abstract_rl.scripts.run env=pendulum alg=mpo seeds=[1,2,3,4]
 uv run python -m abstract_rl.scripts.bench_jax --env pendulum --seeds 1 4 16 --epochs 6   # throughput
+uv run python -m abstract_rl.scripts.bench_jax --alg mpo --env pendulum --seeds 1 4 --epochs 4
 ```
 
 The `mps` extra (`uv sync --extra mps`) installs the Metal backend for JAX, selected with `jax_platform=mps`. Metal
@@ -62,9 +66,37 @@ TRPO (default config, one seed). Its steady state is `6 * 4000 / (T12 - T6)`, wh
 the wall times of a 6 and a 12 epoch run, so interpreter startup and imports cancel out (a single 6 epoch run, startup
 included, gives only 1879 env-steps/s).
 Torch HalfCheetah is not measured: the torch MuJoCo env is Gymnasium v5, with different dynamics and rewards. The
-speedup is against the single-seed torch figure. MPO is still the torch implementation; a later plan ports it.
+speedup is against the single-seed torch figure.
+
+MPO on Pendulum (JAX on CPU, `env_sample=1000` steps per epoch, 4 epochs, same machine; the line is steps summed over seeds):
+
+| seeds | JAX env-steps/s (cpu) | first call (compile) | epoch |
+|---|---|---|---|
+| 1 | 610 | 6.6 s | 1.64 s |
+| 4 | 340 | 17.2 s | 11.8 s |
+
+On CPU four MPO seeds are slower per step than one (measured, not yet profiled); the benefit of the batched run is
+one process and one compile for all seeds. Learning matches the torch version: Pendulum reaches about
+-150 after 30k-40k steps.
+
+### Deviations from the torch implementation
+
+The full list with reasons is in the [design spec](docs/superpowers/specs/2026-10-22-jax-port-design.md).
+
+- **D1** Random streams differ from torch and numpy; every draw uses an explicit key.
+- **D2** An epoch overshoots `batch_size` by at most the episode still running in each of the E lanes (E = 1 is
+  identical to torch).
+- **D3** `run.conf` stores the real seed instead of `np.random.randint(1e6)`.
+- **D4** The temperature dual runs in float32 instead of float64.
+- **D5** Environment dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control.
+- **D6** Observations are float32 from the environment on.
+- **D7** When capping drops part of one epoch's episodes, ties between lanes finishing at the same step are broken by
+  lane order.
 
 ## Results
+
+The tables and curves below are the historical **torch implementation (before the JAX port)** (last torch commit
+ab552fb) and Gymnasium v5 environments; the JAX benchmark replaces them.
 
 Configurations are Hydra YAML files in [`src/abstract_rl/conf/`](src/abstract_rl/conf) (`run env=<env> alg=<alg> seed=N`),
 **5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `conf/env/<env>.yaml`).
@@ -121,7 +153,7 @@ runs of the table):
 - **TRPO tuned for InvertedDoublePendulum and HalfCheetah** (see `conf/tune/`): InvertedDoublePendulum 75 × 8000
   steps with a KL trust region of 0.005, HalfCheetah 300 × 4000 steps with a KL trust region of 0.02 and `obs_norm`,
   both without the value L2 penalty (InvertedDoublePendulum 2/5 → 5/5, HalfCheetah 0/5 → 3/5 seeds).
-- Runs were made on Linux and a MacBook (Python 3.13) with one CPU thread; seeds are fixed but
+- Runs were made on Linux and a MacBook (Python 3.13, torch implementation) with one CPU thread; seeds are fixed but
   results are not bit-reproducible across machines.
 
 ## Usage
@@ -222,7 +254,7 @@ If you use this code, please cite the repository (see [`CITATION.cff`](CITATION.
 ```bibtex
 @software{semmler_abstract_rl,
   author = {Semmler, Markus},
-  title  = {Abstract RL: modular PyTorch TRPO and MPO},
+  title  = {Abstract RL: modular JAX TRPO and MPO},
   url    = {https://github.com/kosmitive/abstract_rl},
   year   = {2026}
 }

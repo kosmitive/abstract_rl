@@ -8,13 +8,12 @@ import numpy as np
 def default_settings(num_threads: int = 1) -> None:
     """
     Apply default settings to all.
-    :param num_threads: Number of intra-op threads for torch. The networks are tiny, so a single thread is fastest.
+    :param num_threads: Unused, kept for the callers' signature (the torch thread setting is gone).
     """
     def float_formatter(x: Any) -> str:
         return f"{x: 10.4f}"
 
     np.set_printoptions(formatter={"float_kind": float_formatter})
-    # torch.set_printoptions(profile='full')
 
 
 def _identity(x: jax.Array) -> jax.Array:
