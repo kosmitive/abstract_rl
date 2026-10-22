@@ -1,3 +1,5 @@
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
@@ -28,7 +30,7 @@ class TemporalDifferenceOperator(TrajectoryOperator):
         # get discount
         self.env = mc["env"]
 
-    def transform(self, state: ModelState, trajectory: Trajectory) -> Trajectory:
+    def transform(self, state: ModelState, trajectory: Trajectory, key: Any = None) -> Trajectory:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param state: The traced model state (gives the target v network).

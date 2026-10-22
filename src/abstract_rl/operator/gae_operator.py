@@ -1,3 +1,5 @@
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
@@ -29,7 +31,7 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
         self.env = mc["env"]
         self.gae_lambda = float(self.conf["lambda"])
 
-    def transform(self, state: ModelState, trajectory: Trajectory) -> Trajectory:
+    def transform(self, state: ModelState, trajectory: Trajectory, key: Any = None) -> Trajectory:
         """
         Transform a trajectory with the current instance of the evaluation operator.
         :param state: The traced model state.

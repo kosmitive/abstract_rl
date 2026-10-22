@@ -37,6 +37,11 @@ JAXTYPED_MODULES = [
     "abstract_rl.run.run_seeds",
     "abstract_rl.data_structures.abstract_conf.model_configuration",
     "abstract_rl.run.run_trpo",
+    "abstract_rl.operator.resample_actions_operator",
+    "abstract_rl.operator.retrace_operator",
+    "abstract_rl.operator.np_rew_operator",
+    "abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder",
+    "abstract_rl.policy.non_parametric.non_parametric_policy",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 

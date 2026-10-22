@@ -1,11 +1,13 @@
 from typing import Any
 
-import numpy as np
-import torch
+import jax.numpy as jnp
 
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.misc.typing import DTYPE
 from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy
 
 
@@ -24,33 +26,34 @@ class NonParametricVariationalPolicyBuilder:
         self.non_parametric_variational_init_eta = conf["init_eta"]
         self.non_parametric_policy_max_steps = conf["max_steps"]
         self.max_steps = conf["max_steps"]
-        self.tar_network = mc.get("q_network", True)
-        self.tar_policy = mc.get("policy", True)
-        self.eta: Any = [self.non_parametric_variational_init_eta]
-        self.log = self.mc["log"]
-        self.log.create_field("eta", 1)
 
-    def calc_eta(self) -> None:
+    def init_state(self) -> dict[str, Any]:
+        """The traced temperature, warm started from rnk_init_eta."""
+        return {"eta": jnp.asarray([self.non_parametric_variational_init_eta], DTYPE)}
+
+    def calc_eta(self, state: ModelState, tc: TrajectoryCollection) -> ModelState:
         """
-        Calculate the optimal eta using the find optimal temperature function.
+        Calculate the optimal eta using the find optimal temperature function, over the valid rows of the collection.
         """
-        tc = self.mc.get("tc")
+        t = tc.trajectories()
 
         # append all q values and likelihoods
-        q_tensor = np.concatenate(tuple([q["add_q"] for q in tc.trajectories()]))
+        q_tensor = t["add_q"].reshape((-1, t["add_q"].shape[-1]))
         eta = find_optimal_temperature(
-            torch.Tensor(q_tensor), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
+            q_tensor,
+            self.non_parametric_variational_eps,
+            state.get("eta")[0],
+            self.non_parametric_variational_lr,
+            mask=t.mask.reshape(-1),
         )
+        return state.set("eta", eta)
 
-        self.eta = eta.detach().numpy()
-        self.log.log({"eta": self.eta})
-
-    def build(self, trajectory: Trajectory) -> NonParametricPolicy:
+    def build(self, state: ModelState, trajectory: Trajectory) -> NonParametricPolicy:
         """
         Takes a trajectory or batch data and builds the correct samples.
         :param trajectory: Tje trajectory to transform.
         :return: A non parametric policy.
         """
 
-        exp_samples = trajectory["add_q"] / self.eta
+        exp_samples = trajectory["add_q"] / state.get("eta")
         return NonParametricPolicy(exp_samples)
