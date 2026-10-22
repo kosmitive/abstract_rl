@@ -221,22 +221,20 @@ annotations dict[str, Array]              # "tv", "td", "a", "add_act", "add_q",
 - **Batch building.** `to_batch(fields)` flattens to `[E*L]` and carries `mask` along. Every mean and std then uses
   the mask, so the TRPO advantage normalisation and surrogate means equal the unpadded torch values.
 
-### 6.2 Replay buffer (MPO)
+### 6.2 Replay memory (MPO)
 
-- **Layout.** The buffer is a ring of `C` episode slots with the layout from 6.1, plus a per-slot `insert_id`.
-  - `C = ceil(tc_size / min_episode_len_bound)` is static, with a configurable bound (`tc_max_episodes`). The default
-    is `ceil(tc_size / max_steps) + R_max*E`, which suits envs whose episodes are not much shorter than `max_steps`.
-  - The design checks for overflow and raises on the host instead of silently dropping data.
-- **Capping keeps the exact rule.** New episodes are inserted, then the oldest are dropped until the kept transitions
-  total `tc_size` or fewer, and the newest episode is always kept.
-  - Implementation: sort slots by `insert_id` descending, take a cumulative sum of lengths, and invalidate slots whose
-    cumsum exceeds `tc_size`, except the newest.
-- **Sampling** matches `TrajectoryCollection.sample`: uniform over valid transitions, with replacement.
-  - Implementation: `jax.random.choice` over flat indices with probability `mask / mask.sum()`.
-  - Sorting the indices is skipped because order does not affect the means.
-- **Operators over the whole memory** (resample, ranking, Retrace) vmap over all slots and mask invalid ones.
-- **The temperature dual.** It sees `add_q` of the valid transitions only, through a masked mean in the dual, with
-  `K = res_add_acts`.
+- **Layout.** The replay memory is a `TrajectoryCollection` with one lane of `C` rows. It is a flat ring of
+  transitions compacted from the rollouts, holding only valid rows. Every row has `ends`, `mask`, the annotation
+  `insert_id` (the epoch that inserted it) and the annotation `time` (the rollout step that wrote it).
+  `C = tc_size + 2·R` with `R = env_sample + E·max_steps`.
+- **Insert.** The valid rows of a rollout are compacted lane by lane, so episodes stay contiguous. They are written
+  starting at the ring pointer. If they do not fit before the end, the pointer jumps to 0 first, so no episode wraps.
+- **Capping keeps the exact torch rule.** Episodes are ordered by `(insert_id, time of their last step)`, newest first.
+  The longest newest prefix whose lengths sum to `tc_size` or less is kept, and the newest episode is always kept. Every
+  other row is masked.
+- **Sampling** is uniform over valid rows, with replacement.
+- **Operators.** Resample, ranking and Retrace run over the whole memory lane and are boundary-aware through `ends` and
+  `mask`. The temperature dual only sees valid rows.
 
 ### 6.3 `JaxEnv` protocol and adapters
 
@@ -372,6 +370,7 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 | D4 | The temperature dual runs in float32 instead of float64. Parity is checked at rtol 1e-3. | x64 globally would make MJX and all networks float64, and Metal has no float64. |
 | D5 | Env dynamics come from gymnax, Brax-MJX and Playground ports instead of Gymnasium v5 and dm_control. | Vectorisable, jittable envs |
 | D6 | Observations are float32 from the env on. | Metal has no float64, and the policy already consumes float32. |
+| D7 | When capping drops part of one epoch's episodes, ties between lanes finishing at the same rollout step are broken by lane order. | Lockstep lanes finish episodes simultaneously; torch collected them one after another. |
 
 Anything else that changes behaviour counts as a bug against this spec.
 
@@ -403,3 +402,4 @@ Anything else that changes behaviour counts as a bug against this spec.
   is configurable through `tc_max_episodes`.
 - **Compile time.** The whole epoch is one program, which means a long first compile on MJX. Python's own `max_steps`
   loop is removed, and `lax.scan` keeps the program size independent of T.
+- **Memory resampling.** The E-step resamples every memory row, including the masked ones, because C is about 1.1 × tc_size.

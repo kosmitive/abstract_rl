@@ -98,6 +98,8 @@ class RolloutEnvWrapper:
         max_steps: int,
         batch_size: int,
         exploration: bool = True,
+        num_envs: int | None = None,
+        update_stats: bool = True,
     ) -> tuple[ModelState, TrajectoryCollection, dict[str, Array]]:
         """
         Executes the policy for complete episodes (each at most max_steps long) in E lanes until at least batch_size
@@ -109,9 +111,11 @@ class RolloutEnvWrapper:
         :param max_steps: The maximum number of steps per episode.
         :param batch_size: The minimum number of transitions to collect.
         :param exploration: Sample from the policy if True, otherwise use its mode.
+        :param num_envs: The number of lanes E, or None for ``self.num_envs(batch_size, max_steps)``.
+        :param update_stats: Update the observation statistics and filters if True, otherwise freeze them.
         :return: The new state, the trajectory collection and the rollout metrics.
         """
-        e = self.num_envs(batch_size, max_steps)
+        e = num_envs if num_envs is not None else self.num_envs(batch_size, max_steps)
         length = -(-batch_size // e) + max_steps
         sd, ad = self.observation_dim, self.action_dim
         obs_rms, state_filter, reward_filter = (
@@ -123,10 +127,11 @@ class RolloutEnvWrapper:
         key, k_reset = jax.random.split(key)
         env_state, raw = jax.vmap(self.env.reset)(jax.random.split(k_reset, e))
         active = jnp.ones(e, bool)
-        if self._obs_norm:
+        if self._obs_norm and update_stats:
             obs_rms = obs_rms.update(raw, active)
         cs = self._preprocess(raw, obs_rms)
-        state_filter = state_filter.register(cs, active)
+        if update_stats:
+            state_filter = state_filter.register(cs, active)
 
         def zeros(*shape: int, dtype: Any = DTYPE) -> Array:
             return jnp.zeros((e, length, *shape), dtype)
@@ -141,6 +146,7 @@ class RolloutEnvWrapper:
             "log_likelihoods": zeros(1),
             "ends": zeros(dtype=bool),
             "mask": zeros(dtype=bool),
+            "time": zeros(dtype=jnp.int32),
         }
         carry = (
             jnp.asarray(0),
@@ -177,12 +183,14 @@ class RolloutEnvWrapper:
             stepped, raw_nxt, r, terminated, truncated = jax.vmap(self.env.step)(
                 env_state, a, jax.random.split(k_step, e)
             )
-            if self._obs_norm:
+            if self._obs_norm and update_stats:
                 obs_rms = obs_rms.update(raw_nxt, active)
             nxt = self._preprocess(raw_nxt, obs_rms)
-            state_filter = state_filter.register(nxt, active)
+            if update_stats:
+                state_filter = state_filter.register(nxt, active)
             r_train = self._reward_scale * r + self._reward_offset
-            reward_filter = reward_filter.register(r_train[:, None], active)
+            if update_stats:
+                reward_filter = reward_filter.register(r_train[:, None], active)
 
             t = t + 1
             # only true terminations are stored as done, so truncated episodes can be bootstrapped
@@ -197,6 +205,7 @@ class RolloutEnvWrapper:
                 "log_likelihoods": ll[:, None],
                 "ends": end,
                 "mask": active,
+                "time": jnp.full(e, i, jnp.int32),
             }
             # index i is written once, so selecting on the slice instead of the whole buffer gives identical outputs
             buf = {
@@ -210,10 +219,11 @@ class RolloutEnvWrapper:
             cont = finished & (count < batch_size)
             active = active & ~(finished & (count >= batch_size))
             reset_state, reset_raw = jax.vmap(self.env.reset)(jax.random.split(k_reset, e))
-            if self._obs_norm:
+            if self._obs_norm and update_stats:
                 obs_rms = obs_rms.update(reset_raw, cont)
             reset_cs = self._preprocess(reset_raw, obs_rms)
-            state_filter = state_filter.register(reset_cs, cont)
+            if update_stats:
+                state_filter = state_filter.register(reset_cs, cont)
             env_state = _lane_where(cont, reset_state, _lane_where(active, stepped, env_state))
             cs = jnp.where(cont[:, None], reset_cs, nxt)
             t = jnp.where(cont, 0, t)
@@ -230,6 +240,7 @@ class RolloutEnvWrapper:
             buf["log_likelihoods"],
             buf["ends"],
             buf["mask"],
+            annotations={"time": buf["time"]},
         )
         tc = TrajectoryCollection(self, trajectories)
         stats = tc.episode_stats()
@@ -244,18 +255,21 @@ class RolloutEnvWrapper:
         return state, tc, metrics
 
     def execute_policy_once(
-        self, state: ModelState, key: PRNGKeyArray, max_steps: int, policy: Any, opt: bool = False
+        self,
+        state: ModelState,
+        key: PRNGKeyArray,
+        max_steps: int,
+        policy: Any,
+        opt: bool = False,
+        update_stats: bool = True,
     ) -> tuple[ModelState, Trajectory]:
         """
         Execute a policy once for the maximum number of steps or until the environment terminates.
         :return: The new state and the single-lane trajectory of the episode.
         """
-        saved = self._num_envs
-        self._num_envs = 1
-        try:
-            state, tc, _ = self.execute_policy(state, key, policy, max_steps, 1, exploration=not opt)
-        finally:
-            self._num_envs = saved
+        state, tc, _ = self.execute_policy(
+            state, key, policy, max_steps, 1, exploration=not opt, num_envs=1, update_stats=update_stats
+        )
         return state, jax.tree.map(lambda x: x[0], tc.trajectories())
 
     def close(self) -> None:

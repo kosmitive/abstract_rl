@@ -81,3 +81,20 @@ def test_single_lane_matches_sequential_semantics(make_pendulum_mc):
     env, policy, state = _setup(make_pendulum_mc, env_num_envs=1)
     _, _, m = env.execute_policy(state, KEY, policy, 200, 450)
     assert int(m["steps"]) == 600 and int(np.asarray(m["episode_valid"]).sum()) == 3  # like torch: 3 whole episodes
+
+
+def test_frozen_rollout_keeps_statistics(make_pendulum_mc):
+    env, policy, state = _setup(make_pendulum_mc, obs_norm=True, env_num_envs=2)
+    state, _, _ = env.execute_policy(state, KEY, policy, 200, 400)
+    frozen, _, _ = env.execute_policy(state, jax.random.key(1), policy, 200, 400, update_stats=False)
+    np.testing.assert_allclose(frozen.get("obs_rms").count, state.get("obs_rms").count)
+    np.testing.assert_allclose(frozen.get("obs_rms").mean, state.get("obs_rms").mean)
+    assert int(frozen.get("state_filter")._n) == int(state.get("state_filter")._n)
+
+
+def test_explicit_lane_count_and_time_annotation(make_pendulum_mc):
+    env, policy, state = _setup(make_pendulum_mc, env_num_envs=4)
+    _, tc, _ = env.execute_policy(state, KEY, policy, 200, 200, num_envs=1)
+    t = tc.trajectories()
+    assert t.mask.shape[0] == 1
+    np.testing.assert_array_equal(np.asarray(t["time"][0][:200]), np.arange(200))
