@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -47,3 +48,23 @@ def test_q_val_multi_keeps_the_repeat_interleave_order(make_pendulum_mc):
     multi = q.q_val_multi(states, actions)
     single = jnp.stack([q.q_val(states, actions[:, k : k + 1])[:, 0] for k in range(4)], axis=1)
     np.testing.assert_allclose(multi, single, atol=1e-6)
+
+
+def test_perform_mult_sgd_fits_the_model_of_the_state_not_self(make_pendulum_mc):
+    mc = make_pendulum_mc()
+    with mc["conf"].ns("val"):
+        v = FullyVNeuralNet(mc, jax.random.key(0))
+    modified = jax.tree_util.tree_map(lambda x: x * 0.5 if eqx.is_inexact_array(x) else x, v)
+    state = ModelState.create({"v_network_opt": v.init_opt()}, {"v_network": (modified, modified)})
+    coll = _StubCollection(_v_batch())
+    key = jax.random.key(1)
+    stale, _ = v.perform_mult_sgd(state, key, 1, coll, 32, ["tv"])
+    explicit, _ = modified.perform_mult_sgd(state, key, 1, coll, 32, ["tv"])
+    for a, b in zip(
+        jax.tree_util.tree_leaves(stale.get("v_network")),
+        jax.tree_util.tree_leaves(explicit.get("v_network")),
+        strict=True,
+    ):
+        np.testing.assert_allclose(a, b)
+    # and it moved away from the state's model, not from the stale self
+    assert not np.allclose(stale.get("v_network").net.layers[0].weight, v.net.layers[0].weight, atol=1e-2)

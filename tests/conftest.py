@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")  # tests run on cpu, also when the mps extra is installed
+
 from jaxtyping import install_import_hook
 
 # modules ported to JAX are checked against their jaxtyping annotations at runtime (beartype)

@@ -233,7 +233,9 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         """
         return self
 
-    def entropy(self, state: ModelState | None, batch: Any) -> Float[Array, ""]:
+    def entropy(self, state: ModelState, batch: Any) -> Float[Array, ""]:
+        # the policy is read from ``state`` (like torch ``mc.get``), so differentiate w.r.t. ``state.set("policy", p)``,
+        # not ``self``
         if self.squash:
             # tanh squashed gaussians have no closed form entropy, the gaussian entropy would ignore the jacobian
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")

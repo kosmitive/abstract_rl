@@ -101,6 +101,8 @@ class ContinuousPolicy(Policy, Syncable):
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param state: The traced model state (gives the current policy).
+            The policy is read from ``state`` (like torch ``mc.get``), so differentiate w.r.t.
+            ``state.set("policy", p)``, not ``self``.
         :param batch: Use this batch to estimate objective.
         :return: A un detached version of the objective
         """

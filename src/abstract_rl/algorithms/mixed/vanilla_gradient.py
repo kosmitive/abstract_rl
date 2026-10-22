@@ -51,7 +51,7 @@ class VanillaGradient(eqx.Module):
             model, opt_state, obj, new_obj = model.perform_adam_step(opt, opt_state, s, batch)
             return (model, opt_state, key), jnp.stack([obj, new_obj])
 
-        init = (self, state.get(f"{self.mc_key}_opt"), key)
+        init = (state.get(self.mc_key), state.get(f"{self.mc_key}_opt"), key)
         (model, opt_state, _), objs = jax.lax.scan(step, init, jnp.arange(num_steps))
         state = state.set(self.mc_key, model).set(f"{self.mc_key}_opt", opt_state)
         return state, {"k_pre_post": objs}
