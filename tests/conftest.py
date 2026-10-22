@@ -5,6 +5,7 @@ JAXTYPED_MODULES = [
     "abstract_rl.misc.typing",
     "abstract_rl.algorithms.mixed.conjugate_gradient",
     "abstract_rl.misc.flat_params",
+    "abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
