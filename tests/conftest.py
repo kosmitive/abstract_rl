@@ -27,6 +27,10 @@ JAXTYPED_MODULES = [
     "abstract_rl.data_structures.temporal_difference_data.trajectory",
     "abstract_rl.data_structures.temporal_difference_data.trajectory_collection",
     "abstract_rl.env.mcmc_env_wrapper",
+    "abstract_rl.operator.trajectory_operator",
+    "abstract_rl.operator.td_operator",
+    "abstract_rl.operator.gae_operator",
+    "abstract_rl.operator.filter_operator",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 

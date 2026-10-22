@@ -1,3 +1,6 @@
+import jax
+
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 
@@ -7,22 +10,23 @@ class TrajectoryOperator:
     A simple evaluation operator interface.
     """
 
-    def transform(self, trajectory: Trajectory) -> None:
+    def transform(self, state: ModelState, trajectory: Trajectory) -> Trajectory:
         """
-        Transform a trajectory with the current instance of the evaluation operator.
+        Transform a trajectory (one lane) with the current instance of the evaluation operator.
+        :param state: The traced model state.
         :param trajectory: trajectory to transform.
+        :return: The transformed trajectory.
         """
 
         raise NotImplementedError
 
-    def transform_all(self, trajectories: TrajectoryCollection | list[Trajectory]) -> None:
+    def transform_all(self, state: ModelState, trajectories: TrajectoryCollection) -> TrajectoryCollection:
         """
-        Transform a trajectory with the current instance of the evaluation operator.
+        Transform all lanes of a collection with the current instance of the evaluation operator.
+        :param state: The traced model state.
         :param trajectories: trajectories to transform.
         """
 
-        if isinstance(trajectories, TrajectoryCollection):
-            trajectories = trajectories.trajectories()
-
-        for trajectory in trajectories:
-            self.transform(trajectory)
+        return trajectories.with_trajectories(
+            jax.vmap(lambda trajectory: self.transform(state, trajectory))(trajectories.trajectories())
+        )
