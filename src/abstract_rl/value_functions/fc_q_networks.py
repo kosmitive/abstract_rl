@@ -13,27 +13,32 @@
 #  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 #  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+from typing import Any
+
+import equinox as eqx
+import jax.numpy as jnp
 import numpy as np
-import torch
-import torch.nn as nn
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch, batch_mask, masked_mean
+from abstract_rl.misc.typing import DTYPE
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
-from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
-from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
 
 
-class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
+class FullyQNeuralNet(VanillaGradient, Syncable):
     """Fully connected neural network."""
 
-    def __init__(self, mc: ModelConfiguration) -> None:
+    batch_size: int = eqx.field(static=True)
+    fc_net: MultilayerPerceptron
+
+    def __init__(self, mc: ModelConfiguration, key: PRNGKeyArray, mc_key: str = "q_network") -> None:
         """Create a new neural network, whereas the structure is passed
         as a list of numbers, representing the size of each fully connected
         layer including the input as well as the output layer."""
-        nn.Module.__init__(self)
 
         conf = mc.get("conf")
 
@@ -50,58 +55,51 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         sd = mc.env.observation_dim
         ad = mc.env.action_dim
 
-        # set the standard act function
-        self.env = mc.env
-        self.mc = mc
-        self.loss = torch.nn.MSELoss()
-
         # neural nets
-        self.fc_net = MultilayerPerceptron(mc, np.concatenate(([sd + ad], struct, [1])), def_fn, layer_norm, init)
-        self.add_module("neural_net", self.fc_net)
+        structure = np.concatenate(([sd + ad], struct, [1]))
+        self.fc_net = MultilayerPerceptron(mc, structure, def_fn, layer_norm, init, key=key)
 
-        # set up trust regions
-        VanillaGradient.__init__(self, self.fc_net, lr=conf.get("lr", 1e-3))
+        # set up the adam fit
+        self.lr = conf.get("lr", 1e-3)
+        self.mc_key = mc_key
 
     def clone(self) -> "FullyQNeuralNet":
-        """Clones the Neural Network"""
-
-        # first of all clone the module using the subclass and
-        # then fill all hierarchically lower elements.
-        v = FullyQNeuralNet(self.mc)
-        self.sync(v)
-        return v
+        """Clones the Neural Network, modules are immutable so the clone is the instance itself."""
+        return self
 
     def sync(self, v: "FullyQNeuralNet") -> "FullyQNeuralNet":
         """Clones the Neural Network"""
+        return self
 
-        self.fc_net.sync(v.fc_net)
-        return v
-
-    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: Float[Array, "D Ds"], actions: Float[Array, "D A"]) -> Float[Array, "D 1"]:
         """Propagate the x in a forward fashion through the network."""
 
         return self.q_val(states, actions)
 
     def v_val(
         self,
-        states: torch.Tensor,
+        state: ModelState,
+        key: PRNGKeyArray,
+        states: Float[Array, "D Ds"],
         exp_actions: int = 10,
-        policy: DiagonalGaussianPolicy | UnivariateGaussianPolicy | None = None,
-    ) -> torch.Tensor:
+        policy: Any = None,
+    ) -> Float[Array, "D 1"]:
         """Estimate v values by averaging q values of actions sampled from the target policy.
 
+        :param state: The traced model state (gives the target policy).
+        :param key: The random key of the action samples.
         :param states: A matrix [D, Ds] of states.
         :param exp_actions: The number of sampled actions K per state.
         :param policy: The policy to evaluate, defaults to the target policy.
         :return: A matrix [D, 1] of v values.
         """
 
-        policy = policy if policy is not None else self.mc.get("policy", True)
-        samp_actions = policy.sample_actions(states, num_actions=exp_actions)
+        policy = policy if policy is not None else state.get("policy", True)
+        samp_actions = policy.sample_actions(key, states, num_actions=exp_actions)
         q_vals = self.q_val_multi(states, samp_actions)
-        return torch.mean(q_vals, dim=1, keepdim=True)
+        return jnp.mean(q_vals, axis=1, keepdims=True)
 
-    def q_val_multi(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def q_val_multi(self, states: Float[Array, "D Ds"], actions: Any) -> Float[Array, "D K"]:
         """Evaluate K actions per state.
 
         :param states: A matrix [D, Ds] of states.
@@ -109,21 +107,21 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         :return: A matrix [D, K] of q values.
         """
         d, k = actions.shape[:2]
-        rep_states = states.repeat_interleave(k, dim=0)
+        rep_states = jnp.repeat(jnp.asarray(states, DTYPE), k, axis=0)
         q_vals = self.q_val(rep_states, actions.reshape([d * k, -1]))
-        return q_vals.view([d, k])
+        return q_vals.reshape([d, k])
 
-    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def q_val(self, states: Float[Array, "D Ds"], actions: Float[Array, "D A"]) -> Float[Array, "D 1"]:
 
-        comb = torch.cat([states, actions], dim=1)
+        comb = jnp.concatenate([jnp.asarray(states, DTYPE), jnp.asarray(actions, DTYPE)], axis=1)
         q_vals = self.fc_net.forward(comb)
         return q_vals
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
+    def tr_obj(self, batch: Batch) -> Float[Array, ""]:
 
         # build up mse loss for q function
-        t_states = torch.Tensor(batch.states)
-        t_actions = torch.Tensor(batch.actions)
-        q_vals = self.q_val(t_states, t_actions).view(-1)
-        q_targets = torch.Tensor(batch["tq"]).view(-1)
-        return self.loss(q_vals, q_targets)
+        t_states = jnp.asarray(batch.states, DTYPE)
+        t_actions = jnp.asarray(batch.actions, DTYPE)
+        q_vals = self.q_val(t_states, t_actions).reshape(-1)
+        q_targets = jnp.asarray(batch["tq"], DTYPE).reshape(-1)
+        return masked_mean((q_vals - q_targets) ** 2, batch_mask(batch))

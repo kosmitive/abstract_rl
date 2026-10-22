@@ -2,12 +2,15 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 
 from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.select_policy import select_policy
+from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
+from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 from golden import golden, load_named, named_parameters, sub
 
 MLP_CASES = {
@@ -113,3 +116,38 @@ def test_diagonal_policy_matches_torch(make_pendulum_mc, name):
     np.testing.assert_allclose(policy.likelihood_ratio(state, batch), g["lr"], rtol=1e-4, atol=1e-6)
     lr_grads = eqx.filter_grad(lambda p: p.likelihood_ratio(state.set("policy", p), batch))(policy)
     _close_grads(lr_grads, sub(golden(f"{name}_lr"), "grads"))
+
+
+def test_v_net_matches_torch(make_pendulum_mc):
+    g = golden("v_net")
+    mc = make_pendulum_mc()
+    with mc["conf"].ns("val"):
+        v = load_named(FullyVNeuralNet(mc, jax.random.key(0)), sub(g, "params"))
+    n = len(g["states"])
+    z = jnp.zeros((n, 1))
+    batch = Batch(jnp.asarray(g["states"]), z, z, z, jnp.asarray(g["states"]), z, {"tv": jnp.asarray(g["tv"])})
+    np.testing.assert_allclose(v.forward(jnp.asarray(g["states"])), g["forward"], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(v.tr_obj(batch), g["obj"], rtol=1e-5)
+    _close_grads(eqx.filter_grad(lambda m: m.tr_obj(batch))(v), sub(g, "grads"))
+    opt = optax.adam(v.lr)
+    opt_state = v.init_opt()
+    for s in range(3):
+        v, opt_state, _, _ = v.perform_adam_step(opt, opt_state, s, batch)
+    got = named_parameters(v)
+    for k, expected in sub(g, "adam3/params").items():
+        np.testing.assert_allclose(got[k], expected, rtol=1e-4, atol=1e-6, err_msg=k)
+
+
+def test_q_net_matches_torch(make_pendulum_mc):
+    g = golden("q_net")
+    # the golden Q net was built from the MPO conf (val_struct [256, 256], elu), the fixture conf is the TRPO one
+    mc = make_pendulum_mc(alg="mpo", val_struct=[256, 256], val_act_fn=["elu", "elu", "none"])
+    with mc["conf"].ns("val"):
+        q = load_named(FullyQNeuralNet(mc, jax.random.key(0)), sub(g, "params"))
+    s, a = jnp.asarray(g["states"]), jnp.asarray(g["actions"])
+    z = jnp.zeros((len(s), 1))
+    batch = Batch(s, a, z, z, s, z, {"tq": jnp.asarray(g["tq"])})
+    np.testing.assert_allclose(q.q_val(s, a), g["q_val"], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(q.q_val_multi(s, jnp.asarray(g["add_actions"])), g["q_val_multi"], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(q.tr_obj(batch), g["obj"], rtol=1e-5)
+    _close_grads(eqx.filter_grad(lambda m: m.tr_obj(batch))(q), sub(g, "grads"))
