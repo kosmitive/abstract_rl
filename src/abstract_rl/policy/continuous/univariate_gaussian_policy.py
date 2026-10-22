@@ -117,13 +117,18 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             # softplus(bias) + SIGMA_MIN = policy_sigma, matching the std single and fixed start from
             raw = math.log(math.expm1(float(run_conf.get("sigma", 1.0)) - SIGMA_MIN))
             bias = network.layers[-1].bias
+            assert bias is not None
             network = eqx.tree_at(lambda n: n.layers[-1].bias, network, bias.at[1].set(raw))
         self.network = network
 
     @property
     def cov_variable(self) -> Float[Array, "1 1"]:
         """The log standard deviation of the single and fixed covariance types."""
-        return self.cov if self.cov_type == "single" else jnp.full([1, 1], self._fixed_cov, DTYPE)
+        if self.cov_type == "single":
+            assert self.cov is not None
+            return self.cov
+        assert self._fixed_cov is not None
+        return jnp.full([1, 1], self._fixed_cov, DTYPE)
 
     def get_suff_stats_dim(self) -> int:
         """

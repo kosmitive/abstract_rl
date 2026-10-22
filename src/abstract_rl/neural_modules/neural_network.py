@@ -1,5 +1,5 @@
 import math as m
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import equinox as eqx
@@ -73,8 +73,9 @@ class MultilayerPerceptron(eqx.Module, Syncable):
         This method can be used to initialize a layer
         """
 
-        layers = [eqx.tree_at(lambda la: la.bias, layer, jnp.zeros_like(layer.bias)) for layer in layers]
+        layers = [eqx.tree_at(lambda la: la.bias, layer, jnp.zeros(layer.out_features, DTYPE)) for layer in layers]
         normal, uniform = jax.random.normal, jax.random.uniform
+        w_init: Callable[..., Array]
         if init == "xavier_gaussian":
             w_init = jax.nn.initializers.variance_scaling(1.0, "fan_avg", "normal", in_axis=-1, out_axis=-2)
 
@@ -118,7 +119,9 @@ class MultilayerPerceptron(eqx.Module, Syncable):
 
         # apply layer norm if wanted (torch nn.LayerNorm created per call: unit weight, zero bias, eps 1e-5)
         out = x
-        out = out @ self.layers[0].weight.T + self.layers[0].bias
+        bias0 = self.layers[0].bias
+        assert bias0 is not None
+        out = out @ self.layers[0].weight.T + bias0
         if self.layer_norm:
             mean = jnp.mean(out, axis=-1, keepdims=True)
             var = jnp.var(out, axis=-1, keepdims=True)
@@ -130,7 +133,9 @@ class MultilayerPerceptron(eqx.Module, Syncable):
         num_layers = len(self.layers)
         for layer_idx in range(1, num_layers):
             # assemble linear part, layer norm and activation for each layer
-            linear_f = out @ self.layers[layer_idx].weight.T + self.layers[layer_idx].bias
+            bias = self.layers[layer_idx].bias
+            assert bias is not None
+            linear_f = out @ self.layers[layer_idx].weight.T + bias
             act = self.act_fn[layer_idx] if len(self.act_fn) > 1 else self.act_fn[0]
             if isinstance(act, tuple):
                 splitted_ts = [linear_f[..., i : i + 1] for i in range(linear_f.shape[-1])]

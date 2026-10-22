@@ -176,6 +176,7 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             # softplus(bias) + SIGMA_MIN = policy_sigma, matching the std single and fixed start from
             raw = math.log(math.expm1(float(run_conf.get("sigma", 1.0)) - SIGMA_MIN))
             layer = network.layers[-1]
+            assert layer.bias is not None
             # covariance outputs are the bias alone, so sigma and L(s) = policy_sigma * I at every state
             weight = layer.weight.at[a_dim:].set(0.0)
             if self.cov_type == "state":
@@ -224,7 +225,11 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
             sigma = jnp.maximum(sigma, SIGMA_MIN) if self._sigma_is_softplus else jax.nn.softplus(sigma) + SIGMA_MIN
         else:
             mu = self.network.forward(states)
-            log_sigma = self.cov if self.cov_type == "single" else jnp.asarray(self._fixed_cov, DTYPE)[None]
+            if self.cov_type == "single":
+                assert self.cov is not None
+                log_sigma = self.cov
+            else:
+                log_sigma = jnp.asarray(self._fixed_cov, DTYPE)[None]
             sigma = jnp.broadcast_to(jnp.exp(log_sigma), mu.shape)
         return jnp.concatenate([mu, sigma], axis=1)
 

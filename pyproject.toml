@@ -108,3 +108,8 @@ warn_return_any = false
 # optional extra `baselines`, only imported by scripts/run_baselines.py
 module = ["stable_baselines3.*", "sb3_contrib.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# optax ships no type information
+module = ["optax.*"]
+ignore_missing_imports = true
