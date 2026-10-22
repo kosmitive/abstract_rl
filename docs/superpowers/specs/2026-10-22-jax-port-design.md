@@ -167,7 +167,9 @@ Not required and therefore unchanged:
 - the `cli.header` structure of the run loops;
 - recomputing target statistics several times in MPO, which XLA eliminates as common subexpressions.
 
-### Optional improvements (P): proposed, applied only if approved
+### Optional improvements (P)
+
+**Accepted on 2026-10-22: P1, P2 (default `epochs_per_call: 1`), P3 and P6. Rejected: P4 and P5.**
 
 | ID | Proposal | Benefit | Logic impact |
 |---|---|---|---|
