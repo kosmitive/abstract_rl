@@ -1,10 +1,14 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
-from golden import golden, load_named, sub
+from abstract_rl.policy.continuous.select_policy import select_policy
+from golden import golden, load_named, named_parameters, sub
 
 MLP_CASES = {
     "tanh_tanh_none": ([3, 64, 64, 2], ["tanh", "tanh", "none"], False, "xavier_gaussian"),
@@ -22,3 +26,68 @@ def test_mlp_forward_matches_torch(make_pendulum_mc, name):
     net = MultilayerPerceptron(make_pendulum_mc(), np.array(structure), act_fn, layer_norm, init, key=jax.random.key(0))
     net = load_named(net, sub(g, "params"))
     np.testing.assert_allclose(net.forward(jnp.asarray(g["x"])), g["y"], rtol=1e-5, atol=1e-5)
+
+
+POLICY_CASES = {
+    "uni_single_squash": ("Pendulum-v1", {"policy_cov_type": "single", "policy_squash": True}),
+    "uni_state_nosquash": ("Pendulum-v1", {"policy_cov_type": "state", "policy_squash": False}),
+    "uni_fixed_squash": ("Pendulum-v1", {"policy_cov_type": "fixed", "policy_squash": True, "policy_sigma": 0.5}),
+    "diag_single_squash": ("TestPointMass-v0", {"policy_cov_type": "single", "policy_squash": True}),
+    "diag_state_squash": ("TestPointMass-v0", {"policy_cov_type": "state", "policy_squash": True}),
+    "diag_full_squash": ("TestPointMass-v0", {"policy_cov_type": "full", "policy_squash": True}),
+    "diag_full_nosquash": ("TestPointMass-v0", {"policy_cov_type": "full", "policy_squash": False}),
+}
+
+
+def _golden_policy(make_pendulum_mc, name):
+    env, overrides = POLICY_CASES[name]
+    mc = make_pendulum_mc(env_name=env, **overrides)
+    with mc["conf"].ns("policy"):
+        fresh = select_policy(mc, jax.random.key(0))
+    g = golden(name)
+    policy, target = load_named(fresh, sub(g, "params")), load_named(fresh, sub(g, "target"))
+    return policy, ModelState.create({}, {"policy": (policy, target)}), g
+
+
+def _batch(g):
+    n = len(g["states"])
+    z = jnp.zeros((n, 1))
+    return Batch(
+        jnp.asarray(g["states"]),
+        jnp.asarray(g["single"]),
+        jnp.asarray(g["lls"]),
+        z,
+        jnp.asarray(g["states"]),
+        z,
+        {"a": jnp.asarray(g["a"])},
+    )
+
+
+def _close_grads(grads, expected):
+    got = named_parameters(grads)
+    assert set(got) == set(expected)
+    for k in expected:
+        np.testing.assert_allclose(got[k], expected[k], rtol=1e-4, atol=1e-5, err_msg=k)
+
+
+@pytest.mark.parametrize("name", [n for n in POLICY_CASES if n.startswith("uni")])
+def test_univariate_policy_matches_torch(make_pendulum_mc, name):
+    policy, state, g = _golden_policy(make_pendulum_mc, name)
+    states, stats = jnp.asarray(g["states"]), policy.forward(jnp.asarray(g["states"]))
+    np.testing.assert_allclose(stats, g["stats"], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(policy.log_prob(jnp.asarray(g["actions"]), suff_stats=stats), g["lp"], atol=1e-4)
+    np.testing.assert_allclose(policy.log_prob(jnp.asarray(g["single"]), states=states), g["lp1"], atol=1e-4)
+    np.testing.assert_allclose(policy.mode(states=states), g["mode"], atol=1e-6)
+    batch = _batch(g)
+    for mode in ("i", "m"):
+        for est in ("mean", "sum"):
+            kl = policy.kl_divergence(state, batch, mode=f"{mode}-projection", est=est)
+            np.testing.assert_allclose(kl, g[f"kl_{mode}_{est}"], rtol=1e-4, atol=1e-6)
+    if "entropy" in g:
+        np.testing.assert_allclose(policy.entropy(state, batch), g["entropy"], rtol=1e-5)
+    grads = eqx.filter_grad(lambda p: p.kl_divergence(state, batch, mode="m-projection", est="mean"))(policy)
+    _close_grads(grads, sub(g, "grads"))
+    lr = policy.likelihood_ratio(state, batch)
+    np.testing.assert_allclose(lr, g["lr"], rtol=1e-4, atol=1e-6)
+    lr_grads = eqx.filter_grad(lambda p: p.likelihood_ratio(state.set("policy", p), batch))(policy)
+    _close_grads(lr_grads, sub(golden(f"{name}_lr"), "grads"))

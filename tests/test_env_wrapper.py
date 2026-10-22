@@ -5,7 +5,7 @@ from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateG
 
 # the torch policies / value nets build the ported (Equinox) MLP;
 # re-enabled when their port lands (plan 1 tasks 8-10 / plan 2)
-pytestmark = pytest.mark.skip(reason="porting to JAX: torch modules on the ported MLP")
+pytestmark = pytest.mark.skip(reason="porting to JAX: re-enabled in plan 2")
 
 
 def _env_and_policy(make_pendulum_mc):

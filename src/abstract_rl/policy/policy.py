@@ -1,17 +1,12 @@
-import torch
-from torch.nn import Module
+from typing import Any
 
-from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+import equinox as eqx
 
 
-class Policy(Module):
+class Policy(eqx.Module):
     """
     Represents a policy, e.g a gaussian policy or a eps greedy policy
     """
-
-    def __init__(self, mc: ModelConfiguration) -> None:
-        Module.__init__(self)
-        self.mc = mc
 
     def get_suff_stats_dim(self) -> int:
         """
@@ -20,7 +15,7 @@ class Policy(Module):
         """
         raise NotImplementedError
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: Any) -> Any:
         """
         Simply produces sufficient statistics of the policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
@@ -28,11 +23,10 @@ class Policy(Module):
         """
         raise NotImplementedError
 
-    def sample_actions(
-        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
-    ) -> torch.Tensor:
+    def sample_actions(self, key: Any, states: Any = None, suff_stats: Any = None, num_actions: int = 1) -> Any:
         """
         Can be used to obtain action samples for all states.
+        :param key: The random key.
         :param states: A matrix of size [D, Ds]. If this None => suff_states not None
         :param suff_stats: A matrix of size [D, get_suff_stats_dim()] containing suff stats.
             If this None => states is not None

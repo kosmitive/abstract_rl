@@ -9,6 +9,9 @@ JAXTYPED_MODULES = [
     "abstract_rl.data_structures.temporal_difference_data.batch",
     "abstract_rl.data_structures.abstract_conf.model_state",
     "abstract_rl.neural_modules.neural_network",
+    "abstract_rl.policy.policy",
+    "abstract_rl.policy.continuous.continuous_policy",
+    "abstract_rl.policy.continuous.univariate_gaussian_policy",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
