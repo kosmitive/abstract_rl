@@ -187,11 +187,11 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         self.network = network
 
     @property
-    def _center(self) -> Float[Array, "A"]:
+    def _center(self) -> Float[Array, " A"]:
         return jnp.asarray(self.action_center, DTYPE)
 
     @property
-    def _scale(self) -> Float[Array, "A"]:
+    def _scale(self) -> Float[Array, " A"]:
         return jnp.asarray(self.action_scale, DTYPE)
 
     def get_suff_stats_dim(self) -> int:

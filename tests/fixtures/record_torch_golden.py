@@ -1,8 +1,9 @@
 """Record reference outputs of the PyTorch implementation for the JAX parity tests (tests/test_parity_*.py).
 
 Run on the last torch commit. After the port removes torch, re-record from a worktree of that commit:
-    git worktree add ../abstract_rl_torch 8d3dc51
-    cd ../abstract_rl_torch && uv run python tests/fixtures/record_torch_golden.py <repo>/tests/fixtures/torch_golden.npz
+    git worktree add ../abstract_rl_torch 4f7828e
+    cd ../abstract_rl_torch
+    uv run python tests/fixtures/record_torch_golden.py <repo>/tests/fixtures/torch_golden.npz
 """
 
 import copy
@@ -16,30 +17,33 @@ import torch
 from torch.distributions import MultivariateNormal, Normal
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import conftest  # noqa: E402,F401  (registers TestPointMass-v0)
-
-from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (  # noqa: E402
+import conftest  # noqa: F401  (registers TestPointMass-v0)
+from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
     MPOAlgorithm,
 )
-from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm  # noqa: E402
-from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient  # noqa: E402
-from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature  # noqa: E402
-from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration  # noqa: E402
-from abstract_rl.data_structures.temporal_difference_data.batch import Batch  # noqa: E402
-from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder  # noqa: E402
-from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper  # noqa: E402
-from abstract_rl.misc.data_logger import DataLogger  # noqa: E402
-from abstract_rl.misc.running_centered_filter import RunningCenteredFilter  # noqa: E402
-from abstract_rl.neural_modules.neural_network import MultilayerPerceptron  # noqa: E402
-from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator  # noqa: E402
-from abstract_rl.operator.resample_actions_operator import ResampleOperator  # noqa: E402
-from abstract_rl.operator.retrace_operator import RetraceOperator  # noqa: E402
-from abstract_rl.operator.td_operator import TemporalDifferenceOperator  # noqa: E402
-from abstract_rl.policy.continuous.select_policy import select_policy  # noqa: E402
-from abstract_rl.scripts.mpo_pendulum import run_config as mpo_config  # noqa: E402
-from abstract_rl.scripts.trpo_pendulum import run_config as trpo_config  # noqa: E402
-from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet  # noqa: E402
-from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet  # noqa: E402
+from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import (
+    TRPOAlgorithm,
+)
+from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
+from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import (
+    find_optimal_temperature,
+)
+from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
+from abstract_rl.misc.data_logger import DataLogger
+from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
+from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
+from abstract_rl.operator.gae_operator import GeneralizedAdvantagesEstimationOperator
+from abstract_rl.operator.resample_actions_operator import ResampleOperator
+from abstract_rl.operator.retrace_operator import RetraceOperator
+from abstract_rl.operator.td_operator import TemporalDifferenceOperator
+from abstract_rl.policy.continuous.select_policy import select_policy
+from abstract_rl.scripts.mpo_pendulum import run_config as mpo_config
+from abstract_rl.scripts.trpo_pendulum import run_config as trpo_config
+from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
+from abstract_rl.value_functions.fc_v_networks import FullyVNeuralNet
 
 OUT: dict[str, np.ndarray] = {}
 
@@ -137,7 +141,9 @@ def record_policy(root: str, name: str, env: str, overrides: dict) -> None:
         for m in ("i-projection", "m-projection")
         for e in ("mean", "sum")
     }
-    put(name, states=states, stats=stats, actions=actions, lp=lp, single=single, lp1=lp1, mode=mode, lls=lls, a=a, **kls)
+    put(
+        name, states=states, stats=stats, actions=actions, lp=lp, single=single, lp1=lp1, mode=mode, lls=lls, a=a, **kls
+    )
     if not policy.squash:
         put(name, entropy=policy.entropy(batch).detach())
     policy.zero_grad()

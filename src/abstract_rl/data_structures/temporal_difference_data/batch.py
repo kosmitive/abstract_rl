@@ -5,11 +5,11 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float
 
 
-def _broadcast_mask(x: Array, mask: Bool[Array, "N"]) -> Array:
+def _broadcast_mask(x: Array, mask: Bool[Array, " N"]) -> Array:
     return jnp.broadcast_to(mask.reshape(mask.shape + (1,) * (x.ndim - mask.ndim)), x.shape)
 
 
-def masked_mean(x: Array, mask: Bool[Array, "N"] | None) -> Float[Array, ""]:
+def masked_mean(x: Array, mask: Bool[Array, " N"] | None) -> Float[Array, ""]:
     """Mean over all entries whose leading index is valid. Padded entries never reach the value or the gradient."""
     if mask is None:
         return jnp.mean(x)
@@ -17,7 +17,7 @@ def masked_mean(x: Array, mask: Bool[Array, "N"] | None) -> Float[Array, ""]:
     return jnp.sum(jnp.where(m, x, 0.0)) / jnp.sum(m)
 
 
-def masked_std(x: Array, mask: Bool[Array, "N"] | None) -> Float[Array, ""]:
+def masked_std(x: Array, mask: Bool[Array, " N"] | None) -> Float[Array, ""]:
     """Unbiased standard deviation (torch ``Tensor.std()``) over the valid entries."""
     if mask is None:
         return jnp.std(x, ddof=1)
@@ -32,7 +32,7 @@ def batch_mask(batch: Any) -> Any:
     return getattr(batch, "mask", None)
 
 
-def masked_reduce(x: Array, mask: Bool[Array, "N"] | None, est: str) -> Float[Array, ""]:
+def masked_reduce(x: Array, mask: Bool[Array, " N"] | None, est: str) -> Float[Array, ""]:
     """``est`` = "sum" or "mean" over the valid entries."""
     if est == "sum":
         return jnp.sum(x) if mask is None else jnp.sum(jnp.where(_broadcast_mask(x, mask), x, 0.0))

@@ -6,8 +6,8 @@ from jaxtyping import Array, Bool, Float, Int
 
 
 def conjugate_gradient(
-    A: Callable[[Float[Array, "n"]], Float[Array, "n"]], b: Float[Array, "n"], max_k: int = 10, tol: float = 1e-10
-) -> Float[Array, "n"]:
+    A: Callable[[Float[Array, " n"]], Float[Array, " n"]], b: Float[Array, " n"], max_k: int = 10, tol: float = 1e-10
+) -> Float[Array, " n"]:
     """
     Implementation of conjugate gradient algorithm. It uses vector matrix products for efficient calculation. See
     https://en.wikipedia.org/wiki/Conjugate_gradient_method for more details of the algorithm. See also
@@ -27,7 +27,9 @@ def conjugate_gradient(
     k = 0
     rdotr = jnp.dot(r, r)
 
-    Carry = tuple[Int[Array, ""], Float[Array, "n"], Float[Array, "n"], Float[Array, "n"], Float[Array, ""], Bool[Array, ""]]
+    Carry = tuple[
+        Int[Array, ""], Float[Array, " n"], Float[Array, " n"], Float[Array, " n"], Float[Array, ""], Bool[Array, ""]
+    ]
 
     def cond(carry: Carry) -> Bool[Array, ""]:
         k, _, _, _, _, converged = carry

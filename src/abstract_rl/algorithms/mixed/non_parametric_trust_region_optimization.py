@@ -7,12 +7,12 @@ from jaxtyping import Array, Bool, Float, Int
 from abstract_rl.misc.typing import DTYPE
 
 
-def _mean(x: Float[Array, "N"], mask: Bool[Array, "N"] | None) -> Float[Array, ""]:
+def _mean(x: Float[Array, " N"], mask: Bool[Array, " N"] | None) -> Float[Array, ""]:
     return jnp.mean(x) if mask is None else jnp.sum(jnp.where(mask, x, 0.0)) / jnp.sum(mask)
 
 
 def temperature_dual(
-    q_tensor: Float[Array, "N K"], eta: Float[Array, "1"], eps: float, mask: Bool[Array, "N"] | None = None
+    q_tensor: Float[Array, "N K"], eta: Float[Array, "1"], eps: float, mask: Bool[Array, " N"] | None = None
 ) -> Float[Array, "1"]:
     """
     Dual function of the non parametric E-step for a fixed temperature, see https://arxiv.org/abs/1806.06920.
@@ -36,7 +36,7 @@ def find_optimal_temperature(
     eta0: float | Float[Array, ""] = 1.0,
     lr: float = 0.05,
     max_steps: int = 200,
-    mask: Bool[Array, "N"] | None = None,
+    mask: Bool[Array, " N"] | None = None,
 ) -> Float[Array, "1"]:
     """
     Uses a batch of data to find the optimal temperature eta for reweighting by minimizing the convex dual with Adam.
