@@ -22,11 +22,10 @@ def test_trpo_pendulum_smoke(trpo_conf, tmp_path):
     assert list(tmp_path.glob("Pendulum-v1/trpo/*/model/last/policy.eqx"))
 
 
-@pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3")
 def test_mpo_pendulum_smoke(mpo_conf, tmp_path):
     returns = run_mpo_non_parametric(mpo_conf)
     _check_returns(returns, mpo_conf["num_epochs"])
-    assert list(tmp_path.glob("Pendulum-v1/mpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("Pendulum-v1/mpo/*/model/last/policy.eqx"))
 
 
 @pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3 (checkpoints and eval)")
@@ -54,11 +53,10 @@ def test_trpo_with_two_dimensional_actions_smoke(trpo_conf, tmp_path):
     assert list(tmp_path.glob("TestPointMass-v0/trpo/*/model/last/policy.eqx"))
 
 
-@pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3")
 def test_mpo_with_two_dimensional_actions_smoke(mpo_conf, tmp_path):
     mpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "env_sample": 300})
     _check_multi_dimensional(run_mpo_non_parametric(mpo_conf), mpo_conf["num_epochs"])
-    assert list(tmp_path.glob("TestPointMass-v0/mpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("TestPointMass-v0/mpo/*/model/last/policy.eqx"))
 
 
 @pytest.mark.skip(reason="porting to JAX: re-enabled in plan 3 (checkpoints and eval)")
