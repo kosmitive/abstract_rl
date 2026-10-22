@@ -5,10 +5,14 @@ from os.path import exists, join
 from shutil import copy, copytree
 from typing import Any
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
 import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 
@@ -187,3 +191,30 @@ class ModelConfiguration:
                 o.sync(to)
 
         self.overall_step += 1
+
+    def state(self) -> ModelState:
+        """
+        The traced part of this configuration: every sync able and every main element which is a pytree of arrays
+        (optimiser states, buffers). Host objects like the conf, the logger or the operators stay here.
+        """
+
+        def is_traced(obj: Any) -> bool:
+            leaves = jax.tree.leaves(obj)
+            return len(leaves) > 0 and all(eqx.is_array(leaf) for leaf in leaves)
+
+        data = {k: v for k, v in self.data.items() if is_traced(v)}
+        syncables = {k: (o, to) for k, (_, o, to) in self.syncables.items()}
+        steps = {k: s for k, (s, _, _) in self.syncables.items()}
+        return eqx.tree_at(
+            lambda st: st.overall_step,
+            ModelState.create(data, syncables, steps),
+            jnp.asarray(self.overall_step, jnp.int32),
+        )
+
+    def load_state(self, state: ModelState) -> None:
+        """Write a (host copy of a) traced state back, e.g. before ``store``."""
+        for k, v in state.data.items():
+            self.data[k] = v
+        for k, (o, to) in state.syncables.items():
+            self.syncables[k] = (self.syncables[k][0], o, to)
+        self.overall_step = int(jnp.max(state.overall_step))
