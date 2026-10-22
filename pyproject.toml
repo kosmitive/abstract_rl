@@ -29,6 +29,11 @@ dependencies = [
     "optax>=0.2",
     "jaxtyping>=0.3",
     "beartype>=0.19",
+    "gymnax>=1.0.1",
+    "brax>=0.14.2",
+    "mujoco>=3.16",
+    "mujoco-mjx>=3.16",
+    "playground>=0.2.0",
 ]
 
 [project.urls]

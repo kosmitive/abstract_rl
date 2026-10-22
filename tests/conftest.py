@@ -21,15 +21,20 @@ JAXTYPED_MODULES = [
     "abstract_rl.algorithms.mixed.vanilla_gradient",
     "abstract_rl.value_functions.fc_v_networks",
     "abstract_rl.value_functions.fc_q_networks",
+    "abstract_rl.env.jax_envs",
 ]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
 import copy
+from typing import NamedTuple
 
 import gymnasium as gym
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from abstract_rl.env.jax_envs import register_env
 from abstract_rl.scripts.mpo_pendulum import run_config as mpo_config
 from abstract_rl.scripts.trpo_pendulum import run_config as trpo_config
 
@@ -63,6 +68,37 @@ class PointMass(gym.Env):
 
 
 gym.register("TestPointMass-v0", entry_point=PointMass, max_episode_steps=30)
+
+
+class _PointMassState(NamedTuple):
+    pos: jax.Array
+    vel: jax.Array
+    t: jax.Array
+
+
+class PointMassEnv:
+    """JAX twin of the Gymnasium PointMass above: same dynamics, reward, bounds and 30-step truncation."""
+
+    observation_dim, action_dim = 4, 2
+    action_low = np.array([-1.0, -2.0], np.float32)
+    action_high = np.array([1.0, 2.0], np.float32)
+    obs_high = np.full(4, np.inf, np.float32)
+
+    def reset(self, key):
+        pos = jax.random.uniform(key, (2,), jnp.float32, -1.0, 1.0)
+        st = _PointMassState(pos, jnp.zeros(2, jnp.float32), jnp.asarray(0, jnp.int32))
+        return st, jnp.concatenate([st.pos, st.vel])
+
+    def step(self, st, action, key):
+        a = jnp.clip(action, self.action_low, self.action_high)
+        vel = 0.9 * st.vel + 0.1 * a
+        pos = st.pos + 0.1 * vel
+        st = _PointMassState(pos, vel, st.t + 1)
+        reward = -(pos @ pos) - 0.01 * (a @ a)
+        return st, jnp.concatenate([pos, vel]), reward.astype(jnp.float32), jnp.asarray(False), st.t >= 30
+
+
+register_env("TestPointMass-v0", PointMassEnv)
 
 
 @pytest.fixture
