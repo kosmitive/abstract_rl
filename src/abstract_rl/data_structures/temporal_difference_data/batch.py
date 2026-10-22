@@ -77,6 +77,15 @@ class Batch(eqx.Module):
         :param annotations: The annotations this batch contains.
         :param mask: The valid rows, None if all rows are valid.
         """
+        if mask is not None:
+            # zero the padded rows once, so NaN/inf in them never reach a forward pass or (through the where-masked
+            # cotangents multiplied by NaN upstream) a gradient
+            def clean(x: Any) -> Any:
+                return x if x is None else jnp.where(_broadcast_mask(x, mask), x, 0)
+
+            states, actions, log_likelihood = clean(states), clean(actions), clean(log_likelihood)
+            rewards, next_states, ds = clean(rewards), clean(next_states), clean(ds)
+            annotations = None if annotations is None else {k: clean(v) for k, v in annotations.items()}
         self._annotations = dict(annotations) if annotations is not None else {}
         self._states = states
         self._actions = actions
