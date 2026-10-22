@@ -47,9 +47,17 @@ def test_trpo_step_matches_torch(make_pendulum_mc, case, env):
     )
 
 
-def test_failed_line_search_keeps_the_parameters(make_pendulum_mc):
+def _assert_parameters_unchanged(new_state, state):
+    got, before = named_parameters(new_state.get("policy")), named_parameters(state.get("policy"))
+    assert got.keys() == before.keys()
+    for k in before:
+        np.testing.assert_allclose(got[k], before[k], err_msg=k)
+
+
+def test_line_search_with_nan_ratio_keeps_the_parameters(make_pendulum_mc):
     alg, state, batch, _ = _setup(make_pendulum_mc, "trpo_uni", "Pendulum-v1")
-    # zero advantages give no expected improvement, every step is rejected
+    # zero advantages give a zero gradient and zero step (the expected improvement is 0), so the ratio is NaN and
+    # every step is rejected
     zero = Batch(
         batch.states,
         batch.actions,
@@ -57,13 +65,24 @@ def test_failed_line_search_keeps_the_parameters(make_pendulum_mc):
         batch.rewards,
         batch.next_states,
         batch.dones,
-        {"a": jnp.zeros_like(batch["a"]) + jnp.arange(len(batch)) * 0.0},
+        {"a": jnp.zeros_like(batch["a"])},
     )
     new_state, m = alg.perform_tr_sgd(state, 0, zero, zero)
     assert not bool(m["accepted"])
-    np.testing.assert_allclose(
-        named_parameters(new_state.get("policy"))["cov"], named_parameters(state.get("policy"))["cov"]
-    )
+    _assert_parameters_unchanged(new_state, state)
+
+
+def test_line_search_rejects_steps_outside_the_trust_region(make_pendulum_mc):
+    alg, state, batch, _ = _setup(make_pendulum_mc, "trpo_uni", "Pendulum-v1")
+    original = alg.tr_distance
+    # a distance far above 1.5 * tr_eps rejects every step with finite ratios
+    alg.tr_distance = lambda s, b: original(s, b) + 100.0 * alg.tr_eps
+    new_state, m = alg.perform_tr_sgd(state, 0, batch, batch)
+    assert not bool(m["accepted"])
+    assert int(m["step"]) == 10
+    rows = np.asarray(m["rows"])
+    assert rows.shape[0] == 10 and np.all(np.isfinite(rows))
+    _assert_parameters_unchanged(new_state, state)
 
 
 def test_objective_gradient_flows_through_the_state(make_pendulum_mc):

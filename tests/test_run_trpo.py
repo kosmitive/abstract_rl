@@ -63,3 +63,10 @@ def test_stored_obs_rms_is_the_one_after_the_rollout(trpo_conf, tmp_path):
 def test_epochs_per_call_respects_the_env_step_budget(trpo_conf):
     returns = run_trpo(_conf(trpo_conf, num_epochs=10, max_env_steps=300, epochs_per_call=4))
     assert returns.shape[1] == 3  # 120 + 120 + a shortened 60 step epoch, not a 4 epoch chunk of 480 steps
+
+
+def test_trpo_improves_the_return_on_point_mass(trpo_conf):
+    returns = run_trpo(_conf(trpo_conf, seeds=[1, 2], num_epochs=12, policy_batch_size=600, val_opt_steps=10))
+    first, last = returns[:, 0, 0], returns[:, -3:, 0].mean(axis=1)
+    # measured improvements are about 18 (seed 1) and 24 (seed 2) from returns of about -28 and -38
+    assert np.all(last > first + 8.0), (first, last)
