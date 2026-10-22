@@ -198,7 +198,11 @@ class RolloutEnvWrapper:
                 "ends": end,
                 "mask": active,
             }
-            buf = {k: _lane_where(active, buf[k].at[:, i].set(v), buf[k]) for k, v in step_vals.items()}
+            # index i is written once, so selecting on the slice instead of the whole buffer gives identical outputs
+            buf = {
+                k: buf[k].at[:, i].set(jnp.where(active.reshape(active.shape + (1,) * (v.ndim - 1)), v, buf[k][:, i]))
+                for k, v in step_vals.items()
+            }
             count = count + jnp.sum(active)
 
             # finished lanes start a new episode while the batch is not complete, otherwise they stop
