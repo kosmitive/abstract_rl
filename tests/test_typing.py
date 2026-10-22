@@ -7,7 +7,7 @@ from abstract_rl.misc.typing import DTYPE, States, SuffStats
 
 
 def test_dtype_is_float32():
-    assert DTYPE == jnp.float32
+    assert jnp.float32 == DTYPE
 
 
 def test_aliases_check_shapes():

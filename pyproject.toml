@@ -80,6 +80,10 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "NPY", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# the jaxtyping import hook must precede the imports it instruments
+"tests/conftest.py" = ["E402"]
+
 [tool.ruff.format]
 quote-style = "double"
 

@@ -344,7 +344,7 @@ The `env_name` keys stay the same, so configs and run directories don't change.
      - one MPO `perform_step` with fixed weights and a fixed batch;
      - `RunningCenteredFilter` and the obs-norm sequences.
    - The fixture file and the recorder are committed. Torch stays only as a dev dependency for re-recording.
-2. **Parity tests** load the fixtures and compare at rtol 1e-5 on float32. The dual is compared at 1e-10 with x64.
+2. **Parity tests** load the fixtures and compare at rtol 1e-5 on float32. The dual is compared at rtol 1e-3 in float32 (D4).
 3. **Ported unit tests.** These are rewritten with keys and functional updates; their assertions stay the same:
    - `test_policies`, `test_diagonal_policy` (density integrates to 1, change of variables, Monte-Carlo KL,
      1-D diagonal equals univariate), `test_conjugate_gradient`, `test_operators`, `test_obs_norm`, `test_config`,
