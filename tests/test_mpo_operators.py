@@ -104,7 +104,7 @@ def test_eta_ignores_invalid_memory_rows(make_pendulum_mc):
     memory = memory.with_trajectories(t)
     state = ModelState.create(rnk.b.init_state(), {})
     eta = rnk.hook(state, memory).get("eta")
-    from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+    from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 
     np.testing.assert_allclose(
         eta,

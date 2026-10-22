@@ -7,14 +7,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from abstract_rl.env.mcmc_env_wrapper import MCMCEnvWrapper
+from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.run.run_seeds import SeedRuns
 
 
 def add_env(runs):
     with runs.mc["conf"].ns("env"):
-        runs.mc.add_environment(MCMCEnvWrapper(runs.mc))
+        runs.mc.add_environment(RolloutEnvWrapper(runs.mc))
 
 
 def test_each_seed_has_its_own_run_directory(trpo_conf):

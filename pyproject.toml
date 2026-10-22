@@ -87,6 +87,10 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "NPY", "RUF"]
 # F722: jaxtyping shape strings are not forward annotations
 ignore = ["F722"]
 
+[tool.ruff.lint.isort]
+# also for modules that only exist on the torch commit the golden recorder runs on (tests/fixtures)
+known-first-party = ["abstract_rl"]
+
 [tool.ruff.lint.per-file-ignores]
 # the jaxtyping import hook must precede the imports it instruments
 "tests/conftest.py" = ["E402"]

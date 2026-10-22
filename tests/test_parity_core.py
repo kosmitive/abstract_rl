@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
-from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimizatioon import find_optimal_temperature
+from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 from abstract_rl.misc.flat_params import get_flat_params_from, set_flat_params_to
 from golden import golden
 

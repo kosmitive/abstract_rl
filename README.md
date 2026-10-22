@@ -57,9 +57,10 @@ JAX env-steps/s is summed over seeds and excludes the compiling first call.
 | HalfCheetah | 1 | 2043 | n/a | n/a | 27.7 s |
 | HalfCheetah | 4 | 2757 | n/a | n/a | 18.2 s |
 
-The torch figure is the last torch commit (4f7828e) running Pendulum TRPO (default config, one seed). Its steady state
-is `6 * 4000 / (T12 - T6)`, where T6 = 6.93 s and T12 = 11.43 s are the wall times of a 6 and a 12 epoch run, so
-interpreter startup and imports cancel out (a single 6 epoch run, startup included, gives only 1879 env-steps/s).
+The torch figure is the last torch commit (ab552fb, measured as 4f7828e before the rebase onto main) running Pendulum
+TRPO (default config, one seed). Its steady state is `6 * 4000 / (T12 - T6)`, where T6 = 6.93 s and T12 = 11.43 s are
+the wall times of a 6 and a 12 epoch run, so interpreter startup and imports cancel out (a single 6 epoch run, startup
+included, gives only 1879 env-steps/s).
 Torch HalfCheetah is not measured: the torch MuJoCo env is Gymnasium v5, with different dynamics and rewards. The
 speedup is against the single-seed torch figure. MPO is still the torch implementation; a later plan ports it.
 

@@ -1,4 +1,4 @@
-"""Pure-JAX environments behind one small protocol, keyed by the Gymnasium ids used in ``config/env``.
+"""Pure-JAX environments behind one small protocol, keyed by the Gymnasium ids used in ``abstract_rl/conf/env``.
 
 Every adapter maps its backend onto Gymnasium's ``terminated`` / ``truncated`` semantics: a time limit is a
 truncation, only a real terminal state is a termination (it is stored as ``done`` and not bootstrapped).

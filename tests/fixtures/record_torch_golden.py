@@ -1,7 +1,7 @@
 """Record reference outputs of the PyTorch implementation for the JAX parity tests (tests/test_parity_*.py).
 
 Run on the last torch commit. After the port removes torch, re-record from a worktree of that commit:
-    git worktree add ../abstract_rl_torch 4f7828e
+    git worktree add ../abstract_rl_torch ab552fb
     cd ../abstract_rl_torch
     uv run python tests/fixtures/record_torch_golden.py <repo>/tests/fixtures/torch_golden.npz
 """

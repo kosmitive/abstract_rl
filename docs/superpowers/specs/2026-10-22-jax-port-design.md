@@ -1,5 +1,7 @@
 # JAX port of abstract_rl: design
 
+> Note: after these specs and plans were written, main renamed `env/mcmc_env_wrapper.py` (`MCMCEnvWrapper`) to `env/rollout_env_wrapper.py` (`RolloutEnvWrapper`) and `non_parametric_trust_region_optimizatioon.py` to `non_parametric_trust_region_optimization.py`, moved `config/` to `src/abstract_rl/conf/`, and removed the dm_control acrobot env and MPO's parametric mode; the old names below are historical.
+
 Date: 2026-10-22. Branch: `feature/jax-vmap-port`, cut from `origin/feature/tune-on-basic-envs` (8d3dc51).
 
 ## 1. Goal
