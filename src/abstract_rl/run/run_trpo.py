@@ -205,8 +205,8 @@ def run_trpo(conf: Any) -> np.ndarray:
                 with cli.header("v-step", True):
                     cli.print(FullyVNeuralNet.titlestr % ("k", "pre_objective", "post_objective")).line()
                     k_pre_post = metrics["v_step"]["k_pre_post"][0, c]
-                    for k in np.flatnonzero(~np.isnan(k_pre_post[:, 1])):
-                        cli.print(FullyVNeuralNet.fmtstr % (k, *k_pre_post[k]))
+                    for j in np.flatnonzero(~np.isnan(k_pre_post[:, 1])):
+                        cli.print(FullyVNeuralNet.fmtstr % (j, *k_pre_post[j]))
                 e += 1
 
             # save last model (the models the last rollout ran with), keep it as best model if its return is the highest
