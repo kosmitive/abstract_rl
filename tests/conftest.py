@@ -1,7 +1,11 @@
 from jaxtyping import install_import_hook
 
 # modules ported to JAX are checked against their jaxtyping annotations at runtime (beartype)
-JAXTYPED_MODULES = ["abstract_rl.misc.typing"]
+JAXTYPED_MODULES = [
+    "abstract_rl.misc.typing",
+    "abstract_rl.algorithms.mixed.conjugate_gradient",
+    "abstract_rl.misc.flat_params",
+]
 install_import_hook(JAXTYPED_MODULES, "beartype.beartype")
 
 import copy

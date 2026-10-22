@@ -1,22 +1,19 @@
-import numpy as np
-import torch
+from typing import Any
+
+import equinox as eqx
+from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, Float
 
 
-def get_flat_params_from(model: torch.nn.Module) -> torch.Tensor:
-    """Extract flat parameters form pytorch model."""
+def get_flat_params_from(model: Any) -> Float[Array, "n"]:
+    """Extract flat parameters form an equinox model (every inexact array leaf is a parameter)."""
 
-    params = []
-    for param in model.parameters():
-        params.append(param.data.view(-1))
-
-    flat_params = torch.cat(params)
+    flat_params, _ = ravel_pytree(eqx.filter(model, eqx.is_inexact_array))
     return flat_params
 
 
-def set_flat_params_to(model: torch.nn.Module, flat_params: torch.Tensor) -> None:
-    """Set flat parameters to pytorch model."""
-    prev_ind = 0
-    for param in model.parameters():
-        flat_size = int(np.prod(list(param.size())))
-        param.data.copy_(flat_params[prev_ind : prev_ind + flat_size].view(param.size()))
-        prev_ind += flat_size
+def set_flat_params_to(model: Any, flat_params: Float[Array, "n"]) -> Any:
+    """Set flat parameters to an equinox model. Models are immutable, so the updated model is returned."""
+    params, static = eqx.partition(model, eqx.is_inexact_array)
+    _, unravel = ravel_pytree(params)
+    return eqx.combine(unravel(flat_params), static)
