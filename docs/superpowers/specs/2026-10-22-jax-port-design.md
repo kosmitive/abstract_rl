@@ -312,7 +312,6 @@ The `env_name` keys stay the same, so configs and run directories don't change.
 - **New keys:**
   - `seeds` (a list, default `[seed]`),
   - `env_num_envs` (default `auto`),
-  - `tc_max_episodes` (default `auto`),
   - `jax_platform` (`cpu` or `mps`, default `cpu`).
 - `seed` keeps working as a single seed.
 - **Run directories.** Each seed gets its own directory, as today. `run.conf` stores the real seed.
@@ -400,8 +399,9 @@ Anything else that changes behaviour counts as a bug against this spec.
   are masked out. That is acceptable, because throughput still dominates torch, and E is configurable.
 - **Padding in the TRPO update.** Padding makes the TRPO update process about 2x the batch rows
   (`L = batch_size / E + max_steps`). This is accepted.
-- **Replay capacity.** Very short episodes could overflow the static slot count `C`. The design raises on the host and
-  is configurable through `tc_max_episodes`.
+- **Replay capacity.** The memory is a flat ring of `C = tc_size + 2·R` rows, so it cannot overflow on short episodes.
+  There is no raise and no episode-slot count. When an insert overwrites part of a kept episode, `merge` drops that
+  episode whole (it only drops episodes that capping would drop anyway), so no partial episode survives.
 - **Compile time.** The whole epoch is one program, which means a long first compile on MJX. Python's own `max_steps`
   loop is removed, and `lax.scan` keeps the program size independent of T.
 - **Memory resampling.** The E-step resamples every memory row, including the masked ones, because C is about 1.1 × tc_size.

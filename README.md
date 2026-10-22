@@ -240,6 +240,7 @@ uv run python -m abstract_rl.scripts.run_benchmark --envs pendulum --algs trpo m
 uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 td3 --seed 1 --data-root results
 uv run python -m abstract_rl.scripts.compare results --out docs/  # table and plots of all runs below results/
 uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render         # replay, GIF per episode
+# MuJoCo GIF rendering (eval_balance --gif, --render) on headless Linux needs MUJOCO_GL=egl in the environment
 ```
 
 The standalone evaluation scripts run on the default JAX backend; with the `mps` extra installed, prefix them with
