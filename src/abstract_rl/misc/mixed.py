@@ -5,17 +5,25 @@ import mlx.nn as nn
 import numpy as np
 
 
-def default_settings(device: str = "cpu") -> None:
+def default_settings(device: str = "cpu", prefer_gpu: bool = False) -> None:
     """
     Apply default settings to all.
-    :param device: The MLX device all arrays are created and evaluated on, ``cpu`` or ``gpu`` (Metal).
+    :param device: The MLX device all arrays are created and evaluated on, ``cpu``, ``gpu`` (Metal) or ``auto``.
+    :param prefer_gpu: Whether ``auto`` selects the GPU, if Metal is available.
     """
-    set_device(device)
+    set_device(resolve_device(device, prefer_gpu))
 
     def float_formatter(x: Any) -> str:
         return f"{x: 10.4f}"
 
     np.set_printoptions(formatter={"float_kind": float_formatter})
+
+
+def resolve_device(device: str, prefer_gpu: bool) -> str:
+    """Resolve ``auto`` to ``gpu`` if the algorithm prefers it and Metal is available and to ``cpu`` otherwise."""
+    if device != "auto":
+        return device
+    return "gpu" if prefer_gpu and mx.metal.is_available() else "cpu"
 
 
 def set_device(device: str) -> None:

@@ -35,7 +35,8 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     conf.setdefault("alg", "mpo")
     mc = ModelConfiguration(conf)
     conf = mc["conf"]
-    default_settings(conf.get_root("device") if "device" in conf else "cpu")
+    # auto: MPO fits the Q function on large batches of the replay memory, that is faster on the GPU
+    default_settings(conf.get_root("device") if "device" in conf else "cpu", prefer_gpu=True)
     cli = CliPrinter().instance
 
     seed = conf["seed"]

@@ -71,3 +71,14 @@ def test_best_policy_is_stored_and_evaluated(trpo_conf, tmp_path):
     )
     assert code == 0
     assert list(out.glob("*.gif"))
+
+
+def test_resolve_device():
+    import mlx.core as mx
+
+    from abstract_rl.misc.mixed import resolve_device
+
+    assert resolve_device("cpu", True) == "cpu"
+    assert resolve_device("gpu", False) == "gpu"
+    assert resolve_device("auto", False) == "cpu"
+    assert resolve_device("auto", True) == ("gpu" if mx.metal.is_available() else "cpu")

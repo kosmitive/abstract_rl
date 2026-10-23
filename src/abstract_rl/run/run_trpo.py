@@ -31,7 +31,8 @@ def run_trpo(conf: Any) -> np.ndarray:
     conf.setdefault("alg", "trpo")
     mc = ModelConfiguration(conf)
     conf = mc["conf"]
-    default_settings(conf.get_root("device") if "device" in conf else "cpu")
+    # auto: TRPO evaluates the policy once per environment step, a small batch that is faster on the CPU
+    default_settings(conf.get_root("device") if "device" in conf else "cpu", prefer_gpu=False)
     cli = CliPrinter().instance
 
     seed = conf["seed"]
