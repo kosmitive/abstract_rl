@@ -1,10 +1,19 @@
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
+import optax
+from jaxtyping import Array, Bool, Float, Int
 
-from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.typing import DTYPE
 
 
-def temperature_dual(q_tensor: torch.Tensor, eta: torch.Tensor, eps: float) -> torch.Tensor:
+def _mean(x: Float[Array, " N"], mask: Bool[Array, " N"] | None) -> Float[Array, ""]:
+    return jnp.mean(x) if mask is None else jnp.sum(jnp.where(mask, x, 0.0)) / jnp.sum(mask)
+
+
+def temperature_dual(
+    q_tensor: Float[Array, "N K"], eta: Float[Array, "1"], eps: float, mask: Bool[Array, " N"] | None = None
+) -> Float[Array, "1"]:
     """
     Dual function of the non parametric E-step for a fixed temperature, see https://arxiv.org/abs/1806.06920.
 
@@ -13,51 +22,48 @@ def temperature_dual(q_tensor: torch.Tensor, eta: torch.Tensor, eps: float) -> t
     :param q_tensor: A tensor of [NxA] with N states and A actions.
     :param eta: The temperature.
     :param eps: The KL bound.
+    :param mask: The valid rows of a padded memory, all rows if None.
     :return: The value of the dual function.
     """
-    max_q = torch.max(q_tensor, dim=1, keepdim=True).values
-    log_mean_exp = torch.logsumexp((q_tensor - max_q) / eta, dim=1) - np.log(q_tensor.shape[1])
-    return eta * eps + torch.mean(max_q) + eta * torch.mean(log_mean_exp)
+    max_q = jnp.max(q_tensor, axis=1, keepdims=True)
+    log_mean_exp = jax.scipy.special.logsumexp((q_tensor - max_q) / eta, axis=1) - np.log(q_tensor.shape[1])
+    return eta * eps + _mean(max_q[:, 0], mask) + eta * _mean(log_mean_exp, mask)
 
 
 def find_optimal_temperature(
-    q_tensor: torch.Tensor, eps: float, eta0: float = 1.0, lr: float = 0.05, max_steps: int = 200
-) -> torch.Tensor:
+    q_tensor: Float[Array, "N K"],
+    eps: float,
+    eta0: float | Float[Array, ""] = 1.0,
+    lr: float = 0.05,
+    max_steps: int = 200,
+    mask: Bool[Array, " N"] | None = None,
+) -> Float[Array, "1"]:
     """
     Uses a batch of data to find the optimal temperature eta for reweighting by minimizing the convex dual with Adam.
+    Nothing is printed inside the traced solve: the run loop logs the resulting eta on the host.
     :param q_tensor: A tensor of [NxA] with N states and A actions.
     :param eps: The eps to use.
     :param eta0: The initial eta
     :param lr: Adam learning rate on the log temperature. Defaults to 0.05.
     :param max_steps: Maximum number of Adam steps.
+    :param mask: The valid rows of a padded memory, all rows if None.
     :return: The found optimal temperature as a tensor of shape [1].
     """
-    cli = CliPrinter().instance
-    cli.empty().print("solve for q(a|s)").empty()
-    with cli.indent():
-        cli.print("max	\t\t∫ u(s) ∫ q(a|s) Q(s,a) dads")
-        cli.print("st.	\t\t∫ u(s) KL(q(a|s), π(a|s)) ds < ε")
-        cli.print("    \t\t∫∫ u(s) q(a|s) dads = 1")
+    # D4: the dual runs in float32 (the torch version used float64)
+    q_tensor = jnp.where(mask[:, None], q_tensor, 0.0) if mask is not None else q_tensor
+    q_tensor = q_tensor.astype(DTYPE)
+    eta0_f = jnp.clip(jnp.asarray(eta0, DTYPE), 1e-6, None)
+    log_eta = jnp.log(eta0_f).reshape(1)
+    optimizer = optax.adam(lr)
+    opt_state = optimizer.init(log_eta)
 
-    cli.empty().print("statistics of problem").empty()
-    with cli.indent():
-        cli.print(f"Q(s,a) \t~ {torch.mean(q_tensor):.5f} +- [{torch.std(q_tensor):.5f}]")
-        cli.print(f"ε \t\t= {eps}")
+    def step(
+        _: Int[Array, ""], carry: tuple[Float[Array, "1"], optax.OptState]
+    ) -> tuple[Float[Array, "1"], optax.OptState]:
+        log_eta, opt_state = carry
+        grad = jax.grad(lambda le: temperature_dual(q_tensor, jnp.exp(le), eps, mask)[0])(log_eta)
+        updates, opt_state = optimizer.update(grad, opt_state)
+        return optax.apply_updates(log_eta, updates), opt_state
 
-    q_tensor = q_tensor.double()
-    eta0_f = float(np.clip(eta0, 1e-6, None))
-    log_eta = torch.tensor([np.log(eta0_f)], dtype=torch.float64, requires_grad=True)
-    optimizer = torch.optim.Adam([log_eta], lr=lr)
-    obj = log_eta * 0
-    for _ in range(max_steps):
-        optimizer.zero_grad()
-        eta = torch.exp(log_eta)
-        obj = temperature_dual(q_tensor, eta, eps)
-        obj.backward()
-        optimizer.step()
-    eta_v = float(torch.exp(log_eta).detach())
-
-    with cli.indent():
-        cli.empty().print(f"eta* = {eta_v:.6f} (dual = {float(obj.detach()):.6f}, iterations = {max_steps})")
-
-    return torch.tensor([eta_v], dtype=torch.float32)
+    log_eta, _ = jax.lax.fori_loop(0, max_steps, step, (log_eta, opt_state))
+    return jnp.exp(log_eta).astype(DTYPE)

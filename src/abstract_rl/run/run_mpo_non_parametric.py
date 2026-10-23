@@ -1,19 +1,23 @@
+from collections.abc import Callable, Sequence
+from functools import partial
 from os.path import join
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
+from jaxtyping import Array, Int, PRNGKeyArray
 
 from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
     MPOAlgorithm,
 )
 
 # create the environment in initial state.
-from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.misc.cli_printer import CliPrinter
-from abstract_rl.misc.data_logger import DataLogger
 from abstract_rl.misc.mixed import default_settings
 from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
@@ -21,53 +25,102 @@ from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
 from abstract_rl.policy.continuous.select_policy import select_policy
+from abstract_rl.run.run_seeds import SeedRuns
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
+
+# batch sizes the jitted epoch was traced for (a second epoch with the same batch size must not retrace)
+EPOCH_TRACES: list[int] = []
+
+# number of valid transitions in the memory of every seed after every epoch of the last run
+LAST_MEMORY_SIZES: list[int] = []
+
+# memory rows the resample annotation processes at once (only the chunks covering the occupied rows run)
+ANNOTATE_CHUNK = 2048
+
+
+def annotate_chunked(
+    fn: Callable[[Trajectory, PRNGKeyArray, Int[Array, " C"]], Trajectory],
+    tc: TrajectoryCollection,
+    key: PRNGKeyArray,
+    chunk: int,
+    fields: Sequence[str],
+) -> TrajectoryCollection:
+    """
+    Annotates the single lane of a replay memory chunk by chunk, but only the chunks covering its occupied rows.
+    :param fn: The row-independent annotation ``fn(lane, key, rows)`` of a chunk of rows, ``rows`` are their indices.
+    :param tc: The replay memory, a single lane.
+    :param key: The random key passed to every chunk (``fn`` keys its rows by their index).
+    :param chunk: The static number of rows per chunk.
+    :param fields: The annotations ``fn`` writes, only these are written back.
+    :return: The memory with the new annotations on its occupied rows, the rows beyond keep their previous ones.
+    """
+    lane = jax.tree.map(lambda x: x[0], tc.trajectories())
+    capacity = len(lane)
+    chunk = min(chunk, capacity)
+    occupied = tc.occupied_rows()
+
+    def body(i: Int[Array, ""], lane: Trajectory) -> Trajectory:
+        # the last chunk ends at the capacity at the latest, rows it shares with the previous chunk get the same values
+        start = jnp.minimum(i * chunk, capacity - chunk)
+        rows = start + jnp.arange(chunk)
+        part = jax.tree.map(lambda x: jax.lax.dynamic_slice_in_dim(x, start, chunk), lane)
+        out = fn(part, key, rows)
+        keep = rows < occupied
+        for k in fields:
+            v = out[k]
+            v = jnp.where(keep.reshape(-1, *([1] * (v.ndim - 1))), v, part[k])
+            lane = lane.set(k, jax.lax.dynamic_update_slice_in_dim(lane[k], v.astype(lane[k].dtype), start, 0))
+        return lane
+
+    lane = jax.lax.fori_loop(0, (occupied + chunk - 1) // chunk, body, lane)
+    return tc.with_trajectories(jax.tree.map(lambda x: x[None], lane))
 
 
 # title of the script
 def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     """
-    Runs the passed config off policy.
+    Runs the passed config off policy, every seed of ``seeds`` at once.
     :param conf: The run configuration.
+    :return: The logged [mean, std] return of every seed and epoch, shape [seeds, epochs, 2].
     """
 
-    # create a model configuration
+    # create a model configuration per seed, the first one wires the shared components
+    conf = dict(conf)
     conf.setdefault("alg", "mpo")
-    mc = ModelConfiguration(conf)
+    runs = SeedRuns(conf, "mpo")
+    mc = runs.mc
     conf = mc["conf"]
     default_settings(conf.get_root("torch_threads") if "torch_threads" in conf else 1)
     cli = CliPrinter().instance
+    LAST_MEMORY_SIZES.clear()
 
-    seed = conf["seed"]
-    torch.manual_seed(seed)
-    np.random.seed(seed)  # noqa: NPY002
     num_epochs = conf["num_epochs"]
     max_steps = conf["max_steps"]
-
-    # make default instance available
-    logger = DataLogger(mc.data_dir)
-    mc.add_main("log", logger)
+    epochs_per_call = int(conf.get("epochs_per_call", 1))
 
     # create an environment wrapper
     with conf.ns("env"):
-        render = conf["render"]
         num_new_steps = conf["sample"]
         num_traj = conf["traj_evaluations"]
         env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
+    for k, v in env.init_state().items():
+        mc.add_main(k, runs.broadcast(v))
+    mc.add_main("key", runs.keys)
 
     # create the memory and get some settings
     with conf.ns("tc"):
         tc_size = conf["size"]
-        tc = TrajectoryCollection(env, tc_size)
-        mc.add_main("tc", tc)
+    num_envs = env.num_envs(num_new_steps, max_steps)
+    # the compacted ring needs room for the kept transitions and two rollouts (the insert wraps around once)
+    capacity = tc_size + 2 * (num_new_steps + num_envs * max_steps)
 
     # policy neural_modules
     with conf.ns("policy"):
         policy_opt_size = conf["opt_steps"]
         policy_batch_size = conf["batch_size"]
         sync_steps = conf["sync_steps"]
-        policy = select_policy(mc)
+        policy = runs.build(lambda key: select_policy(mc, jax.random.fold_in(key, 2)))
         mc.add_syncable("policy", policy, sync_steps)
 
     # get obj_watcher
@@ -80,7 +133,7 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         q_opt_steps = conf["opt_steps"]
         q_batch_size = conf["batch_size"]
         sync_steps = conf["sync_steps"]
-        q_network = FullyQNeuralNet(mc)
+        q_network = runs.build(lambda key: FullyQNeuralNet(mc, jax.random.fold_in(key, 1)))
         mc.add_syncable("q_network", q_network, sync_steps)
 
     with conf.ns("filter"):
@@ -102,80 +155,201 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         rnk = VariationalRankingOperator(mc)
         mc.add_main("rnk", rnk)
 
+    # persistent optimiser states, lagrange multipliers and temperature of every seed
+    mc.add_main("q_network_opt", jax.vmap(lambda q: q.init_opt())(q_network))
+    for k, v in jax.vmap(alg.init_state)(policy).items():
+        mc.add_main(k, v)
+    mc.add_main("eta", runs.broadcast(rnk.b.init_state()["eta"]))
+
+    def annotate(state: ModelState, tc: TrajectoryCollection, key: Any) -> TrajectoryCollection:
+        # only used to derive the annotation structure of the memory: it duplicates the operator chain of ``epoch``
+        # (resample, ranking, retrace), keep the two in sync
+        k_res, k_ret = jax.random.split(key)
+        tc = res.transform_all(state, tc, k_res)
+        tc = rnk.transform_all(state, tc)
+        return ret.transform_all(state, tc, k_ret)
+
+    # the memory holds every annotation of the operators from the start, so the jitted carry keeps its structure
+    empty = TrajectoryCollection.memory(env, capacity, env.observation_dim, env.action_dim)
+    template = jax.eval_shape(lambda s: annotate(s, empty, jax.random.key(0)), runs.seed_slice(runs.state(), 0))
+    template_ann = {
+        k: jax.ShapeDtypeStruct(v.shape[2:], v.dtype)
+        for k, v in template.trajectories()._annotations.items()
+        if k not in ("insert_id", "time")
+    }
+    mc.add_main("tc", runs.broadcast(empty.with_annotations(template_ann)))
+
+    # equal chunks of at most ANNOTATE_CHUNK rows, so a full memory is annotated without (almost) any extra rows
+    num_chunks = -(-capacity // ANNOTATE_CHUNK)
+    res_chunk = -(-capacity // num_chunks)
+
+    def epoch(state: ModelState, batch_size: int) -> tuple[ModelState, dict[str, Any]]:
+        """One epoch of one seed: rollout into the memory, e-step, m-step on the policy, retrace fit of q, sync."""
+        key, k_rollout, k_annotate, k_m, k_ret, k_q = jax.random.split(state.get("key"), 6)
+        pre = {"policy": state.get("policy"), "q_network": state.get("q_network")}
+
+        # run the stochastic policy and save the trajectories in the memory; filters see the new trajectories once
+        state, new_tc, rollout = env.execute_policy(
+            state, k_rollout, state.get("policy"), max_steps, batch_size, exploration=True, num_envs=num_envs
+        )
+        # the stored checkpoint pairs the models the rollout ran with with the statistics the rollout updated
+        pre["obs_rms"] = state.get("obs_rms")
+        new_tc = filter.transform_all(state, new_tc)
+        tc = state.get("tc").merge(new_tc, tc_size)
+
+        # e-step: resample extra actions and q values on the occupied rows, temperature (on the merged memory), ranking
+        # the second key is unused, but the split is kept: it fixes the resample key stream the benchmarks were run with
+        k_res, _ = jax.random.split(k_annotate)
+        tc = annotate_chunked(
+            lambda lane, k, rows: res.transform(state, lane, k, rows), tc, k_res, res_chunk, res.FIELDS
+        )
+        state = rnk.hook(state, tc)
+        tc = rnk.transform_all(state, tc)
+
+        # m-step
+        state, m_step = alg.perform_mult_steps(state, k_m, policy_opt_size, tc, policy_batch_size)
+
+        # v-step
+        tc = ret.transform_all(state, tc, k_ret)
+        state, v_step = state.get("q_network").perform_mult_sgd(state, k_q, q_opt_steps, tc, q_batch_size, ["tq", "q"])
+
+        # copy target_networks
+        state = state.set("tc", tc).sync().set("key", key)
+        memory_size = jnp.sum(tc.trajectories().mask)
+        return state, {
+            "rollout": rollout,
+            "m_step": m_step,
+            "v_step": v_step,
+            "pre": pre,
+            "eta": state.get("eta"),
+            "memory_size": memory_size,
+        }
+
+    def chunk(state: ModelState, batch_size: int, num: int) -> tuple[ModelState, dict[str, Any]]:
+        EPOCH_TRACES.append(batch_size)
+        state, metrics = jax.lax.scan(lambda s, _: epoch(s, batch_size), state, None, length=num)
+        return state, metrics
+
+    compiled: dict[tuple[int, int], Any] = {}
+
+    def run_chunk(state: ModelState, batch_size: int, num: int) -> tuple[ModelState, dict[str, Any]]:
+        if (batch_size, num) not in compiled:
+            fn = jax.vmap(partial(chunk, batch_size=batch_size, num=num))
+            compiled[(batch_size, num)] = jax.jit(fn, donate_argnums=0)
+        return compiled[(batch_size, num)](state)
+
     # names for rewards
     stoch_reward = "sreward"
 
-    # create a new reward plot
-    rew_plot = RewardValueFunctionPlot()
-    logger.create_field(stoch_reward, 2)
-    # number of environment steps collected in each epoch (for plotting learning curves over samples)
-    logger.create_field("steps", 1)
+    # create a new reward plot and the logged fields of every seed
+    rew_plots = [RewardValueFunctionPlot() for _ in runs.mcs]
+    for seed_mc in runs.mcs:
+        seed_mc["log"].create_field(stoch_reward, 2)
+        # number of environment steps collected in each epoch (for plotting learning curves over samples)
+        seed_mc["log"].create_field("steps", 1)
+        # temperature of the non-parametric e-step
+        seed_mc["log"].create_field("eta", 1)
 
-    # if reloaded load old values
-    e = 0
+    state = runs.state()
 
     # repeat for the number of given steps
     # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
     max_env_steps = conf.get("max_env_steps", None)
     epoch_steps = num_new_steps
-    while e < num_epochs:
-        # initial print of the episode
-        if e % 100 == 0:
-            cli.new_epoch(mc.run_root, e)
-        cli.big_header(f"epoch {e}")
-        if max_env_steps:
-            done_steps = getattr(env, "total_steps", 0)
-            if done_steps >= max_env_steps:
-                break
-            num_new_steps = min(epoch_steps, max_env_steps - done_steps)
+    total_steps = np.zeros(len(runs.seeds), np.int64)
+    e = 0
+    # join the checkpoint writer also when training fails, re-raising failed writes
+    try:
+        while e < num_epochs:
+            # initial print of the episode
+            if e % 100 == 0:
+                cli.new_epoch(mc.run_root, e)
+            cli.big_header(f"epoch {e}")
+            num = min(epochs_per_call, num_epochs - e)
+            num_new_steps = epoch_steps
+            if max_env_steps:
+                done_steps = int(total_steps.max())
+                if done_steps >= max_env_steps:
+                    break
+                num_new_steps = min(epoch_steps, max_env_steps - done_steps)
+                if num_new_steps < epoch_steps:
+                    num = 1
+                else:
+                    # a chunk of full epochs must not overshoot the budget, the shortened last epoch runs on its own
+                    num = max(1, min(num, (max_env_steps - done_steps) // epoch_steps))
 
-        # --------------------------------
-        # test policy
-        # --------------------------------
+            state, metrics = run_chunk(state, num_new_steps, num)
+            metrics = jax.device_get(metrics)
+            LAST_MEMORY_SIZES.extend(int(m) for m in np.asarray(metrics["memory_size"]).reshape(-1))
 
-        # first of all run the deterministic policy afterwards
-        # run the stochastic ones and save them in the memory.
+            for c in range(num):
+                # --------------------------------
+                # test policy
+                # --------------------------------
 
-        with cli.header("stochastic evaluation", 1):
-            new_tc = env.execute_policy(
-                policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
-            )
-            tc.merge(new_tc)
-            filter.transform_all(tc)
+                # run the stochastic ones and save them in the memory.
+                with cli.header("stochastic evaluation", 1):
+                    for i, seed_mc in enumerate(runs.mcs):
+                        rollout = jax.tree.map(lambda x, i=i, c=c: x[i, c], metrics["rollout"])
+                        returns = rollout["episode_returns"][rollout["episode_valid"]]
+                        # the logged return is the one of the environment, not of the (scaled) training reward
+                        mean_return, std_return = float(np.mean(returns)), float(np.std(returns))
+                        seed_mc["log"].log({stoch_reward: [mean_return, std_return], "steps": [int(rollout["steps"])]})
+                        total_steps[i] += int(rollout["steps"])
+                        cli.print(
+                            f"seed {runs.seeds[i]:5d} | episodes {len(returns):4d} | "
+                            f"steps {int(rollout['steps']):7d} | return {mean_return:12.4f} +- {std_return:10.4f}"
+                        )
 
-        with cli.header("store model & generate plots", 1):
-            # make and store reward plot
-            res_log = logger.get([stoch_reward], e + 1)
-            rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
-            rew_plot.save(join(mc.plot_root, "performance.png"))
+                with cli.header("store model & generate plots", 1):
+                    for i, seed_mc in enumerate(runs.mcs):
+                        # make and store reward plot
+                        res_log = seed_mc["log"].get([stoch_reward], e + 1)
+                        rew_plots[i].update(*res_log, num_traj)  # type: ignore[call-arg]
+                        rew_plots[i].save(join(seed_mc.plot_root, "performance.png"))
 
-            # save last model and keep it as best model if its epoch return is the highest so far
-            mc.store("last")
-            mc.store_best(float(res_log[0][e, 0]), e)
+                # --------------------------------
+                # calc value fns and policies
+                # --------------------------------
+
+                with cli.header("e-step", 1):
+                    # the temperature of the non-parametric e-step, fitted on the merged memory
+                    for i, seed_mc in enumerate(runs.mcs):
+                        eta = float(metrics["eta"][i, c, 0])
+                        seed_mc["log"].log({"eta": [eta]})
+                        cli.print(f"seed {runs.seeds[i]:5d} | eta {eta:12.6f}")
+
+                with cli.header("m-step", 1):
+                    # the objective, multipliers and constraints of the min step (spec P4), every 10 steps of seed 0
+                    cli.empty().print(
+                        alg.titlestr % ("k", "objective", *[f"lm_{j} x constr_{j}" for j in range(alg.num_params)])
+                    )
+                    m_step = jax.tree.map(lambda x, c=c: x[0, c], metrics["m_step"])
+                    for s in range(0, len(m_step["obj"]), 10):
+                        vals = [
+                            float(v)
+                            for pair in zip(m_step["lagrange_mults"][s], m_step["constraints"][s], strict=True)
+                            for v in pair
+                        ]
+                        cli.print(alg.fmtstr % (s, float(m_step["obj"][s]), *vals))
+
+                with cli.header("v-step", True):
+                    cli.print(FullyQNeuralNet.titlestr % ("k", "pre_objective", "post_objective")).line()
+                    k_pre_post = metrics["v_step"]["k_pre_post"][0, c]
+                    for j in np.flatnonzero(~np.isnan(k_pre_post[:, 1])):
+                        cli.print(FullyQNeuralNet.fmtstr % (j, *k_pre_post[j]))
+                e += 1
+
+            # save last model (the models the last rollout ran with), keep it as best model if its return is the highest
+            last = num - 1
+            for seed_mc in runs.mcs:
+                seed_mc.overall_step = e
+            runs.store("last", jax.tree.map(lambda x, last=last: x[:, last], metrics["pre"]))
+            for i, seed_mc in enumerate(runs.mcs):
+                runs.store_best(i, float(seed_mc["log"].get([stoch_reward], e)[0][e - 1, 0]), e - 1)
             cli.empty().print("last model saved")
-
-        # --------------------------------
-        # calc value fns and policies
-        # --------------------------------
-
-        with cli.header("e-step", 1):
-            # resample extra actions and q values
-            res.transform_all(tc)
-            rnk.hook()
-            rnk.transform_all(tc)
-
-        with cli.header("m-step", 1):
-            alg.perform_mult_steps(policy_opt_size, tc, policy_batch_size)
-
-        with cli.header("v-step", 1):
-            ret.transform_all(tc)
-            q_network.perform_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
-
-        # copy target_networks
-        mc.sync()
-
-        e += 1
-
-    env.close()
-    rew_plot.close()
-    return logger.get([stoch_reward], num_epochs)[0]
+    finally:
+        runs.close()
+    for plot in rew_plots:
+        plot.close()
+    return np.stack([seed_mc["log"].get([stoch_reward], e)[0] for seed_mc in runs.mcs])

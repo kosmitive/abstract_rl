@@ -19,7 +19,10 @@ from abstract_rl.scripts.hydra_conf import CONFIG_DIR, run_dict
 
 
 def train(alg: str, conf: dict[str, Any]) -> Any:
-    """Run one training. Returns the logged ``[mean, std]`` return of every epoch."""
+    """Run one training. Returns the logged ``[mean, std]`` return of every seed and epoch."""
+    import os
+
+    os.environ.setdefault("JAX_PLATFORMS", conf.get("jax_platform", "cpu"))
     if alg == "mpo":
         from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 

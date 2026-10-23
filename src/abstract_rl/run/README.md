@@ -14,3 +14,5 @@ These loops are used by the configurations in the scripts folder.
 ```
 uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/mpo/<run> --episodes 10 [--render]
 ```
+
+`--render` renders every episode offscreen into `replay_<episode>.gif` in the run directory.

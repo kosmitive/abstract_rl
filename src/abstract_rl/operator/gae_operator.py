@@ -1,6 +1,11 @@
-import torch
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
@@ -21,37 +26,35 @@ class GeneralizedAdvantagesEstimationOperator(TrajectoryOperator):
         assert isinstance(mc, ModelConfiguration)
         conf = mc.get("conf")
         self.conf = conf
-        self.v_net = mc.get("v_network", True)
 
         # get discount
         self.env = mc["env"]
-        self.gae_lambda = torch.Tensor([self.conf["lambda"]])
+        self.gae_lambda = float(self.conf["lambda"])
 
-    def transform(self, trajectory: Trajectory) -> None:
+    def transform(self, state: ModelState, trajectory: Trajectory, key: Any = None) -> Trajectory:
         """
         Transform a trajectory with the current instance of the evaluation operator.
+        :param state: The traced model state.
         :param trajectory: trajectory to transform.
         """
 
-        # deactivate grad
-        with torch.no_grad():
-            tl = len(trajectory)
+        # obtain rewards
+        discount = self.env.discount()
 
-            # obtain rewards
-            discount = self.env.discount()
+        # use v approximation to get advantages
+        td_errors = trajectory["td"][:, 0]
+        dones = trajectory.dones
+        mask = 1 - dones[:, 0]
 
-            # use v approximation to get advantages
-            td_errors = torch.Tensor(trajectory["td"])
-            dones = torch.Tensor(trajectory.dones)
-            mask = 1 - dones
+        # get combined ratio
+        gae_gamma_lambda = discount * self.gae_lambda
 
-            # reserve space for advantages
-            a = torch.zeros(tl + 1)
+        def step(a_next: Array, xs: tuple[Array, Array, Array]) -> tuple[Array, Array]:
+            td, m, end = xs
+            # an advantage never crosses the end of an episode
+            a_next = jnp.where(end, 0.0, a_next)
+            a = td + m * gae_gamma_lambda * a_next
+            return a, a
 
-            # get combined ratio
-            gae_gamma_lambda = discount * self.gae_lambda
-
-            for t in reversed(range(tl)):
-                a[t] = td_errors[t] + mask[t] * gae_gamma_lambda * a[t + 1]
-
-            trajectory["a"] = a[:-1]
+        _, a = jax.lax.scan(step, jnp.zeros((), td_errors.dtype), (td_errors, mask, trajectory.ends), reverse=True)
+        return trajectory.set("a", a)

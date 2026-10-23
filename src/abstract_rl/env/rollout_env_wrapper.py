@@ -1,27 +1,32 @@
-import threading
-from os.path import exists, join
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-import gymnasium as gym
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-from gymnasium.spaces import Box
-from gymnasium.wrappers import NormalizeObservation
+from jaxtyping import Array, PRNGKeyArray
 
-from abstract_rl.data_structures.temporal_difference_data.trajectory_builder import TrajectoryBuilder
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
+from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.env.jax_envs import Bounds, make_env
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.running_centered_filter import RunningCenteredFilter
+from abstract_rl.misc.running_mean_std import RunningMeanStd
+from abstract_rl.misc.typing import DTYPE
 
 if TYPE_CHECKING:
     from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-    from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+
+
+def _lane_where(cond: Array, a: Any, b: Any) -> Any:
+    """Per lane select between two pytrees with a leading lane axis."""
+    return jax.tree.map(lambda x, y: jnp.where(cond.reshape(cond.shape + (1,) * (x.ndim - 1)), x, y), a, b)
 
 
 class RolloutEnvWrapper:
     """
-    Environment wrapper for gym environments. Adds support for executing a whole trajectory based on a policy,
-    instead of only giving a step based interface to the outside.
+    Environment wrapper for JAX environments. Adds support for executing whole trajectories based on a policy in E
+    lockstep lanes, instead of only giving a step based interface to the outside.
     """
 
     def __init__(self, mc: "ModelConfiguration") -> None:
@@ -38,50 +43,35 @@ class RolloutEnvWrapper:
         self.conf = conf
         self.num_epochs = conf.get_root("num_epochs")
         self.env_name = conf["name"]
-        self.env = gym.make(self.env_name, render_mode="human" if self.render else None)
-        # one env, so the running stats live on this wrapper; a saved run reloads them and freezes them
-        self._norm: NormalizeObservation | None = None
-        if conf.to_dict().get("obs_norm", False):
-            self.env = self._norm = NormalizeObservation(self.env)
-            path = join(self.mc.run_root, "model", "obs_rms.npz")
-            if exists(path):
-                self.load_obs_rms(path)
+        self.env = make_env(self.env_name)
+        # running observation statistics of NormalizeObservation, part of the traced state (init_state)
+        self._obs_norm = bool(conf.to_dict().get("obs_norm", False))
+        self._num_envs = conf.get("num_envs", "auto")
         self._seed = conf.get_root("seed")
 
         self._normalize = conf.get("normalize", False)
         self._discount = conf["discount"]
 
-        self.epoch = 0
-
-        # set best measured reward to lowest possible reward
-        self.best_reward = float(np.finfo(np.float64).min)
-        self.max_traj_len = 0
         self.cli = CliPrinter().instance
-        self.created_trajectories = 0
-        self.obs_sp = cast(Box, self.env.observation_space)
-        self.act_sp = cast(Box, self.env.action_space)
-        self.thread_lock = threading.Lock()
+        self.obs_sp = Bounds(-self.env.obs_high, self.env.obs_high)
+        self.act_sp = Bounds(self.env.action_low, self.env.action_high)
 
         # observations are scaled by the (finite) upper bound of the observation space if normalize is set
         high = np.asarray(self.obs_sp.high, dtype=np.float64)
-        self._obs_scale = np.where(np.isfinite(high) & (high > 0), high, 1.0)
+        self._obs_scale = np.where(np.isfinite(high) & (high > 0), high, 1.0).astype(np.float32)
 
         # affine reward transform r' = reward_scale * r + reward_offset used for training only (evaluation scripts
         # report the raw environment return)
         self._reward_scale = conf.get("reward_scale", 1.0)
         self._reward_offset = conf.get("reward_offset", 0.0)
 
-        self.state_filter = RunningCenteredFilter("states", self.observation_dim)
-        self.reward_filter = RunningCenteredFilter("rewards", 1)
-
-    def load_obs_rms(self, path: str) -> None:
-        """Load stored observation statistics and freeze them."""
-        assert self._norm is not None
-        stats = np.load(path)
-        self._norm.obs_rms.mean = stats["mean"].copy()
-        self._norm.obs_rms.var = stats["var"].copy()
-        self._norm.obs_rms.count = float(stats["count"])
-        self._norm.update_running_mean = False
+    def init_state(self) -> dict[str, Any]:
+        """The traced statistics of this environment: observation normalisation and the two running filters."""
+        return {
+            "obs_rms": RunningMeanStd.create(self.observation_dim),
+            "state_filter": RunningCenteredFilter("states", self.observation_dim),
+            "reward_filter": RunningCenteredFilter("rewards", 1),
+        }
 
     def discount(self) -> float:
         """
@@ -90,163 +80,217 @@ class RolloutEnvWrapper:
         """
         return self._discount
 
-    def _preprocess(self, obs: np.ndarray) -> np.ndarray:
-        obs = np.asarray(obs, dtype=np.float64)
-        return obs / self._obs_scale if self._normalize else obs
+    def num_envs(self, batch_size: int, max_steps: int) -> int:
+        """Number of lockstep lanes E: ``env_num_envs``, or ``ceil(batch_size / max_steps)`` for ``auto``."""
+        if self._num_envs == "auto" or self._num_envs is None:
+            return max(1, -(-batch_size // max_steps))
+        return int(self._num_envs)
 
-    def reset(self) -> np.ndarray:
-        """
-        Resets the environment. The very first reset is seeded with the configured seed.
-        :return: The state after the reset.
-        """
-        if self._seed is not None:
-            cs, _info = self.env.reset(seed=int(self._seed))
-            self.act_sp.seed(int(self._seed))
-            self._seed = None
-        else:
-            cs, _info = self.env.reset()
-        return self._preprocess(cs)
+    def _preprocess(self, obs: Array, obs_rms: RunningMeanStd) -> Array:
+        obs = obs_rms.normalize(obs) if self._obs_norm else jnp.asarray(obs, DTYPE)
+        return obs / self._obs_scale if self._normalize else obs
 
     def execute_policy(
         self,
+        state: ModelState,
+        key: PRNGKeyArray,
         policy: Any,
-        max_steps: int | None,
+        max_steps: int,
         batch_size: int,
         exploration: bool = True,
-        render: bool = False,
-        rew_field_name: str | None = None,
-    ) -> TrajectoryCollection:
+        num_envs: int | None = None,
+        update_stats: bool = True,
+        record: bool = False,
+    ) -> tuple[ModelState, TrajectoryCollection, dict[str, Array]]:
         """
-        Executes the policy for complete episodes (each at most max_steps long) until at least batch_size
-        transitions were collected.
+        Executes the policy for complete episodes (each at most max_steps long) in E lanes until at least batch_size
+        transitions were collected. A lane resets after an episode while fewer than batch_size transitions are
+        collected, otherwise it stops; no episode is cut.
+        :param state: The traced model state (observation statistics and filters are read and updated).
+        :param key: The random key of resets and action samples.
         :param policy: The policy to evaluate.
         :param max_steps: The maximum number of steps per episode.
         :param batch_size: The minimum number of transitions to collect.
         :param exploration: Sample from the policy if True, otherwise use its mode.
-        :param render: Render the first episode.
-        :param rew_field_name: If given, log the mean and std of the episodic return under this name.
-        :return: A trajectory collection.
+        :param num_envs: The number of lanes E, or None for ``self.num_envs(batch_size, max_steps)``.
+        :param update_stats: Update the observation statistics and filters if True, otherwise freeze them.
+        :param record: Annotate the raw next observations ``raw_next_states`` and, for MuJoCo environments, the joint
+            positions ``qpos`` after each step (evaluation and rendering only, training rollouts do not carry them).
+        :return: The new state, the trajectory collection and the rollout metrics.
         """
+        e = num_envs if num_envs is not None else self.num_envs(batch_size, max_steps)
+        length = -(-batch_size // e) + max_steps
+        sd, ad = self.observation_dim, self.action_dim
+        obs_rms, state_filter, reward_filter = (
+            state.get("obs_rms"),
+            state.get("state_filter"),
+            state.get("reward_filter"),
+        )
 
-        t = 0
-        k = 0
-        trajectories = []
-        while t < batch_size:
-            tr = self.execute_policy_once(max_steps, policy, render and k == 0, opt=not exploration)
-            trajectories.append(tr)
-            t += len(tr)
-            k += 1
+        key, k_reset = jax.random.split(key)
+        env_state, raw = jax.vmap(self.env.reset)(jax.random.split(k_reset, e))
+        active = jnp.ones(e, bool)
+        if self._obs_norm and update_stats:
+            obs_rms = obs_rms.update(raw, active)
+        cs = self._preprocess(raw, obs_rms)
+        if update_stats:
+            state_filter = state_filter.register(cs, active)
 
-        if rew_field_name is not None:
-            # the logged return is the one of the environment, not of the (optionally scaled) training reward
-            returns = [traj.raw_return for traj in trajectories]
-            mean_return = float(np.mean(returns))
-            self.best_reward = max(self.best_reward, mean_return)
-            log = self.mc["log"]
-            log.log({rew_field_name: [np.mean(returns), np.std(returns)]})
-            if log.has_field("steps"):
-                log.log({"steps": [t]})
-            self.total_steps = getattr(self, "total_steps", 0) + t
+        def zeros(*shape: int, dtype: Any = DTYPE) -> Array:
+            return jnp.zeros((e, length, *shape), dtype)
 
-        self.epoch += 1
-        if self._norm is not None and self._norm.update_running_mean:
-            rms = self._norm.obs_rms
-            np.savez(
-                join(self.mc.run_root, "model", "obs_rms.npz"),
-                mean=rms.mean,
-                var=rms.var,
-                count=np.float64(rms.count),
-            )
+        buf = {
+            "states": zeros(sd),
+            "next_states": zeros(sd),
+            "actions": zeros(ad),
+            "rewards": zeros(1),
+            "raw_rewards": zeros(),
+            "dones": zeros(1),
+            "log_likelihoods": zeros(1),
+            "ends": zeros(dtype=bool),
+            "mask": zeros(dtype=bool),
+            "time": zeros(dtype=jnp.int32),
+        }
+        # static check: only MuJoCo adapters expose the model and the joint positions of their states
+        record_qpos = record and hasattr(self.env, "mj_model")
+        if record:
+            buf["raw_next_states"] = zeros(sd)
+        if record_qpos:
+            buf["qpos"] = zeros(self.env.qpos(env_state).shape[-1])  # type: ignore[attr-defined]
+        carry = (
+            jnp.asarray(0),
+            key,
+            env_state,
+            cs,
+            jnp.zeros(e, jnp.int32),
+            active,
+            jnp.asarray(0),
+            buf,
+            obs_rms,
+            state_filter,
+            reward_filter,
+        )
 
-        tj = TrajectoryCollection(self, sum([len(tra) for tra in trajectories]))
-        tj.extend(trajectories)
-        tj.print()
-        return tj
+        def cond(c: Any) -> Array:
+            i, _, _, _, _, active, *_ = c
+            return (i < length) & jnp.any(active)
 
-    def execute_policy_once(
-        self, max_steps: int | None, policy: Any, render: bool = False, opt: bool = False
-    ) -> "Trajectory":
-        """
-        Execute a policy once for the maximum number of steps or the environment sends done.
-        :param max_steps: The maximum number of steps, if done not set.
-        :param policy: The policy to use.
-        :param render: Render the environment.
-        :param seed: Set a seed if wanted.
-        :return: The finalized and built trajectory.
-        """
-
-        # reset environment and create empty trajectory
-        env = self.env
-        cs = self.reset()
-        self.state_filter.register(cs)
-
-        # create new trajectory builder
-        with self.thread_lock:
-            new_id = self.created_trajectories
-            self.created_trajectories += 1
-
-        traj_builder = TrajectoryBuilder(new_id, self, cs)
-        t = 0
-        raw_return = 0.0
-
-        # repeat for the number of steps
-        while max_steps is None or t < max_steps:
-            # sample distribution based on state
-            tcs = torch.Tensor(cs)
-            tcs = tcs.view([1, -1])
+        def body(c: Any) -> Any:
+            i, key, env_state, cs, t, active, count, buf, obs_rms, state_filter, reward_filter = c
+            key, k_act, k_step, k_reset = jax.random.split(key, 4)
 
             # sample action and calc log likelihood
-            suff_stats = policy.forward(tcs)
-            a = policy.mode(suff_stats=suff_stats) if opt else policy.sample_actions(suff_stats=suff_stats)
+            suff_stats = policy.forward(cs)
+            a = (
+                policy.mode(suff_stats=suff_stats)
+                if not exploration
+                else policy.sample_actions(k_act, suff_stats=suff_stats)
+            )
+            a = a.reshape(e, ad)
+            ll = policy.log_prob(a, suff_stats=suff_stats).reshape(e)
 
-            ll = policy.log_prob(a, suff_stats=suff_stats)
+            stepped, raw_nxt, r, terminated, truncated = jax.vmap(self.env.step)(
+                env_state, a, jax.random.split(k_step, e)
+            )
+            if self._obs_norm and update_stats:
+                obs_rms = obs_rms.update(raw_nxt, active)
+            nxt = self._preprocess(raw_nxt, obs_rms)
+            if update_stats:
+                state_filter = state_filter.register(nxt, active)
+            r_train = self._reward_scale * r + self._reward_offset
+            if update_stats:
+                reward_filter = reward_filter.register(r_train[:, None], active)
 
-            # prepare for usage
-            ll = float(ll.detach().reshape(-1)[0])
-            a = a.detach().reshape(-1).numpy().astype(np.float64)
-            cs, r, terminated, truncated, _info = env.step(a)
-            done = terminated or truncated
-            cs = self._preprocess(cs)
-            self.state_filter.register(cs)
-            raw_return += float(r)
-            r = self._reward_scale * r + self._reward_offset
-            self.reward_filter.register(np.asarray([r], dtype=np.float64))
-
-            t += 1
+            t = t + 1
             # only true terminations are stored as done, so truncated episodes can be bootstrapped
-            traj_builder.observe(a, float(r), cs, ll, int(terminated))
+            end = terminated | truncated | (t >= max_steps)
+            step_vals = {
+                "states": cs,
+                "next_states": nxt,
+                "actions": a,
+                "rewards": r_train[:, None],
+                "raw_rewards": r,
+                "dones": terminated.astype(DTYPE)[:, None],
+                "log_likelihoods": ll[:, None],
+                "ends": end,
+                "mask": active,
+                "time": jnp.full(e, i, jnp.int32),
+            }
+            if record:
+                step_vals["raw_next_states"] = jnp.asarray(raw_nxt, DTYPE)
+            if record_qpos:
+                step_vals["qpos"] = jnp.asarray(self.env.qpos(stepped), DTYPE)  # type: ignore[attr-defined]
+            # index i is written once, so selecting on the slice instead of the whole buffer gives identical outputs
+            buf = {
+                k: buf[k].at[:, i].set(jnp.where(active.reshape(active.shape + (1,) * (v.ndim - 1)), v, buf[k][:, i]))
+                for k, v in step_vals.items()
+            }
+            count = count + jnp.sum(active)
 
-            # render if needed
-            if render:
-                env.render()
+            # finished lanes start a new episode while the batch is not complete, otherwise they stop
+            finished = active & end
+            cont = finished & (count < batch_size)
+            active = active & ~(finished & (count >= batch_size))
+            reset_state, reset_raw = jax.vmap(self.env.reset)(jax.random.split(k_reset, e))
+            if self._obs_norm and update_stats:
+                obs_rms = obs_rms.update(reset_raw, cont)
+            reset_cs = self._preprocess(reset_raw, obs_rms)
+            if update_stats:
+                state_filter = state_filter.register(reset_cs, cont)
+            env_state = _lane_where(cont, reset_state, _lane_where(active, stepped, env_state))
+            cs = jnp.where(cont[:, None], reset_cs, nxt)
+            t = jnp.where(cont, 0, t)
+            return (i + 1, key, env_state, cs, t, active, count, buf, obs_rms, state_filter, reward_filter)
 
-            # break if necessary
-            if done:
-                break
+        _, _, _, _, _, _, count, buf, obs_rms, state_filter, reward_filter = jax.lax.while_loop(cond, body, carry)
+        trajectories = Trajectory(
+            buf["states"],
+            buf["next_states"],
+            buf["actions"],
+            buf["rewards"],
+            buf["raw_rewards"],
+            buf["dones"],
+            buf["log_likelihoods"],
+            buf["ends"],
+            buf["mask"],
+            annotations={k: buf[k] for k in ("time", "raw_next_states", "qpos") if k in buf},
+        )
+        tc = TrajectoryCollection(self, trajectories)
+        stats = tc.episode_stats()
+        metrics = {
+            "steps": count,
+            "episode_returns": stats["returns"],
+            "episode_valid": stats["valid"],
+            "episode_lengths": stats["lengths"],
+            "max_traj_len": jnp.max(jnp.where(stats["valid"], stats["lengths"], 0)),
+        }
+        state = state.set("obs_rms", obs_rms).set("state_filter", state_filter).set("reward_filter", reward_filter)
+        return state, tc, metrics
 
-        # compile using the discount factor
-        traj = traj_builder.finalize()
-        traj.raw_return = raw_return
-        self.max_traj_len = max(self.max_traj_len, t)
-        return traj
+    def execute_policy_once(
+        self,
+        state: ModelState,
+        key: PRNGKeyArray,
+        max_steps: int,
+        policy: Any,
+        opt: bool = False,
+        update_stats: bool = True,
+        record: bool = False,
+    ) -> tuple[ModelState, Trajectory]:
+        """
+        Execute a policy once for the maximum number of steps or until the environment terminates.
+        :return: The new state and the single-lane trajectory of the episode.
+        """
+        state, tc, _ = self.execute_policy(
+            state, key, policy, max_steps, 1, exploration=not opt, num_envs=1, update_stats=update_stats, record=record
+        )
+        return state, jax.tree.map(lambda x: x[0], tc.trajectories())
 
     def close(self) -> None:
-        self.env.close()
-
-    def frozen_eval_env(self, render_mode: str) -> gym.Env:
-        """New env for greedy eval. Observation stats are the training ones and do not update."""
-        env: gym.Env = gym.make(self.env_name, render_mode=render_mode)
-        if self._norm is None:
-            return env
-        wrapped = NormalizeObservation(env)
-        wrapped.obs_rms.mean = np.array(self._norm.obs_rms.mean, copy=True)
-        wrapped.obs_rms.var = np.array(self._norm.obs_rms.var, copy=True)
-        wrapped.obs_rms.count = self._norm.obs_rms.count
-        wrapped.update_running_mean = False
-        return wrapped
+        """JAX environments hold no resources."""
 
     @property
-    def observation_space(self) -> Box:
+    def observation_space(self) -> Bounds:
         """
         Bounds for the observation space.
         :return: Bound of the observation space.
@@ -255,7 +299,7 @@ class RolloutEnvWrapper:
         return self.obs_sp
 
     @property
-    def action_space(self) -> Box:
+    def action_space(self) -> Bounds:
         """
         Bounds for the action space.
         :return: Bound of the action space.
@@ -268,7 +312,7 @@ class RolloutEnvWrapper:
         Dimension of observation space.
         :return: Dimension of the observation space.
         """
-        return int(np.prod(self.observation_space.high.shape))
+        return int(self.env.observation_dim)
 
     @property
     def action_dim(self) -> int:
@@ -276,4 +320,4 @@ class RolloutEnvWrapper:
         Dimension of action space.
         :return: Dimension of the action space.
         """
-        return int(np.prod(self.action_space.high.shape))
+        return int(self.env.action_dim)

@@ -31,7 +31,13 @@ from abstract_rl.scripts.hydra_conf import steps as steps_budget
 
 Runs = dict[tuple[str, str], dict[int, tuple[ndarray, ndarray, ndarray | None]]]
 
-LABELS = {"trpo": "TRPO (abstract_rl)", "mpo": "MPO (abstract_rl)", "sb3_trpo": "TRPO (SB3)", "sb3_td3": "TD3 (SB3)"}
+# abstract_rl runs on the JAX environment ports, the SB3 baselines on Gymnasium v5
+LABELS = {
+    "trpo": "TRPO (abstract_rl)",
+    "mpo": "MPO (abstract_rl)",
+    "sb3_trpo": "TRPO (SB3, Gymnasium)",
+    "sb3_td3": "TD3 (SB3, Gymnasium)",
+}
 COLORS = {"trpo": "C0", "mpo": "C1", "sb3_trpo": "C2", "sb3_td3": "C3"}
 
 

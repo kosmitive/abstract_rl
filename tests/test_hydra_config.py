@@ -1,6 +1,6 @@
-import gymnasium as gym
 import pytest
 
+from abstract_rl.env.jax_envs import make_env
 from abstract_rl.scripts.hydra_conf import CONFIG_DIR, load, run_dict
 
 ENVS = sorted(path.stem for path in (CONFIG_DIR / "env").glob("*.yaml"))
@@ -11,7 +11,7 @@ ALGS = ("mpo", "trpo")
 @pytest.mark.parametrize("alg", ALGS)
 def test_composed_config_names_a_registered_environment(env, alg):
     conf = run_dict(load([f"env={env}", f"alg={alg}"]))
-    assert gym.spec(conf["env_name"]).id == conf["env_name"]
+    assert make_env(conf["env_name"]) is not None
 
 
 def test_deliberate_environment_overrides():
@@ -45,3 +45,9 @@ def test_command_line_overrides_beat_environment_defaults():
     assert conf["policy_sigma"] == 1.5 and conf["policy_cov_type"] == "fixed"
     assert conf["seed"] == 3 and conf["data_root"] == "/tmp/x" and conf["max_env_steps"] == 400_000
     assert "max_env_steps" not in run_dict(load(["env=pendulum", "alg=trpo"]))
+
+
+def test_jax_run_keys():
+    conf = run_dict(load(["env=pendulum", "alg=trpo", "seeds=[1,2,3]"]))
+    assert conf["seeds"] == [1, 2, 3] and conf["jax_platform"] == "cpu" and conf["epochs_per_call"] == 1
+    assert run_dict(load(["env=pendulum", "alg=trpo"]))["seeds"] is None

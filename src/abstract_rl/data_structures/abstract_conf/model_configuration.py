@@ -5,10 +5,13 @@ from os.path import exists, join
 from shutil import copy, copytree
 from typing import Any
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 
@@ -91,29 +94,37 @@ class ModelConfiguration:
         self.overall_step = conf["overall_step"]
 
         for k in self.syncables:
-            model = self.syncables[k][1]
-            model.load_state_dict(torch.load(join(self.run_root, "model/last", f"{k}.data")))
+            s, model, target = self.syncables[k]
+            model = eqx.tree_deserialise_leaves(join(self.run_root, "model/last", f"{k}.eqx"), model)
+            self.syncables[k] = (s, model, target)
 
         return self.overall_step
 
-    def store(self, name: str) -> None:
-        """Store the model configuration."""
+    def store(self, name: str, models: dict[str, Any] | None = None) -> None:
+        """Store the model configuration and the (unbatched) models of this run, by default the online syncables."""
 
         # store the config as a json file
         dconf = self["conf"].to_dict()
-        dconf["seed"] = np.random.randint(1000000)  # noqa: NPY002
         dconf["overall_step"] = self.overall_step
 
         r = json.dumps(dconf, indent=4, sort_keys=True)
         with open(join(self.run_root, "run.conf"), "w") as file_conf:
             file_conf.write(r)
 
-        for k in self.syncables:
-            model = self.syncables[k][1]
-            torch_path = join(self.model_root, name)
-            if not exists(torch_path):
-                mkdir(torch_path)
-            torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
+        models = dict(models) if models is not None else {k: v[1] for k, v in self.syncables.items()}
+        obs_rms = models.pop("obs_rms", None)
+        if obs_rms is not None:
+            np.savez(
+                join(self.model_root, "obs_rms.npz"),
+                mean=np.asarray(obs_rms.mean),
+                var=np.asarray(obs_rms.var),
+                count=np.asarray(obs_rms.count, np.float64),
+            )
+        model_path = join(self.model_root, name)
+        if not exists(model_path):
+            mkdir(model_path)
+        for k, model in models.items():
+            eqx.tree_serialise_leaves(join(model_path, f"{k}.eqx"), model)
 
     def store_best(self, ret: float, epoch: int) -> None:
         """Copy the stored ``last`` models (and observation statistics) to ``best`` if ``ret`` is a new best return."""
@@ -187,3 +198,30 @@ class ModelConfiguration:
                 o.sync(to)
 
         self.overall_step += 1
+
+    def state(self) -> ModelState:
+        """
+        The traced part of this configuration: every sync able and every main element which is a pytree of arrays
+        (optimiser states, buffers). Host objects like the conf, the logger or the operators stay here.
+        """
+
+        def is_traced(obj: Any) -> bool:
+            leaves = jax.tree.leaves(obj)
+            return len(leaves) > 0 and all(eqx.is_array(leaf) for leaf in leaves)
+
+        data = {k: v for k, v in self.data.items() if is_traced(v)}
+        syncables = {k: (o, to) for k, (_, o, to) in self.syncables.items()}
+        steps = {k: s for k, (s, _, _) in self.syncables.items()}
+        return eqx.tree_at(
+            lambda st: st.overall_step,
+            ModelState.create(data, syncables, steps),
+            jnp.asarray(self.overall_step, jnp.int32),
+        )
+
+    def load_state(self, state: ModelState) -> None:
+        """Write a (host copy of a) traced state back, e.g. before ``store``."""
+        for k, v in state.data.items():
+            self.data[k] = v
+        for k, (o, to) in state.syncables.items():
+            self.syncables[k] = (self.syncables[k][0], o, to)
+        self.overall_step = int(jnp.max(state.overall_step))

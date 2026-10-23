@@ -1,37 +1,32 @@
-"""``obs_norm`` is Gymnasium's NormalizeObservation, reloaded frozen for eval."""
+"""``obs_norm`` is Gymnasium's NormalizeObservation: the stats see every valid observation (resets and steps)."""
 
-from os.path import exists, join
-
+import jax
 import numpy as np
-from gymnasium.wrappers import NormalizeObservation
 
-from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
+from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.policy.continuous.select_policy import select_policy
 
 
-def test_obs_norm_saves_training_stats_and_freezes_them(make_pendulum_mc):
-    plain = make_pendulum_mc()
-    assert not isinstance(plain.env.env, NormalizeObservation)
-    plain.env.close()
-    mc = make_pendulum_mc(obs_norm=True, env_name="TestPointMass-v0")
-    env = mc.env
-    assert isinstance(env.env, NormalizeObservation) and env.env.update_running_mean
+def test_obs_norm_counts_only_valid_observations(make_pendulum_mc):
+    mc = make_pendulum_mc(obs_norm=True, env_name="TestPointMass-v0", env_num_envs=3)
     with mc["conf"].ns("policy"):
-        policy = select_policy(mc)
-    env.execute_policy(policy, 5, 8)
-    path = join(mc.run_root, "model", "obs_rms.npz")
-    assert exists(path)
-    saved = np.load(path)
-    with mc["conf"].ns("env"):
-        frozen = RolloutEnvWrapper(mc)
-    assert frozen.env.update_running_mean is False
-    assert np.allclose(frozen.env.obs_rms.mean, saved["mean"])
-    count = frozen.env.obs_rms.count
-    frozen.reset()
-    assert frozen.env.obs_rms.count == count
-    raw = np.zeros(env.observation_dim, np.float32)
-    got = frozen.env.observation(raw)
-    expected = (raw - frozen.env.obs_rms.mean) / np.sqrt(frozen.env.obs_rms.var + frozen.env.epsilon)
-    assert np.allclose(got, expected)
-    env.close()
-    frozen.close()
+        policy = select_policy(mc, jax.random.key(0))
+    env = mc.env
+    state = ModelState.create(env.init_state(), {"policy": (policy, policy)})
+    state, tc, m = env.execute_policy(state, jax.random.key(1), policy, 30, 40)
+    episodes = int(np.asarray(m["episode_valid"]).sum())
+    # one reset observation per episode plus one observation per step, starting from Gymnasium's count of 1e-4
+    np.testing.assert_allclose(float(state.get("obs_rms").count), int(m["steps"]) + episodes + 1e-4, rtol=1e-6)
+    # stored states are normalized: roughly zero mean, unit scale
+    states = np.asarray(tc.trajectories().states)[np.asarray(tc.trajectories().mask)]
+    assert np.all(np.abs(states.mean(axis=0)) < 1.0)
+
+
+def test_without_obs_norm_the_stats_stay_untouched(make_pendulum_mc):
+    mc = make_pendulum_mc(env_num_envs=1)
+    with mc["conf"].ns("policy"):
+        policy = select_policy(mc, jax.random.key(0))
+    env = mc.env
+    state = ModelState.create(env.init_state(), {"policy": (policy, policy)})
+    state, _, _ = env.execute_policy(state, jax.random.key(1), policy, 200, 200)
+    np.testing.assert_allclose(float(state.get("obs_rms").count), 1e-4)
