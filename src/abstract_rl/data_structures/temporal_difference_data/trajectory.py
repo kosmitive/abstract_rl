@@ -31,7 +31,7 @@ class Trajectory:
         self._rewards = self.__data_frame.loc[:, "r":"r"].to_numpy(copy=True)[:-1]
         # return of the environment, differs from total_reward if the training reward is scaled or shifted
         self.raw_return = np.sum(self._rewards)
-        # pandas .values is a non-writable view; torch.Tensor warns and refuses in-place writes on it
+        # pandas .values is a non-writable view, copy so the arrays can be written in place
         self._actions = self.__data_frame.loc[:, "a_0" : f"a_{self._ad - 1}"].to_numpy(copy=True)[:-1]
         self._dones = self.__data_frame.loc[:, "d":"d"].to_numpy(copy=True)[:-1]
         self._log_likelihoods = self.__data_frame.loc[:, "ll":"ll"].to_numpy(copy=True)[:-1]

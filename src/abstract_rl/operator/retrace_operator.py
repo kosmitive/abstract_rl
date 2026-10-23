@@ -1,7 +1,8 @@
-import torch
+import mlx.core as mx
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
@@ -29,7 +30,7 @@ class RetraceOperator(TrajectoryOperator):
         self.discount = env.discount()
         self.env = env
 
-        self.ret_lambda = torch.Tensor([self.conf["lambda"]])
+        self.ret_lambda = float(self.conf["lambda"])
         self.ret_bootstrap = self.conf.get_root("mem_bootstrap_steps")
         self.ret_add_acts = self.conf["add_acts"]
 
@@ -41,47 +42,46 @@ class RetraceOperator(TrajectoryOperator):
 
     def transform(self, trajectory: Trajectory) -> None:
         """
-        Transform a trajectory with the current instance of the evaluation operator.
+        Transform a trajectory with the current instance of the evaluation operator. The annotations stay lazy MLX
+        arrays until transform_all evaluates them.
         :param trajectory: trajectory to transform.
         """
 
         # first rolling estimate of the exp q function
         discount = self.discount
 
-        # it is not necessary to correctly log the grads
-        with torch.no_grad():
-            # get truncated length
-            tl = len(trajectory)
+        # get truncated length
+        tl = len(trajectory)
 
-            # obtain q and v value estimates
-            states = torch.Tensor(trajectory.states)
-            actions = torch.Tensor(trajectory.actions)
-            q_vals = self.q_network.q_val(states, actions).view(-1)
+        # obtain q and v value estimates
+        states = to_mx(trajectory.states)
+        actions = to_mx(trajectory.actions)
+        q_vals = self.q_network.q_val(states, actions).reshape(-1)
 
-            # expectation of the next state under the evaluated (current) policy, the same policy defines the trace
-            # coefficients c; terminal states have no value
-            nxt_states = torch.Tensor(trajectory.next_states)
-            dones = torch.Tensor(trajectory.dones).view(-1)
-            nxt_v_vals = self.q_network.v_val(nxt_states, policy=self.policy).view(-1) * (1 - dones)
+        # expectation of the next state under the evaluated (current) policy, the same policy defines the trace
+        # coefficients c; terminal states have no value
+        nxt_states = to_mx(trajectory.next_states)
+        dones = to_mx(trajectory.dones).reshape(-1)
+        nxt_v_vals = self.q_network.v_val(nxt_states, policy=self.policy).reshape(-1) * (1 - dones)
 
-            # get import. sampling coefficients
-            c = self._def_bounded_importance_sampling_coefficients(trajectory).view(-1)
+        # get import. sampling coefficients
+        c = self._def_bounded_importance_sampling_coefficients(trajectory).reshape(-1)
 
-            # calc td errors for all t
-            r = torch.Tensor(trajectory.rewards).view(-1)
-            td_errors_q = r + discount * nxt_v_vals - q_vals
-            # Q_ret(s_t, a_t) = Q(s_t, a_t) + sum_{j=t}^{t+B-1} gamma^(j-t) (prod_{i=t+1}^{j} c_i) delta_j,
-            # computed vectorized over t by iterating over the offset j - t.
-            tq = q_vals + td_errors_q
-            coeff = torch.ones(tl)
-            for k in range(1, min(self.ret_bootstrap, tl)):
-                coeff = coeff[: tl - k] * discount * c[k:]
-                tq[: tl - k] += coeff * td_errors_q[k:]
+        # calc td errors for all t
+        r = to_mx(trajectory.rewards).reshape(-1)
+        td_errors_q = r + discount * nxt_v_vals - q_vals
+        # Q_ret(s_t, a_t) = Q(s_t, a_t) + sum_{j=t}^{t+B-1} gamma^(j-t) (prod_{i=t+1}^{j} c_i) delta_j,
+        # computed vectorized over t by iterating over the offset j - t (shifted adds, padded with zeros).
+        tq = q_vals + td_errors_q
+        coeff = mx.ones(tl)
+        for k in range(1, min(self.ret_bootstrap, tl)):
+            coeff = coeff[: tl - k] * discount * c[k:]
+            tq = tq + mx.concatenate([coeff * td_errors_q[k:], mx.zeros(k)])
 
-            trajectory["q"] = q_vals.view(-1, 1)
-            trajectory["tq"] = tq.view(-1, 1)
+        trajectory["q"] = q_vals.reshape(-1, 1)
+        trajectory["tq"] = tq.reshape(-1, 1)
 
-    def _def_bounded_importance_sampling_coefficients(self, trajectory: Trajectory) -> torch.Tensor:
+    def _def_bounded_importance_sampling_coefficients(self, trajectory: Trajectory) -> mx.array:
         """
         Calculated the bounded importance sampling coefficients.
         :param trajectory: The trajectory for which the coefficients have to be calculated
@@ -89,12 +89,11 @@ class RetraceOperator(TrajectoryOperator):
         """
 
         # obtain the bounded importance sampling coefficients coefficients
-        beh_lls = torch.Tensor(trajectory.log_likelihoods)
-        beh_lls = beh_lls.view([-1, 1])
-        s = torch.Tensor(trajectory.states)
-        a = torch.Tensor(trajectory.actions)
+        beh_lls = to_mx(trajectory.log_likelihoods).reshape([-1, 1])
+        s = to_mx(trajectory.states)
+        a = to_mx(trajectory.actions)
 
         pi_ll = self.policy.log_prob(a, states=s)
-        r = torch.exp(pi_ll - beh_lls)
-        c = torch.min(r, torch.ones(r.size())) * self.ret_lambda
+        r = mx.exp(pi_ll - beh_lls)
+        c = mx.minimum(r, 1.0) * self.ret_lambda
         return c

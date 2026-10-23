@@ -1,5 +1,3 @@
-import torch
-
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
@@ -30,12 +28,10 @@ class FilterOperator(TrajectoryOperator):
         :param trajectory: trajectory to transform.
         """
 
-        # deactivate grad
-        with torch.no_grad():
-            if self.filter_states and "unfiltered_states" not in trajectory:
-                trajectory["unfiltered_states"] = trajectory._states
-                trajectory._states = self.env.state_filter(trajectory["unfiltered_states"], False)
+        if self.filter_states and "unfiltered_states" not in trajectory:
+            trajectory["unfiltered_states"] = trajectory._states
+            trajectory._states = self.env.state_filter(trajectory["unfiltered_states"], False)
 
-            if self.filter_rewards and "unfiltered_rewards" not in trajectory:
-                trajectory["unfiltered_rewards"] = trajectory._rewards
-                trajectory._rewards = self.env.reward_filter(trajectory["unfiltered_rewards"], False)
+        if self.filter_rewards and "unfiltered_rewards" not in trajectory:
+            trajectory["unfiltered_rewards"] = trajectory._rewards
+            trajectory._rewards = self.env.reward_filter(trajectory["unfiltered_rewards"], False)

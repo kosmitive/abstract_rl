@@ -33,16 +33,13 @@ class FilterOperator(TrajectoryOperator):
         :param trajectory: trajectory to transform.
         """
 
-        # deactivate grad
-        with torch.no_grad():
+        if self.filter_states:
+            if 'unfiltered_states' not in trajectory:
+                trajectory['unfiltered_states'] = trajectory._states
+                trajectory._states = self.env.state_filter(trajectory['unfiltered_states'], False)
 
-            if self.filter_states:
-                if 'unfiltered_states' not in trajectory:
-                    trajectory['unfiltered_states'] = trajectory._states
-                    trajectory._states = self.env.state_filter(trajectory['unfiltered_states'], False)
-
-            if self.filter_rewards:
-                if 'unfiltered_rewards' not in trajectory:
-                    trajectory['unfiltered_rewards'] = trajectory._rewards
-                    trajectory._rewards = self.env.reward_filter(trajectory['unfiltered_rewards'], False)
+        if self.filter_rewards:
+            if 'unfiltered_rewards' not in trajectory:
+                trajectory['unfiltered_rewards'] = trajectory._rewards
+                trajectory._rewards = self.env.reward_filter(trajectory['unfiltered_rewards'], False)
 ```

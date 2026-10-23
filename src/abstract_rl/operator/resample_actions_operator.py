@@ -1,7 +1,6 @@
-import torch
-
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
@@ -31,18 +30,16 @@ class ResampleOperator(TrajectoryOperator):
 
     def transform(self, trajectory: Trajectory) -> None:
         """
-        Transform a trajectory with the current instance of the operator.
+        Transform a trajectory with the current instance of the operator. The annotations stay lazy MLX arrays until
+        transform_all evaluates them.
         """
 
         # sample actions for sample based
-        t_states = torch.Tensor(trajectory.states)
+        t_states = to_mx(trajectory.states)
         f_stats = self.policy.forward(t_states)
         sampled_actions = self.policy.sample_actions(suff_stats=f_stats, num_actions=self.add_act)
         ll = self.policy.log_prob(sampled_actions, suff_stats=f_stats)
         q_vals = self.q_net.q_val_multi(t_states, sampled_actions)
-        act_rew = sampled_actions.detach().numpy()
-        q_vals = q_vals.detach().numpy()
-        ll = ll.detach().numpy()
-        trajectory["add_act"] = act_rew
+        trajectory["add_act"] = sampled_actions
         trajectory["add_q"] = q_vals
         trajectory["add_pi"] = ll
