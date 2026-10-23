@@ -4,10 +4,11 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
+Modular [MLX](https://github.com/ml-explore/mlx) implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
 (environment wrapper, trajectory operators, policies, value functions). Python 3.13, [uv](https://docs.astral.sh/uv/),
 ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
-Stable-Baselines3.
+Stable-Baselines3. This branch is an experimental port of the PyTorch version on `main`, see
+[MLX port (experiment)](#mlx-port-experiment).
 
 | MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 | MPO on InvertedPendulum-v5 |
 |---|---|---|
@@ -31,7 +32,8 @@ uv sync                                   # add --extra mujoco and/or baselines 
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
-PyTorch comes from the CPU wheel index (enough for these small networks); remove the `[tool.uv.sources]` entry in
+MLX uses Metal on Apple silicon and its CPU backend on Linux (`mlx[cpu]`). PyTorch is only needed for the SB3
+baselines (`--extra baselines`). It comes from the CPU wheel index; remove the `[tool.uv.sources]` entry in
 `pyproject.toml` for the default CUDA build.
 
 ## Results
@@ -41,7 +43,9 @@ Configurations are Hydra YAML files in [`src/abstract_rl/conf/`](src/abstract_rl
 *Greedy return* is the mean of 20 seeded evaluation episodes with the policy mean (final policy), averaged over seeds
 ± std over seeds. *Solved* counts seeds whose greedy return reaches the threshold (Gymnasium reward threshold;
 Pendulum-v1 has none, -150 corresponds to swing-up and balance). *Steps to threshold* is the first step at which the
-smoothed training return reaches it (median over the seeds that do).
+smoothed training return reaches it (median over the seeds that do). The table was made with the PyTorch
+implementation of `main` (eb41282); the learning results of the MLX port are in
+[MLX port (experiment)](#mlx-port-experiment).
 
 | Environment | Algorithm | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
 |---|---|---|---|---|---|---|
@@ -108,7 +112,7 @@ uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render
 ```
 
 Configuration ([Hydra](https://hydra.cc)) ships inside the package in `src/abstract_rl/conf/`: `config.yaml` (`seed`,
-`data_root`, `max_env_steps`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
+`data_root`, `max_env_steps`, `device`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
 `success` threshold, `steps` budget), `tune_all/<env>.yaml` (overrides for both algorithms) and
 `tune/<env>_<alg>.yaml` (per-algorithm overrides). Environments: `pendulum`,
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
@@ -148,6 +152,155 @@ A training loop is a sequence of operator applications on trajectory collections
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
 
+## MLX port (experiment)
+
+This branch replaces PyTorch with [MLX](https://github.com/ml-explore/mlx) (`mlx>=0.32.4`) in the existing
+modules. There is no backend abstraction: the layout, the operators and the training loops are the ones of `main`
+(eb41282). The Gymnasium environments run on the host. The networks and the optimization run on the MLX device set by
+`device` in `conf/config.yaml`:
+
+- `cpu` or `gpu` (Metal) select the device directly.
+- `auto` is the default. It selects the GPU for MPO, if Metal is available, and the CPU for TRPO (see the
+  throughput below).
+
+### Deviations from the PyTorch version
+
+- **Compiled steps.** The TRPO step (surrogate, Fisher-vector products via `jvp` of `grad`, conjugate gradient, line
+  search) is one `mx.compile`d function. The conjugate gradient runs a fixed number of iterations and freezes the
+  iterate once it has converged, instead of exiting early. The line search evaluates all step sizes and selects the
+  first accepted one with `where`. The Adam steps of the V and Q functions, the MPO M-step and the temperature dual
+  are compiled as well, with the parameters and the Adam moments as implicit state.
+- **Precision.** Everything is float32, except the MPO temperature dual. The dual runs in float64 on the CPU, as
+  before, and in float32 on the GPU, because Metal has no float64.
+- **Random numbers.** MLX has its own generator, so a seed draws other actions than in the PyTorch version. Runs
+  are seeded, but they are not identical to the ones of `main`.
+- **Diagonal covariance only.** `cov_type: full` raises an error, because `mx.linalg.cholesky` has no gradient
+  (vjp).
+- **ELU.** `mlx.nn.elu` has a NaN gradient for pre-activations above about 88. The port uses its own ELU
+  (`misc/mixed.py`). Without it, the MPO critic diverges after about 25 epochs on Pendulum.
+- **Storage.** Models are stored as safetensors instead of `torch.save` files.
+- **Dependencies.** PyTorch is only part of the `baselines` extra (SB3).
+- **Not used:** `vmap` over seeds and custom kernels. Seeds run as separate processes.
+
+### Tests and Metal checks
+
+- `tests/test_torch_parity.py` compares the port with a fixture of the PyTorch implementation on the same weights
+  and batches. It covers the policy log-likelihood, mode and KL, the conjugate gradient, the TRPO step, the V and Q
+  Adam steps, TD, GAE, Retrace, the temperature dual and the M-steps.
+- `tests/test_mlx_capabilities.py` checks the MLX features the port relies on.
+- `tests/test_metal.py` compares Metal with the CPU and is skipped without Metal:
+
+| Metal vs CPU (M3 Max) | max abs diff | other |
+|---|---|---|
+| scatter-add gradient (duplicate indices) | 2.4e-7 | max \|g\| 3.8 |
+| compiled TRPO step, parameters | 8.4e-6 | norm rel 5.5e-6, step norm rel 2.7e-4 |
+| Q annotation 50k × 20 | 3.6e-7 | CPU 1.33 s, GPU 0.033 s |
+
+### Throughput (MacBook M3 Max, Pendulum-v1, environment steps per second)
+
+Notes on the setup:
+
+- All runs use nice 10 and are run one configuration at a time. Other jobs were running on the machine, so the
+  numbers vary by about 10–30% between repetitions.
+- TRPO is measured on epochs 6–11 (4,000 steps per epoch). MPO uses 1,000 steps per epoch. Its cost grows with the
+  replay memory, so MPO is reported at three memory sizes:
+  - epochs 1–4: up to 5k transitions
+  - epochs 15–24: about 20k transitions
+  - epochs 50–59: the full 50k memory, which is how most of a run looks
+- "5 seeds" is 5 processes summed for torch and MLX. The JAX rows come from the JAX port (PR #9, measured on the same
+  Mac on 2026-10-23). JAX jits the whole epoch, including JAX versions of the environments (gymnax), instead of
+  Gymnasium. Its "5 seeds" is one process, looping over the seeds (`loop`) or vmapping them (`vmap`), and its MPO
+  number is measured on epochs 1–11.
+
+| Implementation | Device | TRPO, 1 seed | TRPO, 5 seeds | MPO epochs 1–4, 1 seed | MPO epochs 1–4, 5 seeds | MPO epochs 15–24 | MPO epochs 50–59 |
+|---|---|---|---|---|---|---|---|
+| torch (`main`) | CPU | 5,272 | 25,471 | 542 | 2,427 | 222 | 124 |
+| torch (`main` + 3 fixes) | MPS | 245 | 1,171 | 38 | 170 | – | – |
+| **MLX (this branch)** | **CPU** | **6,357** | **26,054** | **1,068** | **3,730** | **444** | **225** |
+| **MLX (this branch)** | **GPU** | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **333** |
+| JAX (PR #9) | CPU | 61,860 | 85,167 loop / 65,837 vmap | 963 | 2,271 loop / 1,076 vmap | – | – |
+| JAX (PR #9) | Metal (jax-mps) | 2,469 | 11,469 vmap | 316 | 1,307 vmap | – | – |
+
+Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
+
+| Implementation | rollout | resample + annotation | E-step | M-step | Retrace | Q fit | epoch |
+|---|---|---|---|---|---|---|---|
+| torch (`main`), CPU | 0.12 | 1.50 | 1.72 | 0.38 | 0.91 | 3.42 | 8.07 |
+| MLX, CPU | 0.09 | 0.83 | 0.75 | 0.24 | 0.55 | 1.97 | 4.45 |
+| MLX, GPU | 0.35 | 0.14 | 0.10 | 0.24 | 0.13 | 2.00 | 3.00 |
+
+- **TRPO.** The rollout evaluates the policy once per environment step. On Metal every such call costs about
+  0.4 ms of dispatch and synchronization, which makes the rollout 3× slower than on the CPU (1.5 s vs 0.48 s per
+  epoch). The compiled TRPO step itself is faster on the GPU (0.012 s vs 0.034 s), but it is a small part of an
+  epoch. MLX on the CPU is about 20% faster than torch on the CPU.
+- **MPO.** With the full memory, resampling, annotation, E-step and Retrace are 4–8× faster on the GPU than on the
+  MLX CPU. The Q fit (1,000 small Adam steps per epoch) costs about the same on both devices. The rollout is slower
+  on the GPU for the same reason as in TRPO. The first GPU epoch includes compilation and the Metal warm-up.
+- Peak memory: the MLX CPU runs reached about 2.7 GB RSS (the MLX buffer cache), against about 0.3 GB for MLX on
+  the GPU and 0.75 GB for torch.
+- This is why `auto` uses the GPU for MPO and the CPU for TRPO.
+
+### torch with MPS
+
+To compare, the PyTorch code of `main` was run with `device=mps`, using a local harness only. `main` itself was not
+changed.
+
+- **Unsupported ops.** With `PYTORCH_ENABLE_MPS_FALLBACK` unset, no operation is unsupported. The run fails for three
+  code-level reasons:
+  1. `torch.Tensor(ndarray)` and `from_numpy` create CPU tensors. `set_default_device` does not change that.
+  2. `.numpy()` on an MPS tensor raises.
+  3. The float64 temperature dual is not supported on MPS.
+- **Fallback.** With these three points patched, TRPO and MPO run. With `PYTORCH_ENABLE_MPS_FALLBACK=1`, no
+  operation falls back to the CPU.
+- **Correctness.** MPS vs CPU on the same weights and batch:
+
+  | Check | max abs diff | other |
+  |---|---|---|
+  | TRPO step (incl. CG and line search) | 1.5e-5 | norm rel 1.0e-5 |
+  | MPO dual (float32 on MPS vs float64 on CPU) | 9.5e-7 | |
+  | 3 M-steps | 1.5e-8 | |
+  | Q annotation 50k × 20 | 3.3e-7 | 0.051 s on MPS vs 1.51 s on CPU |
+
+- **Speed.** Per epoch the time goes to:
+  - the rollout (TRPO 12.4 s, MPO 3.1 s), with one host-to-device copy and one synchronization per environment step
+  - the V and Q fits (TRPO 2.9 s, MPO 21.5 s), with one copy per minibatch
+  - In 12 TRPO epochs, the 55k host-to-device copies, 96k `float()` calls and 144k `.numpy()` calls cost 16 s, 32 s
+    and 25 s. These times include waiting for queued GPU work.
+- **Learning run.** A full learning run on MPS was skipped. At the measured speed it would take about 55 min for
+  TRPO and more than 6 h for MPO.
+- **Verdict.** torch with MPS computes correct results, but it is 14–22× slower than torch on the CPU for these
+  small networks. It is not a viable alternative without restructuring the rollout and the minibatch loops, which
+  would be an architecture change. The small fixes it needs anyway:
+  - a device-aware tensor helper instead of `torch.Tensor(ndarray)`
+  - `.cpu()` before `.numpy()`
+  - a float32 dual on MPS
+  - policy evaluation for the rollout on the CPU
+
+### Learning (Pendulum-v1, 800k steps, 5 seeds, greedy return of the final policy over 20 episodes)
+
+| Algorithm | MLX device | MLX: greedy return (mean ± std over seeds) | MLX: solved | torch (`main`) | JAX (PR #9) |
+|---|---|---|---|---|---|
+| TRPO | CPU | -124.5 ± 1.2 | 5/5 | -127.7 ± 2.7, 5/5 | -111.3, 5/5 |
+| MPO | GPU (`auto`) | -122.3 ± 1.6 | 5/5 | -123.3 ± 0.4, 5/5 | -106.2, 5/5 |
+
+Per seed: TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.9, -120.6, -122.3, -124.5, -123.1 (seeds 1–5). The
+wall time for 800k steps is about 2 min for TRPO (CPU) and about 44 min for MPO (GPU, two seeds at a time).
+
+### Verdict
+
+- **MLX is a reasonable drop-in replacement for PyTorch here.**
+  - The port keeps the architecture.
+  - It matches the PyTorch implementation numerically.
+  - It learns as well: Pendulum 5/5 for both algorithms, with returns within the spread of `main`.
+  - It is faster than torch on every configuration that was measured, by 1.2× for TRPO and up to 2× for MPO on the
+    CPU, and 2.7× for MPO with the full memory on the GPU.
+- **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
+  bound by the per-step policy evaluation of the Gymnasium rollout and is best on the CPU.
+- **Remaining limits:** no full covariance (Cholesky without a gradient), one extra workaround (ELU), and
+  Apple-only GPU support.
+- **Compared with JAX.** The large speedups of the JAX port come from jitting the environments and whole epochs,
+  not from the array library. That is an architecture change that this port deliberately does not make.
+
 ## Development
 
 ```bash
@@ -162,7 +315,8 @@ The original code (2019, Python 3.6, PyTorch 1.0, gym 0.12) targeted robot contr
 module layout and operator design. In short:
 
 - uv + `pyproject.toml` (Python ≥ 3.13, src layout, `abstract_rl.*` imports), ruff, mypy, pytest; `gym` → `gymnasium`
-  (`terminated`/`truncated`); modern PyTorch APIs.
+  (`terminated`/`truncated`); modern PyTorch APIs. On this branch MLX replaces PyTorch, see
+  [MLX port (experiment)](#mlx-port-experiment).
 - Removed (still in the history of `main`): the experimental SAC, the dueling Q network, the circular tail
   memory, the robot specific scripts, unused helpers.
 - Added: `DiagonalGaussianPolicy` for multi-dimensional actions, tanh action squashing, Hydra run configs,
