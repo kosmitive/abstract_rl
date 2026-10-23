@@ -13,14 +13,15 @@
 #  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 #  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
-import torch
-import torch.nn as nn
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy
 from abstract_rl.policy.continuous.univariate_gaussian_policy import UnivariateGaussianPolicy
@@ -53,11 +54,10 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         # set the standard act function
         self.env = mc.env
         self.mc = mc
-        self.loss = torch.nn.MSELoss()
+        self.loss = nn.losses.mse_loss
 
         # neural nets
         self.fc_net = MultilayerPerceptron(mc, np.concatenate(([sd + ad], struct, [1])), def_fn, layer_norm, init)
-        self.add_module("neural_net", self.fc_net)
 
         # set up trust regions
         VanillaGradient.__init__(self, self.fc_net, lr=conf.get("lr", 1e-3))
@@ -77,17 +77,20 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.fc_net.sync(v.fc_net)
         return v
 
-    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def __call__(self, states: mx.array, actions: mx.array) -> mx.array:
+        return self.forward(states, actions)
+
+    def forward(self, states: mx.array, actions: mx.array) -> mx.array:
         """Propagate the x in a forward fashion through the network."""
 
         return self.q_val(states, actions)
 
     def v_val(
         self,
-        states: torch.Tensor,
+        states: mx.array,
         exp_actions: int = 10,
         policy: DiagonalGaussianPolicy | UnivariateGaussianPolicy | None = None,
-    ) -> torch.Tensor:
+    ) -> mx.array:
         """Estimate v values by averaging q values of actions sampled from the target policy.
 
         :param states: A matrix [D, Ds] of states.
@@ -99,9 +102,9 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         policy = policy if policy is not None else self.mc.get("policy", True)
         samp_actions = policy.sample_actions(states, num_actions=exp_actions)
         q_vals = self.q_val_multi(states, samp_actions)
-        return torch.mean(q_vals, dim=1, keepdim=True)
+        return mx.mean(q_vals, axis=1, keepdims=True)
 
-    def q_val_multi(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def q_val_multi(self, states: mx.array, actions: mx.array) -> mx.array:
         """Evaluate K actions per state.
 
         :param states: A matrix [D, Ds] of states.
@@ -109,21 +112,21 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         :return: A matrix [D, K] of q values.
         """
         d, k = actions.shape[:2]
-        rep_states = states.repeat_interleave(k, dim=0)
+        rep_states = mx.repeat(states, k, axis=0)
         q_vals = self.q_val(rep_states, actions.reshape([d * k, -1]))
-        return q_vals.view([d, k])
+        return q_vals.reshape([d, k])
 
-    def q_val(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def q_val(self, states: mx.array, actions: mx.array) -> mx.array:
 
-        comb = torch.cat([states, actions], dim=1)
+        comb = mx.concatenate([states, actions], axis=1)
         q_vals = self.fc_net.forward(comb)
         return q_vals
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
+    def tr_obj(self, batch: Batch) -> mx.array:
 
         # build up mse loss for q function
-        t_states = torch.Tensor(batch.states)
-        t_actions = torch.Tensor(batch.actions)
-        q_vals = self.q_val(t_states, t_actions).view(-1)
-        q_targets = torch.Tensor(batch["tq"]).view(-1)
+        t_states = to_mx(batch.states)
+        t_actions = to_mx(batch.actions)
+        q_vals = self.q_val(t_states, t_actions).reshape(-1)
+        q_targets = to_mx(batch["tq"]).reshape(-1)
         return self.loss(q_vals, q_targets)

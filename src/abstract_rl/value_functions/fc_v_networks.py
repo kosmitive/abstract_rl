@@ -1,11 +1,13 @@
+import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
-import torch
-import torch.nn as nn
 
 from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.flat_params import get_flat_params_from
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
 
 
@@ -27,7 +29,7 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         # set the standard act function
         self.env = mc.env
         self.mc = mc
-        self.loss = torch.nn.MSELoss()
+        self.loss = nn.losses.mse_loss
 
         # neural nets
         layer_norm = conf.get("layer_norm", False)
@@ -37,7 +39,6 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
 
         # create network
         self.net = MultilayerPerceptron(mc, np.concatenate(([sd], struct, [1])), def_fn, layer_norm, init)
-        self.add_module("neural_net", self.net)
 
         # set up trust regions
         VanillaGradient.__init__(self, self.net, lr=conf.get("lr", 1e-3))
@@ -57,22 +58,23 @@ class FullyVNeuralNet(nn.Module, Syncable, VanillaGradient):
         self.net.sync(v.net)
         return v
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def __call__(self, states: mx.array) -> mx.array:
+        return self.forward(states)
+
+    def forward(self, states: mx.array) -> mx.array:
         """Propagate the x in a forward fashion through the network."""
         return self.v_val(states)
 
-    def v_val(self, states: torch.Tensor) -> torch.Tensor:
+    def v_val(self, states: mx.array) -> mx.array:
         v_vals = self.net.forward(states)
         return v_vals
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
-
-        loss = nn.MSELoss()
+    def tr_obj(self, batch: Batch) -> mx.array:
 
         # build up mse loss for v function
-        states = torch.Tensor(batch.states)
-        v_vals = self.v_val(states).view(-1)
-        v_targets = torch.Tensor(batch["tv"]).view(-1)
-        w = torch.cat([p.view(-1) for p in self.parameters()])
-        obj = loss(v_vals, v_targets) + self.l2 * torch.norm(w)
+        states = to_mx(batch.states)
+        v_vals = self.v_val(states).reshape(-1)
+        v_targets = to_mx(batch["tv"]).reshape(-1)
+        w = get_flat_params_from(self.net)
+        obj = self.loss(v_vals, v_targets) + self.l2 * mx.linalg.norm(w)
         return obj

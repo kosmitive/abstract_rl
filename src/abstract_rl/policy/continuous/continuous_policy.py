@@ -1,10 +1,27 @@
+import math
+from collections.abc import Callable
 from typing import Any
 
-import torch
+import mlx.core as mx
 
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.policy.policy import Policy
+
+LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
+
+
+def normal_log_prob(x: mx.array, mu: mx.array, sigma: mx.array) -> mx.array:
+    """Elementwise log density of ``N(mu, sigma^2)``, as ``torch.distributions.Normal.log_prob``."""
+    return -((x - mu) ** 2) / (2 * sigma**2) - mx.log(sigma) - LOG_SQRT_2PI
+
+
+def normal_kl(p_mu: mx.array, p_sigma: mx.array, q_mu: mx.array, q_sigma: mx.array) -> mx.array:
+    """Elementwise ``KL(N(p_mu, p_sigma^2) || N(q_mu, q_sigma^2))``, as ``torch.distributions.kl.kl_divergence``."""
+    var_ratio = (p_sigma / q_sigma) ** 2
+    t1 = ((p_mu - q_mu) / q_sigma) ** 2
+    return 0.5 * (var_ratio + t1 - 1 - mx.log(var_ratio))
 
 
 class ContinuousPolicy(Policy, Syncable):
@@ -13,8 +30,8 @@ class ContinuousPolicy(Policy, Syncable):
     """
 
     def log_prob(
-        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self, actions: mx.array, states: mx.array | None = None, suff_stats: mx.array | None = None
+    ) -> mx.array:
         """
         Can be used to obtain log probability of actions relative to states.
         :param actions: A matrix of size [D, K] containing actions for each state.
@@ -41,16 +58,36 @@ class ContinuousPolicy(Policy, Syncable):
         """
         raise NotImplementedError
 
-    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
+    def mode(self, states: mx.array | None = None, suff_stats: mx.array | None = None) -> mx.array:
         """
         The most likely action of each state.
         :return: A matrix [D, A].
         """
         raise NotImplementedError
 
+    def act(self, states: mx.array, opt: bool = False) -> tuple[mx.array, mx.array]:
+        """
+        Action and its log likelihood for a batch of states in one compiled call, used by the rollout. The parameters
+        and the random state are inputs of the compiled function, so it stays valid after every update.
+        :param states: A matrix of size [D, Ds].
+        :param opt: Use the mode instead of a sample.
+        :return: The actions and their log likelihoods.
+        """
+        fns: dict[bool, Callable] = self.__dict__.setdefault("_act_fns", {})
+        if opt not in fns:
+
+            def fn(s: mx.array) -> tuple[mx.array, mx.array]:
+                suff_stats = self.forward(s)
+                a = self.mode(suff_stats=suff_stats) if opt else self.sample_actions(suff_stats=suff_stats)
+                return a, self.log_prob(a, suff_stats=suff_stats)
+
+            state = [self.state, mx.random.state]
+            fns[opt] = mx.compile(fn, inputs=state, outputs=[mx.random.state])
+        return fns[opt](states)
+
     def kl_divergence(
-        self, batch: Batch, suff_stats: torch.Tensor | None = None, mode: str = "i-projection", est: str = "sum"
-    ) -> torch.Tensor:
+        self, batch: Batch, suff_stats: mx.array | None = None, mode: str = "i-projection", est: str = "sum"
+    ) -> mx.array:
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
@@ -60,12 +97,12 @@ class ContinuousPolicy(Policy, Syncable):
         tp = self.mc.get("policy", True)
 
         # calc sufficient statistics
-        states = torch.Tensor(batch.states)
+        states = to_mx(batch.states)
         if suff_stats is None:
             suff_stats = self.forward(states)
 
-        actions = torch.Tensor(batch.actions)
-        log_likelihoods = tp.log_prob(actions, states).detach()
+        actions = to_mx(batch.actions)
+        log_likelihoods = mx.stop_gradient(tp.log_prob(actions, states))
         new_lls = self.log_prob(actions, suff_stats=suff_stats)
 
         # use I projection
@@ -82,18 +119,15 @@ class ContinuousPolicy(Policy, Syncable):
             raise NotImplementedError
 
         # build kl terms adn sum up
-        kl = torch.exp(p) * (p - q)
+        kl = mx.exp(p) * (p - q)
 
         if est == "sum":
-            kl_est = torch.sum
+            return mx.sum(kl)
         elif est == "mean":
-            kl_est = torch.mean
-        else:
-            raise NotImplementedError
+            return mx.mean(kl)
+        raise NotImplementedError
 
-        return kl_est(kl)
-
-    def likelihood_ratio(self, batch: Batch) -> torch.Tensor:
+    def likelihood_ratio(self, batch: Batch) -> mx.array:
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param batch: Use this batch to estimate objective.
@@ -103,17 +137,17 @@ class ContinuousPolicy(Policy, Syncable):
         policy = self.mc.get("policy", False)
 
         # calculate the objective
-        states = torch.Tensor(batch.states)
-        actions = torch.Tensor(batch.actions)
+        states = to_mx(batch.states)
+        actions = to_mx(batch.actions)
         suff_stats = policy.forward(states)
-        ll = policy.log_prob(actions, suff_stats=suff_stats).view(-1)
-        old_ll = torch.Tensor(batch.log_likelihoods).view(-1)
+        ll = policy.log_prob(actions, suff_stats=suff_stats).reshape(-1)
+        old_ll = to_mx(batch.log_likelihoods).reshape(-1)
 
-        # calculate the ratio term
-        a_vals = torch.Tensor(batch["a"])
+        # calculate the ratio term (unbiased standard deviation as torch.std)
+        a_vals = to_mx(batch["a"]).reshape(-1)
         mean_a = a_vals.mean()
-        std_a = a_vals.std()
+        std_a = mx.sqrt(mx.sum((a_vals - mean_a) ** 2) / (a_vals.size - 1))
         advantages = (a_vals - mean_a) / (std_a + 1e-8)
-        r = torch.exp(ll - old_ll)
-        obj = torch.mean(r * advantages)
+        r = mx.exp(ll - old_ll)
+        obj = mx.mean(r * advantages)
         return -obj

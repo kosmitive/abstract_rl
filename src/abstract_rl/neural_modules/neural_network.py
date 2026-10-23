@@ -1,9 +1,9 @@
 import math as m
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
-import torch
-import torch.nn as nn
+import mlx.core as mx
+import mlx.nn as nn
 from numpy import ndarray
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
@@ -44,80 +44,75 @@ class MultilayerPerceptron(nn.Module, Syncable):
         self.layer_norm = layer_norm
         self.init = init
 
-        # select the correct activation functions.
-        self.act_fn: list[Any] = [
+        # select the correct activation functions. They are not parameters of the network (an underscore keeps them
+        # out of the parameter tree), as in the torch version where they were not registered as sub modules.
+        self._act_fn: list[Any] = [
             [select_activation(ae) for ae in a] if isinstance(a, list) else select_activation(a) for a in act_fn
         ]
 
-        # create the layers, add internally and initialize
-        self.layers = [nn.Linear(self.structure[i], self.structure[i + 1]) for i in range(len(self.structure) - 1)]
-        for i in range(len(self.layers)):
-            self.add_module(f"layer_{i}", self.layers[i])
+        # create the layers (registered as parameters through the list) and initialize
+        self.layers = [
+            nn.Linear(int(self.structure[i]), int(self.structure[i + 1])) for i in range(len(self.structure) - 1)
+        ]
         self.initialize_layers(init)
+
+    @property
+    def act_fn(self) -> list[Any]:
+        return self._act_fn
 
     def initialize_layers(self, init: str) -> None:
         """
-        This method can be used to initialize a layer
+        This method can be used to initialize a layer. Weights are ``[out, in]`` as in torch, so the fan in and fan
+        out of the glorot initializations match ``torch.nn.init``.
         """
 
         for layer in self.layers:
-            nn.init.zeros_(layer.bias)
-        if init == "xavier_gaussian":
-            for layer in self.layers:
-                nn.init.xavier_normal_(layer.weight)
-
-        elif init == "xavier_uniform":
-            for layer in self.layers:
-                nn.init.xavier_uniform_(layer.weight)
-
-        elif init == "orthogonal":
-            for layer in self.layers:
-                nn.init.orthogonal_(layer.weight, m.sqrt(2))
-
-        elif init == "gaussian":
-            for layer in self.layers:
-                nn.init.normal_(layer.weight, 0, 0.1)
-
-        elif init == "uniform":
-            for layer in self.layers:
-                nn.init.uniform_(layer.weight, -0.1, 0.1)
-
-        elif init == "high":
-            for layer in self.layers:
-                nn.init.uniform_(layer.weight, 0.05, 0.1)
-
-        elif init == "none":
+            layer.bias = mx.zeros_like(layer.bias)
+        if init == "none":
             return
-        else:
+        initializers: dict[str, Callable[[], Callable[..., mx.array]]] = {
+            "xavier_gaussian": lambda: nn.init.glorot_normal(),
+            "xavier_uniform": lambda: nn.init.glorot_uniform(),
+            "orthogonal": lambda: nn.init.orthogonal(m.sqrt(2)),
+            "gaussian": lambda: nn.init.normal(0.0, 0.1),
+            "uniform": lambda: nn.init.uniform(-0.1, 0.1),
+            "high": lambda: nn.init.uniform(0.05, 0.1),
+        }
+        if init not in initializers:
             raise NotImplementedError("initialization method not defined.")
+        fn = initializers[init]()
+        for layer in self.layers:
+            layer.weight = fn(layer.weight)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: mx.array) -> mx.array:
+        return self.forward(x)
+
+    def forward(self, x: mx.array) -> mx.array:
         """
         Apply represented function to x.
         :param x: The input to the network.
         :return: The outputted values of the network.
         """
 
-        # apply layer norm if wanted
+        # apply layer norm if wanted (no affine parameters, like the freshly created torch.nn.LayerNorm)
         out = x
         out = self.layers[0](out)
         if self.layer_norm:
-            layer_norm = nn.LayerNorm(out.shape[-1])
-            out = layer_norm(out)
+            out = mx.fast.layer_norm(out, None, None, 1e-5)
 
-        out = self.act_fn[0](out)
+        out = self._act_fn[0](out)
 
         # iteratively complete the graph in the middle
         num_layers = len(self.layers)
         for layer_idx in range(1, num_layers):
             # assemble linear part, layer norm and activation for each layer
             linear_f = self.layers[layer_idx](out)
-            act = self.act_fn[layer_idx] if len(self.act_fn) > 1 else self.act_fn[0]
+            act = self._act_fn[layer_idx] if len(self._act_fn) > 1 else self._act_fn[0]
             if isinstance(act, list):
-                splitted_ts = list(torch.split(linear_f, 1, dim=1))
+                splitted_ts = [linear_f[:, i : i + 1] for i in range(linear_f.shape[1])]
                 for i in range(len(splitted_ts)):
                     splitted_ts[i] = act[i](splitted_ts[i])
-                out = torch.cat(splitted_ts, dim=1)
+                out = mx.concatenate(splitted_ts, axis=1)
 
             else:
                 out = act(linear_f)
@@ -129,14 +124,17 @@ class MultilayerPerceptron(nn.Module, Syncable):
         Count parameters of module.
         """
 
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+        from mlx.utils import tree_flatten
+
+        params = cast(list[tuple[str, mx.array]], tree_flatten(self.trainable_parameters()))
+        return sum(p.size for _, p in params)
 
     def sync(self, v: "MultilayerPerceptron") -> "MultilayerPerceptron":
         """
-        Copies the content of the current instance to the supplied parameter instance.
+        Copies the content of the current instance to the supplied parameter instance. MLX arrays are immutable, so
+        sharing them is a copy: every later update of either module replaces its arrays.
         :param v: The other instance, where the current values should be copied to.
         """
 
-        # check if it can be copied
-        v.load_state_dict(self.state_dict())
+        v.update(self.parameters())
         return v

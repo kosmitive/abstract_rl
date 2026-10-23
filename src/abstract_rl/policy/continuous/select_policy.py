@@ -9,7 +9,8 @@ def select_policy(mc: ModelConfiguration) -> UnivariateGaussianPolicy | Diagonal
 
     The config key ``type`` (``policy_type`` on the top level) is ``univariate``, ``diagonal`` or ``auto`` (default):
     auto uses the univariate policy for one dimensional and the diagonal policy for multi dimensional actions.
-    ``cov_type`` ``full`` is a state-dependent Cholesky factor and uses the diagonal policy.
+    ``cov_type`` ``full`` (a state-dependent Cholesky factor) goes to the diagonal policy, which rejects it in the MLX
+    port.
     :param mc: The model configuration with the environment already registered.
     :return: The new policy.
     """
