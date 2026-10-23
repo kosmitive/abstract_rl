@@ -1,7 +1,9 @@
+from collections.abc import Callable
 from typing import Any
 
-import torch
-import torch.autograd as autograd
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
 
 from abstract_rl.algorithms.mixed.conjugate_gradient import conjugate_gradient
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
@@ -10,11 +12,17 @@ from abstract_rl.misc.flat_params import get_flat_params_from, set_flat_params_t
 
 
 class TrustRegionGradient:
-    """Add trust region gradient based optimization to any class by inheriting this one."""
+    """Add trust region gradient based optimization to any class by inheriting this one.
+
+    The whole step, i.e. the gradient, the conjugate gradient with Fisher vector products (a jvp of the gradient of
+    the trust region distance), the step size and the line search, is one compiled MLX function. MLX has no while
+    loop, so the conjugate gradient always runs ``cg_max_k`` iterations (converged ones are frozen) and the line
+    search evaluates all of its candidates and selects the first accepted one afterwards.
+    """
 
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: nn.Module,
         tr_eps: float,
         cg_max_k: int = 10,
         cg_residual_tol: float = 1e-6,
@@ -37,61 +45,93 @@ class TrustRegionGradient:
         self.dvp_damping = dvp_damping
         self.mode = mode
         self.cli = CliPrinter().instance
+        self._compiled_step: Callable | None = None
 
         self.fmtstr = "%10i | %14.10f | %14.10f | %10.5f | %10.5f | %10.5f x %10.5f | %10.5f | %10.5f | %10.5f"
         self.titlestr = "%10s | %14s | %14s | %10s | %10s | %23s | %10s | %10s | %10s "
 
-    def perform_tr_sgd(self, curst: int, batch: Batch, tr_batch: Batch) -> None:
+    def _flat_fn(self, fn: Callable[[Batch], mx.array], batch: Batch) -> Callable[[mx.array], mx.array]:
+        """Turn an objective of the model into a function of its flat parameter vector."""
+
+        def flat_fn(flat: mx.array) -> mx.array:
+            set_flat_params_to(self._model, flat)
+            return fn(batch)
+
+        return flat_fn
+
+    def tr_step(
+        self, x: mx.array, tree: dict[str, Any], tr_tree: dict[str, Any], max_steps: int = 10
+    ) -> dict[str, mx.array]:
+        """
+        One trust region step as a pure function of the flat parameters, traced by mx.compile.
+        :param x: The flat parameters before the step.
+        :param tree: The batch for the objective, see Batch.to_tree.
+        :param tr_tree: The batch for the trust region distance.
+        :param max_steps: The number of line search candidates.
+        :return: The new parameters and the line search diagnostics.
+        """
+        batch, tr_batch = Batch.from_tree(tree), Batch.from_tree(tr_tree)
 
         # get v objective and the gradient
-        old_obj = self.tr_obj(batch)
-        x = get_flat_params_from(self._model)
-        grads = autograd.grad(old_obj, list(self._model.parameters()))
-        g = torch.cat([el.view(-1) for el in grads]).detach()
+        old_obj, g = mx.value_and_grad(self._flat_fn(self.tr_obj, batch))(x)
+        grad_dist = mx.grad(self._flat_fn(self.tr_distance, tr_batch))
 
-        # fisher vector products using direct mehtod
-        def fvp(v: torch.Tensor) -> torch.Tensor:
-
-            # parameters
-            v_obj = self.tr_distance(tr_batch)
-            grad_f_parts = torch.autograd.grad(v_obj, list(self._model.parameters()), create_graph=True)
-            grad_f = torch.cat([el.view(-1) for el in grad_f_parts])
-            z = (grad_f * v).sum()
-            grad_grad = torch.autograd.grad(z, list(self._model.parameters()))
-            r_hvp = torch.cat([grad.contiguous().view(-1) for grad in grad_grad])
-            r_vp = r_hvp.detach() + self.dvp_damping * v
-            return r_vp
+        # fisher vector products as forward-over-reverse product of the gradient of the distance
+        def fvp(v: mx.array) -> mx.array:
+            _, (r_hvp,) = mx.jvp(grad_dist, [x], [v])
+            return mx.stop_gradient(r_hvp) + self.dvp_damping * v
 
         # calc natural gradient and set gradient for line search
         s = conjugate_gradient(fvp, -g, self.cg_max_k, self.cg_residual_tol)
         sdvps = (s * fvp(s)).sum()
         nat_metric = 0.5 * sdvps
-        real_eps = self.tr_eps
-        lm = torch.sqrt(nat_metric / real_eps)
+        lm = mx.sqrt(nat_metric / self.tr_eps)
+        fullstep = s / lm
+        exp_improv_rate = (-g * s).sum() / lm
 
-        # finish by line search
-        neggdotstepdir = (-g * s).sum()
-        self.line_search(batch, x, s / lm, neggdotstepdir / lm)
+        # line search, all candidates lr = 1, 1/2, 1/4, ... are evaluated
+        obj_fn = self._flat_fn(self.tr_obj, batch)
+        dist_fn = self._flat_fn(self.tr_distance, batch)
+        lrs = 0.5 ** mx.arange(max_steps, dtype=mx.float32)
+        new_objs = mx.stack([obj_fn(x + lrs[i] * fullstep) for i in range(max_steps)])
+        distances = mx.stack([dist_fn(x + lrs[i] * fullstep) for i in range(max_steps)])
+        act_improv = old_obj - new_objs
+        exp_improv = lrs * exp_improv_rate
+        ratios = act_improv / exp_improv
+        accepted = (ratios > 0.1) & (act_improv > 0) & (distances <= 1.5 * self.tr_eps)
 
-    def line_search(
-        self,
-        batch: Batch,
-        x: torch.Tensor,
-        fullstep: torch.Tensor,
-        exp_improv_rate: torch.Tensor,
-        max_steps: int = 10,
-        accept_ratio: float = 0.1,
-        max_kl_ratio: float = 1.5,
-    ) -> tuple[bool, int, float, Any]:
-        """Perform a line search.
+        # first accepted candidate, or max_steps if the line search failed
+        first = mx.min(mx.where(accepted, mx.arange(max_steps), max_steps))
+        lr_sel = mx.where(first < max_steps, 0.5 ** first.astype(mx.float32), 0.0)
+        x_new = x + lr_sel * fullstep
+        return {
+            "x": x_new,
+            "first": first,
+            "old_obj": old_obj,
+            "new_objs": new_objs,
+            "distances": distances,
+            "ratios": ratios,
+            "act_improv": act_improv,
+            "exp_improv": exp_improv,
+        }
 
-        :param batch: The batch to use for the objective.
-        :param fullstep: The fullstep, e.g the learing rate and the gradient
-        :param exp_improv_rate: The expected improvement rate for the line search.
-        :param max_steps: The maximum number of steps for the line search.
-        :param accept_ratio: The acceptance ratio between actual and expected improvement rate.
-        :param max_kl_ratio: Steps whose trust region distance exceeds max_kl_ratio * tr_eps are rejected, the
-            quadratic approximation of the distance can underestimate it.
+    def perform_tr_sgd(self, curst: int, batch: Batch, tr_batch: Batch) -> None:
+
+        if self._compiled_step is None:
+            # the parameters of the model are written by the step and restored below
+            self._compiled_step = mx.compile(self.tr_step, inputs=self.tr_inputs())
+        x = get_flat_params_from(self._model)
+        out = self._compiled_step(x, batch.to_tree(["a"]), tr_batch.to_tree(["a"]))
+        mx.eval(out)
+        set_flat_params_to(self._model, out["x"])
+        self.log_line_search(out)
+
+    def log_line_search(self, out: dict[str, mx.array], max_steps: int = 10) -> tuple[bool, int, float, Any]:
+        """Print the evaluated candidates of the line search up to the accepted one.
+
+        :param out: The diagnostics of tr_step.
+        :param max_steps: The number of line search candidates.
+        :return: Whether a step was accepted, its index, the learning rate and the new objective.
         """
 
         fmtstr = "%10i | %14.10f | %14.10f | %10.5f | %14.10f | %14.10f | %14.10f | %10.6f"
@@ -100,44 +140,38 @@ class TrustRegionGradient:
         self.cli.print(
             titlestr % ("step", "old_obj", "obj", "lr", "ratio", "act_improv", "exp_improv", "distance")
         ).line()
+        vals = {k: np.array(v) for k, v in out.items()}
+        first = int(vals["first"])
+        old_obj = float(vals["old_obj"])
+        for step in range(min(first + 1, max_steps)):
+            self.cli.print(
+                fmtstr
+                % (
+                    step,
+                    old_obj,
+                    vals["new_objs"][step],
+                    0.5**step,
+                    vals["ratios"][step],
+                    vals["act_improv"][step],
+                    vals["exp_improv"][step],
+                    vals["distances"][step],
+                )
+            )
+        if first < max_steps:
+            return True, first, 0.5**first, float(vals["new_objs"][first])
 
-        with torch.no_grad():
-            old_obj = self.tr_obj(batch).detach().numpy()
+        # if line search was not successful
+        self.cli.line().print("FAILED")
+        return False, max_steps, 0.5**max_steps, old_obj
 
-            # start with the learning rate continuously decay until the objective
-            # got better
-            step = 0
-            lr = 1.0
-            while step < max_steps:
-                # calc difference and revert this difference
-                x_new = x + lr * fullstep
-                set_flat_params_to(self._model, x_new)
+    def tr_inputs(self) -> list[Any]:
+        """Module states, which the objective and the distance read besides the model, e.g. a target policy."""
+        return []
 
-                # update objective and learnrate
-                new_obj = self.tr_obj(batch).detach().numpy()
-
-                act_improv = old_obj - new_obj
-                exp_improv = lr * exp_improv_rate
-                ratio = act_improv / exp_improv
-                distance = self.tr_distance(batch).item()
-
-                self.cli.print(fmtstr % (step, old_obj, new_obj, lr, ratio, act_improv, exp_improv, distance))
-
-                if ratio > accept_ratio and act_improv > 0 and distance <= max_kl_ratio * self.tr_eps:
-                    return True, step, lr, new_obj
-
-                step += 1
-                lr = lr / 2
-
-            # if line search was not successful
-            self.cli.line().print("FAILED")
-            set_flat_params_to(self._model, x)
-            return False, step, lr, old_obj
-
-    def tr_distance(self, batch: Batch) -> torch.Tensor:
+    def tr_distance(self, batch: Batch) -> mx.array:
         """The training distance."""
         raise NotImplementedError
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
+    def tr_obj(self, batch: Batch) -> mx.array:
         """The training objective."""
         raise NotImplementedError

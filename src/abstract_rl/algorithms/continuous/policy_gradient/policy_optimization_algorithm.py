@@ -1,9 +1,10 @@
 from collections.abc import Iterable
 
-import torch
+import mlx.core as mx
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.mixed import to_mx
 
 
 class PolicyOptimizationAlgorithm:
@@ -23,30 +24,30 @@ class PolicyOptimizationAlgorithm:
         self.mc = mc
         self.conf = mc["conf"]
 
-    def obj(self, trajectories: Iterable[Trajectory]) -> torch.Tensor:
+    def obj(self, trajectories: Iterable[Trajectory]) -> mx.array:
         """
         Calculate the objective of the underlying objective using the passed batch.
         :param batch: Use this batch to estimate objective.
         :return: A un detached version of the objective
         """
 
-        obj = torch.zeros(1)
+        obj = mx.zeros(1)
         num_steps = 0
         for traj in trajectories:
             policy = self.mc.get("policy", False)
 
             # calculate the objective
-            t_states = torch.Tensor(traj.states)
-            t_actions = torch.Tensor(traj.actions)
-            log_likelihoods = torch.Tensor(traj.log_likelihoods)
+            t_states = to_mx(traj.states)
+            t_actions = to_mx(traj.actions)
+            log_likelihoods = to_mx(traj.log_likelihoods)
             suff_stats = policy.forward(t_states)
             ll = policy.log_prob(t_actions, suff_stats=suff_stats)
-            old_ll = torch.Tensor(log_likelihoods)
+            old_ll = log_likelihoods
 
             # calculate the ratio term
-            a_vals = torch.Tensor(traj["a"])
-            r = torch.exp(ll - old_ll)
-            obj = (num_steps * obj + torch.sum(r * a_vals)) / (num_steps + len(traj))
+            a_vals = to_mx(traj["a"])
+            r = mx.exp(ll - old_ll)
+            obj = (num_steps * obj + mx.sum(r * a_vals)) / (num_steps + len(traj))
             num_steps += len(traj)
 
         return obj
