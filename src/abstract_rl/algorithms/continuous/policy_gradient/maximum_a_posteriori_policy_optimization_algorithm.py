@@ -1,8 +1,9 @@
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
+import mlx.core as mx
+import mlx.optimizers as optim
 import numpy as np
-import torch
-import torch.optim as optim
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
     PolicyOptimizationAlgorithm,
@@ -12,6 +13,7 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_params_from
+from abstract_rl.misc.mixed import to_mx
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
@@ -21,6 +23,9 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
     is not inherent to this algorithm, so it is not defined in this class. From these q values a variational
     distribution is fitted. This 'reweighted' policy is then used to fit the current iterated policy to the optimal
     one in a supervised fashion.
+
+    One step of the M-step, the Adam step of the policy followed by the Adam step of the Lagrange multipliers, is one
+    compiled MLX function.
     """
 
     def __repr__(self) -> str:
@@ -47,12 +52,18 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.l2_reg = self.conf.get("l2_reg", 0.0)
 
         num_params = 1 if not self.split_constraint else num_lagrange_multipliers
-        self.lagrange_mults = [torch.nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(num_params)]
+        # the multipliers and the sampled trust regions live in trees, which the compiled step reads and writes
+        self._lm_state: dict[str, list[mx.array]] = {"lm": [mx.ones(1) for _ in range(num_params)]}
+        self._v_state: dict[str, list[mx.array]] = {"v": []}
         self.v = self.sample_v()
 
-        # optimizers are persistent over all steps, so adam can accumulate its moment estimates
-        self.opt_outer = optim.Adam(policy.parameters(), lr=self.outer_lr)
-        self.opt_inner = optim.Adam(self.lagrange_mults, lr=self.inner_lr)
+        # optimizers are persistent over all steps, so adam can accumulate its moment estimates (the reference
+        # implementation corrects the bias of the moments, mlx only does that if asked to)
+        self.opt_outer = optim.Adam(learning_rate=self.outer_lr, bias_correction=True)
+        self.opt_outer.init(policy.trainable_parameters())
+        self.opt_inner = optim.Adam(learning_rate=self.inner_lr, bias_correction=True)
+        self.opt_inner.init(self._lm_state)
+        self._compiled: dict[str, Callable] = {}
 
         self.fmtstr = "%10i | %10.5f" + num_params * " | %10.5f x %10.5f"
         self.titlestr = "%10s | %10s" + num_params * " | %23s"
@@ -72,9 +83,15 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
                 v[d] = samp_trust_regions[d]
 
         self.v = v
+        self._v_state["v"] = [mx.array(float(el)) for el in v]
         return self.v
 
-    def shuffle_up_stats(self, batch: Batch) -> list[torch.Tensor]:
+    @property
+    def lagrange_mults(self) -> list[mx.array]:
+        """The (log) Lagrange multipliers, they enter as exp(lm)."""
+        return self._lm_state["lm"]
+
+    def shuffle_up_stats(self, batch: Batch) -> list[mx.array]:
         """Use this to create a list, where each sufficient statistic from the
         normal policy is mixed with the target ones, so the objective and
         constraint can be effectively splitted up.
@@ -84,30 +101,30 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         """
 
         # get target and correct policy
-        t_states = torch.Tensor(batch.states)
+        t_states = to_mx(batch.states)
         t_policy = self.mc.get("policy", target=True)
         policy = self.mc.get("policy", target=False)
 
         # target stats
-        target_suff_stats = t_policy.forward(t_states).detach()
+        target_suff_stats = mx.stop_gradient(t_policy.forward(t_states))
         suff_stats = policy.forward(t_states)
         l_suff_stats = []
         l_suff_stats.append(suff_stats)
 
         # for each dimension
-        num_dims = target_suff_stats.size()[1]
+        num_dims = target_suff_stats.shape[1]
         for d in range(num_dims):
             lst_els = []
             if d > 0:
                 lst_els.append(target_suff_stats[:, :d])
-            lst_els.append(suff_stats[:, d : d + 1].view([-1, 1]))
+            lst_els.append(suff_stats[:, d : d + 1].reshape([-1, 1]))
             if d < num_dims - 1:
                 lst_els.append(target_suff_stats[:, d + 1 :])
-            l_suff_stats.append(torch.cat(lst_els, dim=1))
+            l_suff_stats.append(mx.concatenate(lst_els, axis=1))
 
         return l_suff_stats
 
-    def main_obj(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> torch.Tensor:
+    def main_obj(self, batch: Batch, l_suff_stats: list[mx.array]) -> mx.array:
         """Obtain the objective based on the list of sufficient statistics.
 
         :param batch: The batch to use.
@@ -120,7 +137,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             # build the objective in a coordinate ascent fashion
             # iterate over the dimensions
             num_dims = len(l_suff_stats) - 1
-            obj = torch.zeros(1)
+            obj = mx.zeros(1)
             for d in range(num_dims):
                 part_obj = self.__lagrange_obj(batch, l_suff_stats[d + 1])
                 obj = obj + part_obj
@@ -130,7 +147,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         return obj
 
-    def main_constraints(self, batch: Batch, l_suff_stats: list[torch.Tensor]) -> list[torch.Tensor]:
+    def main_constraints(self, batch: Batch, l_suff_stats: list[mx.array]) -> list[mx.array]:
         """Obtain all constraints using the list of sufficient statistics and the batch.
 
         :param batch: The batch to use.
@@ -146,15 +163,15 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             num_dims = len(l_suff_stats) - 1
             constraints = []
             for d in range(num_dims):
-                c = self.v[d] - policy.kl_divergence(batch, l_suff_stats[d + 1], kl, "mean")
+                c = self._v_state["v"][d] - policy.kl_divergence(batch, l_suff_stats[d + 1], kl, "mean")
                 constraints.append(c)
 
         else:
-            constraints = [(self.v[0] - policy.kl_divergence(batch, l_suff_stats[0], kl, "mean"))]
+            constraints = [(self._v_state["v"][0] - policy.kl_divergence(batch, l_suff_stats[0], kl, "mean"))]
 
         return constraints
 
-    def obj(self, batch: Batch) -> torch.Tensor:  # type: ignore[override]
+    def obj(self, batch: Batch) -> mx.array:  # type: ignore[override]
         """
         Calculate the objective based on the objective and the splitted kl divergence constraints.
         :param batch: Batch to estimate objective and constraints
@@ -165,7 +182,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         obj = self.main_obj(batch, l_suff_stats)
         constraints = self.main_constraints(batch, l_suff_stats)
         for lm, c in zip(self.lagrange_mults, constraints, strict=False):
-            obj = obj + torch.exp(lm) * c
+            obj = obj + mx.exp(lm) * c
 
         return obj
 
@@ -186,6 +203,45 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
             self.perform_step(s, batch)
 
+    def _step_fns(self) -> tuple[Callable, Callable]:
+        """The compiled M-step and the compiled objective and constraints for the log line."""
+        if not self._compiled:
+            policy = self.mc.get("policy", target=False)
+            t_policy = self.mc.get("policy", target=True)
+
+            def step(tree: dict[str, Any]) -> None:
+                batch = Batch.from_tree(tree)
+
+                # max step: one adam step of the policy on the negated objective
+                def neg_obj(params: Any) -> mx.array:
+                    policy.update(params)
+                    return -self.obj(batch).sum()
+
+                params = policy.trainable_parameters()
+                policy.update(self.opt_outer.apply_gradients(mx.grad(neg_obj)(params), params))
+
+                # min step: one adam step of the lagrange multipliers with the updated policy
+                def lm_obj(lm_state: dict[str, list[mx.array]]) -> mx.array:
+                    self._lm_state["lm"] = lm_state["lm"]
+                    return self.obj(batch).sum()
+
+                lm_state = {"lm": list(self._lm_state["lm"])}
+                lm_grads = mx.grad(lm_obj)(lm_state)
+                self._lm_state["lm"] = self.opt_inner.apply_gradients(lm_grads, lm_state)["lm"]
+
+            def log_values(tree: dict[str, Any]) -> list[mx.array]:
+                batch = Batch.from_tree(tree)
+                l_suff_stats = self.shuffle_up_stats(batch)
+                obj = self.main_obj(batch, l_suff_stats)
+                constraints = self.main_constraints(batch, l_suff_stats)
+                return [obj, *constraints]
+
+            state = [policy.state, self.opt_outer.state, self.opt_inner.state, self._lm_state]
+            inputs = [*state, t_policy.state, self._v_state]
+            self._compiled["step"] = mx.compile(step, inputs=inputs, outputs=state)
+            self._compiled["log"] = mx.compile(log_values, inputs=inputs)
+        return self._compiled["step"], self._compiled["log"]
+
     def perform_step(self, step: int, batch: Batch) -> None:
         """
         Maximization step. Use the reweighted samples to solve a trust region optimization problem. Note that the
@@ -193,20 +249,21 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         objective is created based on lagrangian multipliers and the theory of min max optimization.
         """
 
-        # perform a min step
-        self.__max_step(batch)
-        self.__min_step(batch)
+        # perform a max step of the policy and a min step of the multipliers
+        step_fn, log_fn = self._step_fns()
+        tree = batch.to_tree(["add_act", "grad_ranking"])
+        step_fn(tree)
 
         # objective and constraints after the step, only for the log line
         if step % 10 == 0:
-            with torch.no_grad():
-                l_suff_stats = self.shuffle_up_stats(batch)
-                obj = self.main_obj(batch, l_suff_stats)
-                constraints = self.main_constraints(batch, l_suff_stats)
-            vals = [float(v.detach()) for pair in zip(self.lagrange_mults, constraints, strict=False) for v in pair]
+            obj, *constraints = log_fn(tree)
+            vals = [cast(float, v.item()) for pair in zip(self.lagrange_mults, constraints, strict=False) for v in pair]
             self.cli.print(self.fmtstr % (step, obj.item(), *vals))
+        else:
+            # the next batch is sampled on the host while this step runs
+            mx.async_eval(self.mc.get("policy", target=False).parameters(), self._lm_state, self.opt_outer.state)
 
-    def __lagrange_obj(self, batch: Batch, suff_stats: torch.Tensor) -> torch.Tensor:
+    def __lagrange_obj(self, batch: Batch, suff_stats: mx.array) -> mx.array:
         """
         Calculated the reweighted objective needed for the min max problem. This is only partly
         the objective as the lagrange constraints are missing.
@@ -218,36 +275,13 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         policy = self.mc.get("policy", target=False)
 
-        t_add_act = torch.Tensor(batch["add_act"])
-        t_add_q = torch.Tensor(batch["grad_ranking"])
+        t_add_act = to_mx(batch["add_act"])
+        t_add_q = to_mx(batch["grad_ranking"])
 
         # weighted maximum likelihood: E_s [ sum_a q(a|s) log pi(a|s) ], where q(a|s) is normalized per state
         ll = policy.log_prob(t_add_act, suff_stats=suff_stats)
-        rew_vals = torch.exp(t_add_q) * ll
-        obj = torch.mean(torch.sum(rew_vals, dim=1))
+        rew_vals = mx.exp(t_add_q) * ll
+        obj = mx.mean(mx.sum(rew_vals, axis=1))
 
         w = get_flat_params_from(policy)
-        return obj - self.l2_reg * torch.norm(w)
-
-    def __max_step(self, batch: Batch) -> None:
-        """
-        Maximizes the Lagrangian with respect to the policy parameters only (one Adam step on the negated objective).
-        """
-
-        # optimize
-        self.opt_outer.zero_grad()
-        obj = -self.obj(batch)
-        obj.backward()
-        self.opt_outer.step()
-
-    def __min_step(self, batch: Batch) -> None:
-        """
-        Minimizes the Lagrangian with respect to the Lagrange multipliers only. They enter as exp(lm), so they
-        stay positive.
-        """
-
-        # training step
-        self.opt_inner.zero_grad()
-        obj = self.obj(batch)
-        obj.backward()
-        self.opt_inner.step()
+        return obj - self.l2_reg * mx.linalg.norm(w)

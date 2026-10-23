@@ -1,11 +1,11 @@
 from typing import Any
 
 import numpy as np
-import torch
 
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy
 
 
@@ -39,10 +39,10 @@ class NonParametricVariationalPolicyBuilder:
         # append all q values and likelihoods
         q_tensor = np.concatenate(tuple([q["add_q"] for q in tc.trajectories()]))
         eta = find_optimal_temperature(
-            torch.Tensor(q_tensor), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
+            to_mx(q_tensor), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
         )
 
-        self.eta = eta.detach().numpy()
+        self.eta = np.array(eta)
         self.log.log({"eta": self.eta})
 
     def build(self, trajectory: Trajectory) -> NonParametricPolicy:
