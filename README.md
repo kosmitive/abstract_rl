@@ -132,7 +132,7 @@ re-derived for the JAX environments, which reproduce Gymnasium's dynamics and re
 | InvertedPendulum-v5 (≥ 950) | TRPO (SB3, Gymnasium) | 5 | 150,523 | 1000.0 ± 0.0 | 5/5 | 29,000 (5/5) |
 | InvertedPendulum-v5 (≥ 950) | TD3 (SB3, Gymnasium) | 5 | 149,310 | 1000.0 ± 0.0 | 5/5 | 25,000 (5/5) |
 | InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 604,394 | 7574.9 ± 3303.2 | 3/5 | 457,454 (3/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,288 | 8771.4 ± 731.9 | 2/5 | 60,060 (5/5) |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,559 | 8787.8 ± 730.7 | 3/5 | 84,126 (5/5) |
 | InvertedDoublePendulum-v5 (≥ 9100) | TRPO (SB3, Gymnasium) | 5 | 599,517 | 8270.3 ± 602.2 | 0/5 | 107,946 (5/5) |
 | InvertedDoublePendulum-v5 (≥ 9100) | TD3 (SB3, Gymnasium) | 5 | 599,243 | 9347.9 ± 10.3 | 5/5 | 26,996 (5/5) |
 | HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 4433.2 ± 485.5 | 1/5 | 1,080,000 (1/5) |
@@ -151,7 +151,7 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
 | Pendulum-v1 | -127.7 ± 2.7, 5/5 | -111.3 ± 1.3, 5/5 | -123.3 ± 0.4, 5/5 | -106.2 ± 1.4, 5/5 |
 | MountainCarContinuous-v0 | 94.1 ± 0.7, 5/5 | 94.9 ± 0.5, 5/5 | 93.6 ± 0.0, 5/5 | 93.7 ± 0.1, 5/5 |
 | InvertedPendulum-v5 | 1000.0 ± 0.0, 5/5 | 1000.0 ± 0.0, 5/5 | 1000.0 ± 0.0, 5/5 | 1000.0 ± 0.0, 5/5 |
-| InvertedDoublePendulum-v5 | 9332.8 ± 3.8, 5/5 | 7574.9 ± 3303.2, **3/5** | 9332.9 ± 7.4, 5/5 | 8771.4 ± 731.9, **2/5** |
+| InvertedDoublePendulum-v5 | 9332.8 ± 3.8, 5/5 | 7574.9 ± 3303.2, **3/5** | 9332.9 ± 7.4, 5/5 | 8787.8 ± 730.7, **3/5** |
 | HalfCheetah-v5 | 4471.7 ± 1645.7, 3/5 | 4433.2 ± 485.5, **1/5** | 7940.5 ± 1398.2, 5/5 | 8761.8 ± 1083.8, 5/5 |
 
 - **Where JAX matches or beats torch.** Pendulum, MountainCar, InvertedPendulum and HalfCheetah MPO solve 5/5 seeds as
@@ -169,20 +169,22 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
     falls. Seed 5 (977) has not learned to balance within the budget; its training return was still rising
     (mean 725 over epochs 62-68, 1036 over epochs 69-75). A trial with a KL trust region of 0.01 instead of 0.005
     also gave 3/5 (mean 9157, every failure one falling episode out of 20), so `main`'s 0.005 is kept.
-  - *InvertedDoublePendulum MPO: 2/5 instead of 5/5* (greedy 9334, 9357, 8897, 8907 and 7362). Every seed reaches
-    the threshold in training (median 60k steps, `main` 66k). The final policies of seeds 3 and 4 drop one of their
-    20 greedy episodes. Seed 5 drops 6 of 20, and its training return falls at the end (mean 5386 over epochs
-    481-540, 4308 over epochs 541-600): the kind of late collapse that `main` removed in torch by halving the KL
-    trust region to 0.005, which these runs already use. No further tuning was run.
+  - *InvertedDoublePendulum MPO: 3/5 instead of 5/5* (greedy 7501, 9329, 9336, 8438 and 9335). Every seed reaches
+    the threshold in training (median 84k steps, `main` 66k). Seeds 1 and 4 drop 4 and 2 of their 20 greedy
+    episodes. These runs use a KL trust region of 0.0025, half of `main`'s 0.005: with 0.005 the JAX port solved 2/5
+    (mean 8771; greedy 9334, 9357, 8897, 8907 and 7362), and seed 5 collapsed late in training (mean 5386 over epochs
+    481-540, 4308 over 541-600). The smaller trust region was the one tuning trial for this cell and raised both the
+    solved count and the mean, so it is the tuned setting now.
   - *The InvertedDoublePendulum falls come from the policies, not from the JAX environment.* Run in Gymnasium's
     float64 MuJoCo from the same start states, the policies fall on the same episodes at the same steps, and a
-    float64 JAX env does not remove the falls. 8 of the 10 runs fall on about 1-2 % of start states, mostly shortly
-    after the reset. With 20 evaluation episodes, a single fall is enough to drop a seed below 9100. MPO seed 5 is
-    a marginal balancer (about half of its episodes fall), and TRPO seed 5 never learned to balance within the
-    budget.
+    float64 JAX env does not remove the falls. This cross-check was run on the TRPO runs and the MPO runs with
+    trust region 0.005: 8 of those 10 runs fall on about 1-2 % of start states, mostly shortly after the reset. With
+    20 evaluation episodes, a single fall is enough to drop a seed below 9100. MPO seed 5 (0.005) was a marginal
+    balancer (about half of its episodes fall), and TRPO seed 5 never learned to balance within the budget.
   - *Steps to threshold* is slower than torch for MountainCar TRPO (128k vs 44k; all seeds still solve), MountainCar
-    MPO (70k vs 56k), Pendulum MPO (44k vs 36k), InvertedDoublePendulum TRPO (457k vs 431k, over 3 instead of 5
-    seeds) and HalfCheetah TRPO (1.08M for 1 seed vs 732k for 2). It is equal or faster for the other cells.
+    MPO (70k vs 56k), Pendulum MPO (44k vs 36k), InvertedDoublePendulum MPO (84k vs 66k), InvertedDoublePendulum
+    TRPO (457k vs 431k, over 3 instead of 5 seeds) and HalfCheetah TRPO (1.08M for 1 seed vs 732k for 2). It is equal
+    or faster for the other cells.
 - **Environments (spec D5).** gymnax provides Pendulum-v1 and MountainCarContinuous-v0. InvertedPendulum-v5 and
   InvertedDoublePendulum-v5 run Gymnasium's own XML on MJX with RK4, Gymnasium's frame skip (2 and 5), reward,
   termination, observations (4 and 9 dims), reset noise and `ctrl = action`. Their trajectories match Gymnasium v5 to
@@ -191,12 +193,12 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
   thighs and feet collide with the floor, and the forward-velocity reward lags one 0.01 s substep. The lag moves an
   episode's return by well under 0.1 % of the threshold, and open-loop returns match Gymnasium, so the threshold of
   4800 is kept.
-- **Tuned settings (unchanged from `main`, see `conf/tune/`):**
+- **Tuned settings (from `main` except InvertedDoublePendulum MPO, see `conf/tune/`):**
   - Pendulum: TRPO discount 0.95; MPO E-step epsilon `rnk_eps` 0.05.
   - MountainCar: MPO uses a fixed (not learned) exploration std of 2.0. A learned std shrinks to ≈ 0 before the
     sparse goal is found.
-  - MPO, one setting each: a 300k replay memory (`tc_size`) on InvertedPendulum, and a KL trust region of 0.005 on
-    InvertedDoublePendulum.
+  - MPO, one setting each: a 300k replay memory (`tc_size`) on InvertedPendulum, and a KL trust region of 0.0025 on
+    InvertedDoublePendulum (`main`: 0.005, see above).
   - TRPO: InvertedDoublePendulum uses 75 × 8000 steps and a KL trust region of 0.005. HalfCheetah uses 300 × 4000
     steps, a KL trust region of 0.02 and `obs_norm`. Both drop the value L2 penalty.
 - **Budgets.** TRPO epochs are `policy_batch_size` steps, and the episodes still running in the rollout lanes are
@@ -204,7 +206,7 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
   run with `max_env_steps` 400000; TRPO gets it via `--set max_env_steps=400000`, because finishing the lanes would
   otherwise give about 500k steps. All seeds of a run stop together once the seed with the most steps reaches the cap (D8),
   so the other seeds end between 380k and 400k steps. MPO stops after a fixed number of epochs and finishes the running episode, so on
-  InvertedDoublePendulum it runs past the budget: up to 22 % for the seed whose episodes fall mid-length. The learning
+  InvertedDoublePendulum it runs past the budget: up to 17 % for the seed whose episodes fall mid-length. The learning
   curves are cut at the budget; the greedy return is the one of the final policy.
 - **Pendulum balance check** (`scripts/eval_balance.py`, |θ| < 0.1 rad in the last 100 of 200 steps, 20 start
   states): TRPO and MPO balance in 5/5 seeds and 20/20 episodes each (max |θ| 0.001-0.034 rad TRPO, 0.021-0.089 rad
@@ -226,7 +228,7 @@ Compared with the torch implementation on `main` (greedy return, solved seeds):
   | Pendulum-v1 | 1.8 min | 3.4 h |
   | MountainCarContinuous-v0 | 1.2 min | 1.6 h |
   | InvertedPendulum-v5 | 2.5 min | 1.5 h (5 × 17-20 min, one seed at a time) |
-  | InvertedDoublePendulum-v5 | 18 min | 2.4 h |
+  | InvertedDoublePendulum-v5 | 18 min | 1.8 h |
   | HalfCheetah-v5 | 51 min | 5.6 h |
 
   Times are from `data/bench/timing.json` and exclude the greedy evaluation (2 s to 3.5 min per cell). Reproduce
