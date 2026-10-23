@@ -108,3 +108,14 @@ def test_cholesky_has_no_vjp():
     except ValueError:
         return
     pytest.skip("this MLX version differentiates the Cholesky factorization, the full covariance could be ported")
+
+
+def test_elu_gradient_large_inputs():
+    """mlx.nn.elu has a NaN gradient for large inputs, the ELU of the port has the gradient of torch."""
+    from abstract_rl.misc.mixed import ELU
+
+    x = mx.array([-2.0, -0.5, 0.5, 100.0, 1000.0])
+    expected = np.array([np.exp(-2.0), np.exp(-0.5), 1.0, 1.0, 1.0], dtype=np.float32)
+    g = mx.grad(lambda v: ELU()(v).sum())(x)
+    np.testing.assert_allclose(np.array(g), expected, rtol=1e-6)
+    np.testing.assert_allclose(np.array(ELU()(x)), np.array(nn.elu(x)), rtol=1e-6)

@@ -47,6 +47,21 @@ def to_np(x: mx.array) -> np.ndarray:
     return np.array(x)
 
 
+class ELU(nn.Module):
+    """ELU whose gradient stays finite for large inputs.
+
+    ``mlx.nn.elu`` evaluates ``exp(x)`` on both branches of a ``where``, for inputs above about 88 the masked branch
+    overflows in the backward pass and turns the gradient into NaN (0 * inf), torch does not have this problem.
+    """
+
+    def __init__(self, alpha: float = 1.0) -> None:
+        super().__init__()
+        self._alpha = alpha
+
+    def __call__(self, x: mx.array) -> mx.array:
+        return mx.where(x > 0, x, self._alpha * (mx.exp(mx.minimum(x, 0)) - 1))
+
+
 class Identity(nn.Module):
     """Identity activation."""
 
@@ -67,7 +82,7 @@ def select_activation(name: str | None) -> nn.Module:
         return nn.Softplus()
 
     elif name.lower() == "elu":
-        return nn.ELU()
+        return ELU()
 
     elif name.lower() == "prelu":
         return nn.PReLU()
