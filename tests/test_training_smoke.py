@@ -15,13 +15,13 @@ def _check_returns(returns, num_epochs):
 def test_trpo_pendulum_smoke(trpo_conf, tmp_path):
     returns = run_trpo(trpo_conf)
     _check_returns(returns, trpo_conf["num_epochs"])
-    assert list(tmp_path.glob("Pendulum-v1/trpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("Pendulum-v1/trpo/*/model/last/policy.safetensors"))
 
 
 def test_mpo_pendulum_smoke(mpo_conf, tmp_path):
     returns = run_mpo_non_parametric(mpo_conf)
     _check_returns(returns, mpo_conf["num_epochs"])
-    assert list(tmp_path.glob("Pendulum-v1/mpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("Pendulum-v1/mpo/*/model/last/policy.safetensors"))
 
 
 def test_eval_balance_runs_on_trained_policy(trpo_conf, tmp_path):
@@ -44,13 +44,13 @@ def _check_multi_dimensional(returns, num_epochs):
 def test_trpo_with_two_dimensional_actions_smoke(trpo_conf, tmp_path):
     trpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "policy_batch_size": 300})
     _check_multi_dimensional(run_trpo(trpo_conf), trpo_conf["num_epochs"])
-    assert list(tmp_path.glob("TestPointMass-v0/trpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("TestPointMass-v0/trpo/*/model/last/policy.safetensors"))
 
 
 def test_mpo_with_two_dimensional_actions_smoke(mpo_conf, tmp_path):
     mpo_conf.update({"env_name": "TestPointMass-v0", "max_steps": 30, "env_sample": 300})
     _check_multi_dimensional(run_mpo_non_parametric(mpo_conf), mpo_conf["num_epochs"])
-    assert list(tmp_path.glob("TestPointMass-v0/mpo/*/model/last/policy.data"))
+    assert list(tmp_path.glob("TestPointMass-v0/mpo/*/model/last/policy.safetensors"))
 
 
 def test_best_policy_is_stored_and_evaluated(trpo_conf, tmp_path):
@@ -61,7 +61,7 @@ def test_best_policy_is_stored_and_evaluated(trpo_conf, tmp_path):
     trpo_conf["num_epochs"] = 3
     returns = run_trpo(trpo_conf)
     (run_dir,) = tmp_path.glob("Pendulum-v1/trpo/*")
-    assert (run_dir / "model/best/policy.data").exists()
+    assert (run_dir / "model/best/policy.safetensors").exists()
     best = json.loads((run_dir / "model/best.json").read_text())
     assert best == {"epoch": int(np.argmax(returns[:, 0])), "return": float(returns[:, 0].max())}
     assert eval_returns.main([str(run_dir), "--episodes", "1", "--model", "best"]) in (0, 1)

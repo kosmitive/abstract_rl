@@ -3,8 +3,8 @@ from os.path import exists, join
 from typing import TYPE_CHECKING, Any, cast
 
 import gymnasium as gym
+import mlx.core as mx
 import numpy as np
-import torch
 from gymnasium.spaces import Box
 from gymnasium.wrappers import NormalizeObservation
 
@@ -191,19 +191,13 @@ class RolloutEnvWrapper:
 
         # repeat for the number of steps
         while max_steps is None or t < max_steps:
-            # sample distribution based on state
-            tcs = torch.Tensor(cs)
-            tcs = tcs.view([1, -1])
-
-            # sample action and calc log likelihood
-            suff_stats = policy.forward(tcs)
-            a = policy.mode(suff_stats=suff_stats) if opt else policy.sample_actions(suff_stats=suff_stats)
-
-            ll = policy.log_prob(a, suff_stats=suff_stats)
+            # sample action and calc log likelihood in one compiled call, the env stays on the host
+            tcs = mx.array(np.asarray(cs, dtype=np.float32).reshape([1, -1]))
+            t_a, t_ll = policy.act(tcs, opt)
 
             # prepare for usage
-            ll = float(ll.detach().reshape(-1)[0])
-            a = a.detach().reshape(-1).numpy().astype(np.float64)
+            ll = float(t_ll.reshape(-1)[0].item())
+            a = np.array(t_a).reshape(-1).astype(np.float64)
             cs, r, terminated, truncated, _info = env.step(a)
             done = terminated or truncated
             cs = self._preprocess(cs)
