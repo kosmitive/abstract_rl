@@ -266,9 +266,12 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
             def steps(tree: dict[str, Any], indices: mx.array) -> None:
                 # one step per row of indices. The log values stay a separate call: in the same graph they share
-                # subexpressions with the step, which changes its fused CPU kernels and the rounding.
-                for j in range(indices.shape[0]):
-                    step(tree_map(lambda v, j=j: mx.take(v, indices[j], axis=0), tree))
+                # subexpressions with the step, which changes its fused CPU kernels and the rounding. The rows of all
+                # steps are gathered at once, each step slices its batch from them.
+                num, size = indices.shape
+                rows = tree_map(lambda v: mx.take(v, indices.reshape(-1), axis=0), tree)
+                for j in range(num):
+                    step(tree_map(lambda v, j=j: v[j * size : (j + 1) * size], rows))
 
             self._compiled["steps"] = mx.compile(steps, inputs=inputs, outputs=state)
         return self._compiled["step"], self._compiled["log"]

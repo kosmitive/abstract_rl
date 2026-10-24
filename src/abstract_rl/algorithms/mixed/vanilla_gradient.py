@@ -35,9 +35,12 @@ def compile_adam_fns(model: nn.Module, opt: optim.Optimizer, objective: Callable
     state = [model.state, opt.state]
 
     def steps(tree: dict[str, Any], indices: mx.array) -> tuple[mx.array, mx.array]:
-        # one adam step per row of indices, the objective before and after the first one for the log line
-        for j in range(indices.shape[0]):
-            batch = tree_map(lambda v, j=j: mx.take(v, indices[j], axis=0), tree)
+        # one adam step per row of indices, the objective before and after the first one for the log line. The rows
+        # of all steps are gathered at once, each step slices its batch from them
+        num, size = indices.shape
+        rows = tree_map(lambda v: mx.take(v, indices.reshape(-1), axis=0), tree)
+        for j in range(num):
+            batch = tree_map(lambda v, j=j: v[j * size : (j + 1) * size], rows)
             step_obj = step(batch)
             if j == 0:
                 pre_obj, post_obj = step_obj, objective(batch)
