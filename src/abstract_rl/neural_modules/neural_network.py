@@ -18,7 +18,7 @@ class MultilayerPerceptron(nn.Module, Syncable):
 
     def __init__(
         self,
-        mc: ModelConfiguration,
+        mc: ModelConfiguration | None,
         hidden_neurons: ndarray,
         act_fn: str | Sequence[str | list[str]] = "tanh",
         layer_norm: bool = False,

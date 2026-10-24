@@ -2,6 +2,7 @@
 
 import mlx.core as mx
 import numpy as np
+import pytest
 from mlx.utils import tree_flatten
 
 from abstract_rl.policy.continuous.select_policy import select_policy
@@ -67,3 +68,40 @@ def test_compiled_value_fit_matches_one_step_at_a_time(make_pendulum_mc, capsys)
     # the title and the steps 0, 10 and 20
     assert fused_log.count("|") == 4 * 2
     mc.env.close()
+
+
+@pytest.mark.parametrize("device", ["cpu", "gpu"])
+def test_background_fit_matches_main_process(make_pendulum_mc, capsys, device):
+    """A q fit in a worker process (BackgroundFit) is bit identical to the fit in the main process."""
+    from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
+
+    if device == "gpu" and not mx.metal.is_available():
+        pytest.skip("no Metal")
+    previous = mx.default_device()
+    mx.set_default_device(mx.gpu if device == "gpu" else mx.cpu)
+    mc, tc = _collection(make_pendulum_mc)
+    for traj in tc:
+        traj["tq"] = traj["q"] + 0.1
+    with mc["conf"].ns("val"):
+        main, worker = FullyQNeuralNet(mc), FullyQNeuralNet(mc)
+    worker.update(main.parameters())
+    worker.fit_in_background()
+    capsys.readouterr()
+
+    # two fits, the second one continues with the moments of Adam of the first one
+    for fit in range(2):
+        np.random.seed(fit)  # noqa: NPY002
+        main.perform_mult_sgd(23, tc, 64, ["tq"])
+        main_log = capsys.readouterr().out
+        np.random.seed(fit)  # noqa: NPY002
+        worker.start_mult_sgd(23, tc, 64, ["tq"])
+        worker.finish_mult_sgd()
+        worker_log = capsys.readouterr().out
+        for (k, a), (_, b) in zip(tree_flatten(main.parameters()), tree_flatten(worker.parameters()), strict=True):
+            assert isinstance(b, mx.array)
+            assert np.array_equal(np.array(a), np.array(b)), (fit, k)
+        assert main_log == worker_log
+        assert main_log.count("|") == 4 * 2
+    worker.close()
+    mc.env.close()
+    mx.set_default_device(previous)

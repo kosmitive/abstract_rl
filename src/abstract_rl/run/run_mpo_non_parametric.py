@@ -14,7 +14,7 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
-from abstract_rl.misc.mixed import default_settings
+from abstract_rl.misc.mixed import default_settings, on_gpu
 from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
@@ -86,6 +86,10 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         sync_steps = conf["sync_steps"]
         q_network = FullyQNeuralNet(mc)
         mc.add_syncable("q_network", q_network, sync_steps)
+        # auto: on the GPU, fit the q function in a worker process while the next rollout runs, see BackgroundFit
+        background_fit = conf.get("background_fit", "auto")
+        if on_gpu() if background_fit == "auto" else bool(background_fit):
+            q_network.fit_in_background()
 
     with conf.ns("filter"):
         filter = FilterOperator(mc)
@@ -117,6 +121,12 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
 
     # if reloaded load old values
     e = 0
+
+    def finish_v_step() -> None:
+        with cli.header("v-step", 1):
+            q_network.finish_mult_sgd()
+        # copy target_networks
+        mc.sync()
 
     # repeat for the number of given steps
     # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
@@ -153,6 +163,10 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
             rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
             rew_plot.save(join(mc.plot_root, "performance.png"))
 
+            # the q fit of the last epoch ran during the rollout, the target networks follow it
+            if e > 0:
+                finish_v_step()
+
             # save last model and keep it as best model if its epoch return is the highest so far
             mc.store("last")
             mc.store_best(float(res_log[0][e, 0]), e)
@@ -173,13 +187,14 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
 
         with cli.header("v-step", 1):
             ret.transform_all(tc)
-            q_network.perform_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
-
-        # copy target_networks
-        mc.sync()
+            # the rollout does not need the q function, so its fit finishes in the next epoch
+            q_network.start_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
 
         e += 1
 
+    if e > 0:
+        finish_v_step()
+    q_network.close()
     env.close()
     rew_plot.close()
     return logger.get([stoch_reward], num_epochs)[0]

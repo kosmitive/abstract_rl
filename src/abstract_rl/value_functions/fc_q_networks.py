@@ -13,11 +13,14 @@
 #  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 #  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+from collections.abc import Callable
+from typing import Any
+
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient
+from abstract_rl.algorithms.mixed.vanilla_gradient import VanillaGradient, background_adam_fit
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
@@ -59,8 +62,10 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         # neural nets
         self.fc_net = MultilayerPerceptron(mc, np.concatenate(([sd + ad], struct, [1])), def_fn, layer_norm, init)
 
-        # set up trust regions
-        VanillaGradient.__init__(self, self.fc_net, lr=conf.get("lr", 1e-3))
+        # set up trust regions, the settings are also the ones of a background fit
+        self._act_fn_conf = def_fn
+        self.lr = conf.get("lr", 1e-3)
+        VanillaGradient.__init__(self, self.fc_net, lr=self.lr)
 
     def clone(self) -> "FullyQNeuralNet":
         """Clones the Neural Network"""
@@ -125,10 +130,28 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         return q_vals
 
     def tr_obj(self, batch: Batch) -> mx.array:
+        return q_mse(self.fc_net, batch)
 
-        # build up mse loss for q function
-        t_states = to_mx(batch.states)
-        t_actions = to_mx(batch.actions)
-        q_vals = self.q_val(t_states, t_actions).reshape(-1)
-        q_targets = to_mx(batch["tq"]).reshape(-1)
-        return self.loss(q_vals, q_targets)
+    def background_spec(self) -> tuple[str, dict[str, Any]]:
+        spec = {
+            "structure": [int(x) for x in self.fc_net.structure],
+            "act_fn": [list(a) if isinstance(a, list | tuple) else a for a in self._act_fn_conf],
+            "layer_norm": self.fc_net.layer_norm,
+            "lr": self.lr,
+        }
+        return f"{__name__}:background_q_fit", spec
+
+
+def q_mse(fc_net: MultilayerPerceptron, batch: Batch) -> mx.array:
+    """The mean squared error of the q values of the network and the targets ``tq`` of the batch."""
+    t_states = to_mx(batch.states)
+    t_actions = to_mx(batch.actions)
+    q_vals = fc_net.forward(mx.concatenate([t_states, t_actions], axis=1)).reshape(-1)
+    q_targets = to_mx(batch["tq"]).reshape(-1)
+    return nn.losses.mse_loss(q_vals, q_targets)
+
+
+def background_q_fit(spec: dict[str, Any]) -> Callable:
+    """The fit of a q network in a worker process, see FullyQNeuralNet.background_spec and BackgroundFit."""
+    fc_net = MultilayerPerceptron(None, np.array(spec["structure"]), spec["act_fn"], spec["layer_norm"], "none")
+    return background_adam_fit(fc_net, spec["lr"], lambda tree: q_mse(fc_net, Batch.from_tree(tree)))
