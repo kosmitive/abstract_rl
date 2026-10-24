@@ -37,8 +37,8 @@ swing-up and balance).
 | Environment | Algorithm | MLX device | Seeds | Steps | Greedy return (mean ± std) | Solved |
 |---|---|---|---|---|---|---|
 | Pendulum-v1 (≥ -150) | TRPO | CPU | 5 | 800,000 | -124.5 ± 1.2 | 5/5 |
-| Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.9 ± 2.8 | 5/5 |
-| HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8012.9 ± 862.4 | 5/5 |
+| Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.7 ± 2.0 | 5/5 |
+| HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8065.0 ± 913.3 | 5/5 |
 
 MountainCarContinuous-v0, InvertedPendulum-v5, InvertedDoublePendulum-v5 and TRPO on HalfCheetah-v5 have not been
 trained with MLX yet. The per-seed returns and the throughput are in [MLX port (experiment)](#mlx-port-experiment).
@@ -149,7 +149,16 @@ This branch implements the existing modules with [MLX](https://github.com/ml-exp
 - **ELU.** `mlx.nn.elu` has a NaN gradient for pre-activations above about 88. The port uses its own ELU
   (`misc/mixed.py`). Without it, the MPO critic diverges after about 25 epochs on Pendulum.
 - **Storage.** Models are stored as safetensors.
-- **Not used:** `vmap` over seeds and custom kernels. Seeds run as separate processes.
+- **Q fit in a worker process.** On the GPU, the MPO Q fit runs in a second process (`val_background_fit: auto`,
+  `algorithms/mixed/background_fit.py`) while the main process runs the rollout of the next epoch. The replay and the
+  batch indices are passed in shared memory. The Q function is only read again after the rollout, so the results are
+  bit-identical.
+- **Host actor.** The rollout samples the actions of the Gaussian policy with NumPy (`env_host_policy: auto` in
+  `conf/alg/mpo.yaml`), from the same random bits as MLX. The results are bit-identical.
+- **Metal kernels.** On the GPU, the temperature dual runs as two Metal kernels per Adam step, and the Q fit and the
+  M-step use a fused Adam kernel (`misc/metal_kernels.py`). The fused Adam is bit-identical to `mlx.optimizers.Adam`;
+  the dual differs by float noise (relative 8e-7 in the temperature).
+- **Not used:** `vmap` over seeds. Seeds run as separate processes.
 
 ### Tests and Metal checks
 
@@ -178,12 +187,12 @@ Notes on the setup:
   - epochs 50–59: the full 50k memory, which is how most of a run looks
 - "5 seeds" is 5 processes, summed.
 - The MLX numbers for MPO epochs 50–59 include the speedups described below the tables (re-timed on
-  2026-10-24). The other MPO columns were measured before them.
+  2026-10-24; the GPU cell with speedups 1–10). The other MPO columns were measured before them.
 
 | MLX device | TRPO, 1 seed | TRPO, 5 seeds | MPO epochs 1–4, 1 seed | MPO epochs 1–4, 5 seeds | MPO epochs 15–24 | MPO epochs 50–59 |
 |---|---|---|---|---|---|---|
 | CPU | **6,357** | **26,054** | 1,068 | 3,730 | 444 | 385 |
-| GPU | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **2,135** |
+| GPU | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **3,891** |
 
 Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
 
@@ -192,7 +201,8 @@ Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
 | CPU, before the speedups | 0.09 | 0.83 | 0.75 | 0.24 | 0.55 | 1.97 | 4.45 |
 | GPU, before the speedups | 0.35 | 0.14 | 0.10 | 0.24 | 0.13 | 2.00 | 3.00 |
 | **CPU** | 0.08 | 0.79 | 0.62 | 0.05 | 0.46 | 0.57 | 2.60 |
-| **GPU** | 0.08 | 0.04 | 0.07 | 0.04 | 0.03 | 0.19 | 0.47 |
+| GPU, speedups 1–4 | 0.08 | 0.04 | 0.07 | 0.04 | 0.03 | 0.19 | 0.47 |
+| **GPU**, speedups 1–10 | 0.08 | 0.04 | 0.002 | 0.04 | 0.03 | 0.015 | 0.26 |
 
 - **TRPO.** The rollout evaluates the policy once per environment step. On Metal every such call costs about
   0.4 ms of dispatch and synchronization, which makes the rollout 3× slower than on the CPU (1.5 s vs 0.48 s per
@@ -239,9 +249,27 @@ higher load).
 | GPU | 0.638 s, 1,568 steps/s | **0.468 s, 2,135 steps/s** | 1.36× |
 | CPU | 2.785 s, 359 steps/s | **2.595 s, 385 steps/s** | 1.07× |
 
-On the GPU, the Q fit (1,000 small Adam steps, 39% of the epoch) is now the largest phase, ahead of the rollout (17%)
-and the temperature dual (14%). On the CPU, the annotation and Retrace (48%) dominate. Batching them is not faster
-there, because the MLX CPU spends that time in the network arithmetic, not in dispatch.
+With steps 1–4, the Q fit (1,000 small Adam steps, 39% of the epoch) was the largest phase on the GPU, ahead of the
+rollout (17%) and the temperature dual (14%). On the CPU, the annotation and Retrace (48%) dominate. Batching them is
+not faster there, because the MLX CPU spends that time in the network arithmetic, not in dispatch.
+
+Steps 5–10 are for MPO on the GPU. The Q fit was bound by the host: MLX encodes about 2 µs per graph node, so the
+1,000 Adam steps cost the same with batches of 16 or 256. The changes take the Q fit off the critical path and cut
+the nodes per step. All of them are bit-identical, except step 5 (float noise):
+
+5. The temperature dual runs as two Metal kernels per Adam step (per-row partial sums, then the reduction and the
+   Adam update), instead of a compiled graph: 63 ms → 4 ms per epoch on HalfCheetah-v5.
+6. The Q fit runs in a worker process during the rollout of the next epoch, and the worker encodes larger Metal
+   command buffers (`MLX_MAX_OPS_PER_BUFFER=2000`).
+7. The rollout samples the actions with NumPy instead of one MLX call per environment step.
+8. A fused Adam kernel updates up to three parameters per Metal dispatch, with the bias correction computed in the
+   kernel, for the Q fit and the M-step.
+9. The batch indices of a fit are drawn with one `randint` call (the same values and random state as before).
+10. The batches of all Adam steps of a compiled call are gathered with one `take`.
+
+Pendulum-v1, timed as above at a load average of 4–5, 3 repeats interleaved with the baseline (a556171, steps 1–4):
+**0.462 s → 0.257 s per epoch, 2,166 → 3,891 steps/s (1.80×)**. The main process waits 0.015 s for the Q fit
+after the rollout. HalfCheetah-v5 is below.
 
 ### HalfCheetah-v5 (MPO)
 
@@ -259,26 +287,59 @@ trajectories instead of 250, so the per-trajectory host work that the speedups r
 the speedups, the GPU epoch splits into the Q fit (0.17 s), the rollout (0.10 s), the temperature dual (0.07 s), the
 annotation and the M-step (0.04 s each) and Retrace (0.03 s).
 
+With speedups 5–10 (c37bd7b), timed on 2026-10-24 against a556171 (speedups 1–4), 3 repeats interleaved, at a load
+average of 3–5. The epoch median of epochs 50–59 is shown for two harnesses: the benchmark harness synchronizes the
+device around every phase; the second one synchronizes only at the start of each epoch.
+
+| GPU | speedups 1–4 (a556171) | speedups 1–10 (c37bd7b) | gain |
+|---|---|---|---|
+| synchronized phases | 0.487 s, 2,054 steps/s | **0.233 s, 4,301 steps/s** | 2.09× |
+| epoch start only | 0.476 s, 2,099 steps/s | **0.223 s, 4,494 steps/s** | 2.14× |
+
+The repeats were 0.475–0.501 s and 0.228–0.234 s (synchronized), and 0.472–0.478 s and 0.220–0.225 s. Per change, each
+against the previous commit in the same session (epoch median in ms, synchronized phases unless noted):
+
+| Step | Commit | Change | Before | After |
+|---|---|---|---|---|
+| 5 | 2578cda | temperature dual as Metal kernels | 447 | 380 (phase benchmark) |
+| 6 | 80833d7 | Q fit in a worker process | 412.0 | 301.5 |
+| 6 | 4ccd27d | larger command buffers in the worker | 321.8 | 306.0 |
+| 7 | 2670633 | actions sampled with NumPy | 306.0 | 278.6 |
+| 8 | fd0e6f2 | fused Adam for the Q fit | 278.1 | 262.2 |
+| 8 | 185c848 | fused Adam for the M-step | 262.2 | 254.6 |
+| 9 | f0732b9 | one `randint` per fit | 257.2 | 257.0 (Q fit start 10.6 → 5.6) |
+| 8 | 5c4c8cb | bias correction in the Adam kernel | 263.8 | 241.3 |
+| 10 | c37bd7b | one gather per compiled call | 236.5 | 220.3 (epoch start only) |
+
+With speedups 1–10, the synchronized epoch splits into the rollout (0.060 s), the annotation (0.047 s), the M-step
+(0.036 s), Retrace (0.025 s), the plot (0.017 s), the wait for the Q fit (0.015 s) and the start of the Q fit
+(0.005 s). The Q fit takes about 0.125 s in the worker, during the rollout and the plot.
+
 ### Learning (Pendulum-v1, 800k steps, 5 seeds, greedy return of the final policy over 20 episodes)
 
 | Algorithm | MLX device | Greedy return (mean ± std over seeds) | Solved |
 |---|---|---|---|
 | TRPO | CPU | -124.5 ± 1.2 | 5/5 |
-| MPO | GPU (`auto`), with speedups 1–4 | -122.9 ± 2.8 | 5/5 |
+| MPO | GPU (`auto`), with speedups 1–10 (c37bd7b) | -122.7 ± 2.0 | 5/5 |
+| MPO | GPU, with speedups 1–4 | -122.9 ± 2.8 | 5/5 |
 | MPO | GPU, with speedups 1–2 (84b558e) | -122.7 ± 1.5 | 5/5 |
 | MPO | GPU, before the speedups (ebd5a3b) | -122.3 ± 1.6 | 5/5 |
 
-Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.4, -120.6, -125.8, -125.9, -121.7, with
-speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -120.9, -120.6, -122.3, -124.5, -123.1.
-The wall time for 800k steps is about 2 min for TRPO (CPU) and about 8 min for MPO (GPU, two seeds at a time; 11 min
-with speedups 1–2 and 44 min before the speedups).
+Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.9, -120.9, -122.3, -124.9, -124.8, with
+speedups 1–4 -120.4, -120.6, -125.8, -125.9, -121.7, with speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -120.9, -120.6, -122.3, -124.5, -123.1.
+The wall time for 800k steps is about 2 min for TRPO (CPU) and about 3 min for MPO with speedups 1–10 (GPU, one seed;
+7 min with four seeds at a time). It was 8 min with speedups 1–4 (two seeds at a time), 11 min with speedups 1–2 and
+44 min before the speedups.
 
 ### Learning (HalfCheetah-v5, MPO, 1.2M steps, 5 seeds, greedy return of the final policy over 20 episodes)
 
-The configuration of the repository (1,200 epochs of 1,000 steps), on the GPU (`auto`) with speedups 1–4 (86a0cea):
-**8012.9 ± 862.4, 5/5 solved** (threshold 4800). Per seed (seeds 1–5): 7694.1, 6725.0, 8070.0, 8860.6, 8714.9. The
-smoothed training return first reaches 4800 after 204,000 steps (median over the seeds; 132,000–354,000). The wall
-time is 14 min per seed with three seeds at a time and 11.5 min with two at a time.
+The configuration of the repository (1,200 epochs of 1,000 steps), on the GPU (`auto`) with speedups 1–10 (c37bd7b):
+**8065.0 ± 913.3, 5/5 solved** (threshold 4800). Per seed (seeds 1–5): 7786.3, 6977.4, 9049.4, 8974.9, 7537.1. The
+smoothed training return first reaches 4800 after 192,000 steps (median over the seeds; 120,000–318,000). The wall
+time is 8 min per seed with three seeds at a time and 6 min with two at a time.
+
+With speedups 1–4 (86a0cea): 8012.9 ± 862.4, 5/5 solved; per seed 7694.1, 6725.0, 8070.0, 8860.6, 8714.9; 4800 after
+204,000 steps (132,000–354,000); 14 min per seed with three seeds at a time and 11.5 min with two at a time.
 
 ### Verdict
 
@@ -286,7 +347,7 @@ time is 14 min per seed with three seeds at a time and 11.5 min with two at a ti
   - It keeps the architecture.
   - It matches `main` numerically on the same weights and batches (parity tests).
   - It learns: Pendulum 5/5 for both algorithms and HalfCheetah-v5 5/5 for MPO.
-  - MPO with the full memory runs at 2,135 steps/s on the GPU (Pendulum-v1, 2,095 on HalfCheetah-v5), and TRPO at
+  - MPO with the full memory runs at 3,891 steps/s on the GPU (Pendulum-v1, 4,301 on HalfCheetah-v5), and TRPO at
     6,357 steps/s on the CPU.
 - **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
   bound by the per-step policy evaluation of the Gymnasium rollout and is best on the CPU.
