@@ -187,7 +187,7 @@ def test_retrace(mpo, name):
     t_q = mpo.get("q_network", True)
 
     # the fixture uses the value of the policy mode instead of the sampled estimate
-    def v_mode(states, exp_actions=10, policy=None):
+    def v_mode(states, exp_actions=10, policy=None, noise=None):
         return t_q.q_val(states, policy.mode(states=states))
 
     object.__setattr__(t_q, "v_val", v_mode)

@@ -90,17 +90,19 @@ class FullyQNeuralNet(nn.Module, Syncable, VanillaGradient):
         states: mx.array,
         exp_actions: int = 10,
         policy: DiagonalGaussianPolicy | UnivariateGaussianPolicy | None = None,
+        noise: mx.array | None = None,
     ) -> mx.array:
         """Estimate v values by averaging q values of actions sampled from the target policy.
 
         :param states: A matrix [D, Ds] of states.
         :param exp_actions: The number of sampled actions K per state.
         :param policy: The policy to evaluate, defaults to the target policy.
+        :param noise: The noise of the sampled actions, see sample_noise of the policy. Drawn if None.
         :return: A matrix [D, 1] of v values.
         """
 
         policy = policy if policy is not None else self.mc.get("policy", True)
-        samp_actions = policy.sample_actions(states, num_actions=exp_actions)
+        samp_actions = policy.sample_actions(states, num_actions=exp_actions, noise=noise)
         q_vals = self.q_val_multi(states, samp_actions)
         return mx.mean(q_vals, axis=1, keepdims=True)
 

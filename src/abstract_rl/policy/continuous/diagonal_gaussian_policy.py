@@ -211,19 +211,28 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         mu, _ = self._split(self._suff_stats(states, suff_stats))
         return self._action_center + self._action_scale * mx.tanh(mu) if self.squash else mu
 
+    def sample_noise(self, num_states: int, num_actions: int = 1) -> mx.array:
+        """The standard normal noise of sample_actions for num_states states, a tensor [D, K, A]."""
+        return mx.random.normal((num_states, num_actions, self.action_dim))
+
     def sample_actions(
-        self, states: mx.array | None = None, suff_stats: mx.array | None = None, num_actions: int = 1
+        self,
+        states: mx.array | None = None,
+        suff_stats: mx.array | None = None,
+        num_actions: int = 1,
+        noise: mx.array | None = None,
     ) -> mx.array:
         """
         Samples K actions for each state.
         :param states: A matrix of size [D, Ds]. If this None => suff_stats not None
         :param suff_stats: A matrix of size [D, 2A]. If this None => states is not None
         :param num_actions: The number of actions K.
+        :param noise: The noise to use, see sample_noise. Drawn here if None.
         :return: A tensor [D, K, A] of (reparametrised) action samples.
         """
         stats = self._suff_stats(states, suff_stats)
         mu, sigma = self._split(stats)
-        z = mx.random.normal((stats.shape[0], num_actions, self.action_dim))
+        z = noise if noise is not None else self.sample_noise(stats.shape[0], num_actions)
         u = mu[:, None, :] + sigma[:, None, :] * z
         if self.squash:
             u = self._action_center + self._action_scale * mx.tanh(mx.clip(u, -SQUASH_U_MAX, SQUASH_U_MAX))
