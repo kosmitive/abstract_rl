@@ -261,7 +261,7 @@ Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
 
 **MLX speedups for MPO.** The per-step costs of the M-step and the Q fit were the host work around each small
 step: walking the trajectories for a minibatch, the copy from numpy and one dispatch per Adam step. The rollout on
-the GPU paid a Metal round trip per environment step. Two changes address this:
+the GPU paid a Metal round trip per environment step. Four changes address this:
 
 1. The minibatches are gathered on the device from one flat copy of the replay memory, and the value fits run ten
    Adam steps per compiled call. The results are bit-identical: the rewards of all 60 epochs are the same as before
@@ -336,12 +336,14 @@ changed.
 | Algorithm | MLX device | MLX: greedy return (mean ± std over seeds) | MLX: solved | torch (`main`) | JAX (PR #9) |
 |---|---|---|---|---|---|
 | TRPO | CPU | -124.5 ± 1.2 | 5/5 | -127.7 ± 2.7, 5/5 | -111.3, 5/5 |
-| MPO | GPU (`auto`), rollout on the CPU stream | -122.7 ± 1.5 | 5/5 | -123.3 ± 0.4, 5/5 | -106.2, 5/5 |
+| MPO | GPU (`auto`), with speedups 1–4 | -122.9 ± 2.8 | 5/5 | -123.3 ± 0.4, 5/5 | -106.2, 5/5 |
+| MPO | GPU, with speedups 1–2 (84b558e) | -122.7 ± 1.5 | 5/5 | | |
 | MPO | GPU, before the speedups (ebd5a3b) | -122.3 ± 1.6 | 5/5 | | |
 
-Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.6, -122.4, -124.4, -122.4, -123.8, and
-before the speedups -120.9, -120.6, -122.3, -124.5, -123.1. The wall time for 800k steps is about 2 min for TRPO (CPU)
-and about 11 min for MPO (GPU, two seeds at a time; 44 min before the speedups).
+Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.4, -120.6, -125.8, -125.9, -121.7, with
+speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -120.9, -120.6, -122.3, -124.5, -123.1.
+The wall time for 800k steps is about 2 min for TRPO (CPU) and about 8 min for MPO (GPU, two seeds at a time; 11 min
+with speedups 1–2 and 44 min before the speedups).
 
 ### Verdict
 
