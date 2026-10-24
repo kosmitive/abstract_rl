@@ -4,17 +4,23 @@ from typing import Any
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import numpy as np
+from mlx.utils import tree_map
 
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
+
+# Adam steps per compiled call of perform_mult_sgd, also the interval of its log lines
+STEPS_PER_CALL = 10
 
 
 class VanillaGradient:
     """Simple vanilla gradient. Simply inherit from this class to add support.
 
     Value networks are fit with Adam on minibatches. One Adam step (forward, backward and update) is one compiled MLX
-    function, the parameters and the moments of Adam are its implicit inputs and outputs.
+    function, the parameters and the moments of Adam are its implicit inputs and outputs. perform_mult_sgd runs
+    STEPS_PER_CALL steps, each gathering its batch from a flat replay on the device, in one compiled function.
     """
 
     def __init__(self, model: nn.Module, lr: float = 1e-3) -> None:
@@ -51,6 +57,17 @@ class VanillaGradient:
                 return self.tr_obj(Batch.from_tree(tree))
 
             self._compiled["obj"] = mx.compile(obj, inputs=state)
+
+            def steps(tree: dict[str, Any], indices: mx.array) -> tuple[mx.array, mx.array]:
+                # one adam step per row of indices, the objective before and after the first one for the log line
+                for j in range(indices.shape[0]):
+                    batch = tree_map(lambda v, j=j: mx.take(v, indices[j], axis=0), tree)
+                    step_obj = step(batch)
+                    if j == 0:
+                        pre_obj, post_obj = step_obj, obj(batch)
+                return pre_obj, post_obj
+
+            self._compiled["steps"] = mx.compile(steps, inputs=state, outputs=state)
         return self._compiled["step"], self._compiled["obj"]
 
     def perform_mult_sgd(self, num_steps: int, tc: TrajectoryCollection, batch_size: int, fields: list[str]) -> None:
@@ -64,10 +81,22 @@ class VanillaGradient:
         """
 
         self.cli.print(self.titlestr % ("k", "pre_objective", "post_objective")).line()
+        if num_steps == 0:
+            return
 
+        # the indices of all batches, drawn in the order and with the calls of one tc.sample per step
         replay = tc.flatten(fields)
-        for s in range(num_steps):
-            self.perform_adam_step(s, Batch.from_tree(replay.sample(batch_size)), fields)
+        indices = mx.array(np.stack([replay.draw(batch_size) for _ in range(num_steps)]), dtype=mx.int32)
+        self._adam_fns()
+        logs = []
+        for s in range(0, num_steps, STEPS_PER_CALL):
+            pre_obj, post_obj = self._compiled["steps"](replay.tree, indices[s : s + STEPS_PER_CALL])
+            mx.async_eval(pre_obj, post_obj, self._model.parameters(), self.opt.state)
+            logs.append((s, pre_obj, post_obj))
+
+        # the log lines of perform_adam_step, printed once all steps are queued
+        for s, pre_obj, post_obj in logs:
+            self.cli.print(self.fmtstr % (s, pre_obj.item(), post_obj.item()))
 
     def perform_adam_step(self, curst: int, batch: Batch, fields: list[str] | None = None) -> None:
         """Performs a single adam step on the passed batch.
