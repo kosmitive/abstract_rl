@@ -198,10 +198,10 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
         )
 
-        # perform a min step
+        # perform a min step, the batches are gathered on the device from one flat copy of the collection
+        replay = tc.flatten(["add_act", "grad_ranking"])
         for s in range(num_steps):
-            batch = tc.sample(batch_size, ["add_act", "grad_ranking", "add_pi"])
-            self.perform_step(s, batch)
+            self.perform_step(s, Batch.from_tree(replay.sample(batch_size)))
 
     def _step_fns(self) -> tuple[Callable, Callable]:
         """The compiled M-step and the compiled objective and constraints for the log line."""
@@ -260,7 +260,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             vals = [cast(float, v.item()) for pair in zip(self.lagrange_mults, constraints, strict=False) for v in pair]
             self.cli.print(self.fmtstr % (step, obj.item(), *vals))
         else:
-            # the next batch is sampled on the host while this step runs
+            # the next batch is drawn while this step runs
             mx.async_eval(self.mc.get("policy", target=False).parameters(), self._lm_state, self.opt_outer.state)
 
     def __lagrange_obj(self, batch: Batch, suff_stats: mx.array) -> mx.array:

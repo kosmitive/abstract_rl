@@ -65,9 +65,9 @@ class VanillaGradient:
 
         self.cli.print(self.titlestr % ("k", "pre_objective", "post_objective")).line()
 
+        replay = tc.flatten(fields)
         for s in range(num_steps):
-            batch = tc.sample(batch_size, fields)
-            self.perform_adam_step(s, batch, fields)
+            self.perform_adam_step(s, Batch.from_tree(replay.sample(batch_size)), fields)
 
     def perform_adam_step(self, curst: int, batch: Batch, fields: list[str] | None = None) -> None:
         """Performs a single adam step on the passed batch.
@@ -83,7 +83,7 @@ class VanillaGradient:
             new_obj = obj_fn(tree)
             self.cli.print(self.fmtstr % (curst, obj.item(), new_obj.item()))
         else:
-            # the next batch is sampled on the host while this step runs
+            # the next batch is drawn while this step runs
             mx.async_eval(obj, self._model.parameters(), self.opt.state)
 
     def tr_obj(self, batch: Batch) -> mx.array:
