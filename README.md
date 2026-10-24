@@ -181,8 +181,14 @@ modules. There is no backend abstraction: the layout, the operators and the trai
   (vjp).
 - **Minibatches.** The M-step and the V and Q fits gather their minibatches on the device from one flat float32
   copy of the replay memory per fit (`FlatReplay`). The indices are drawn with the same numpy calls as in
-  `TrajectoryCollection.sample`, so the batches are identical. The V and Q fits run ten Adam steps per compiled
-  call; the log line of every tenth step is printed after the fit.
+  `TrajectoryCollection.sample`, so the batches are identical. The V and Q fits and the M-step run ten Adam steps
+  per compiled call; the log line of every tenth step is printed after the fit.
+- **Batched annotation.** The resampling, the Q annotation and Retrace run over all trajectories at once, in calls of
+  2,048 states (compiled) on the GPU and 512 states (not compiled, which is faster on the MLX CPU) on the CPU. The
+  noise is still drawn per trajectory, and the Retrace bootstrap stops at trajectory seams. The annotations, the
+  temperature dual and the ranking stay on the device. This changes the results by float rounding only.
+- **Buffer cache.** `default_settings` caps the MLX buffer cache at 2 GiB (`misc/mixed.py`). Without a cap it grows
+  to the memory limit.
 - **ELU.** `mlx.nn.elu` has a NaN gradient for pre-activations above about 88. The port uses its own ELU
   (`misc/mixed.py`). Without it, the MPO critic diverges after about 25 epochs on Pendulum.
 - **Storage.** Models are stored as safetensors instead of `torch.save` files.
@@ -218,15 +224,15 @@ Notes on the setup:
   Mac on 2026-10-23). JAX jits the whole epoch, including JAX versions of the environments (gymnax), instead of
   Gymnasium. Its "5 seeds" is one process, looping over the seeds (`loop`) or vmapping them (`vmap`), and its MPO
   number is measured on epochs 1–11.
-- The MLX numbers for MPO epochs 50–59 include the two speedups described below the tables (re-timed on
+- The MLX numbers for MPO epochs 50–59 include the speedups described below the tables (re-timed on
   2026-10-24). The other MPO columns were measured before them.
 
 | Implementation | Device | TRPO, 1 seed | TRPO, 5 seeds | MPO epochs 1–4, 1 seed | MPO epochs 1–4, 5 seeds | MPO epochs 15–24 | MPO epochs 50–59 |
 |---|---|---|---|---|---|---|---|
 | torch (`main`) | CPU | 5,272 | 25,471 | 542 | 2,427 | 222 | 124 |
 | torch (`main` + 3 fixes) | MPS | 245 | 1,171 | 38 | 170 | – | – |
-| **MLX (this branch)** | **CPU** | **6,357** | **26,054** | **1,068** | **3,730** | **444** | **345** |
-| **MLX (this branch)** | **GPU** | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **1,442** |
+| **MLX (this branch)** | **CPU** | **6,357** | **26,054** | **1,068** | **3,730** | **444** | **385** |
+| **MLX (this branch)** | **GPU** | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **2,135** |
 | JAX (PR #9) | CPU | 61,860 | 85,167 loop / 65,837 vmap | 963 | 2,271 loop / 1,076 vmap | – | – |
 | JAX (PR #9) | Metal (jax-mps) | 2,469 | 11,469 vmap | 316 | 1,307 vmap | – | – |
 
@@ -237,8 +243,8 @@ Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
 | torch (`main`), CPU | 0.12 | 1.50 | 1.72 | 0.38 | 0.91 | 3.42 | 8.07 |
 | MLX, CPU, before the speedups | 0.09 | 0.83 | 0.75 | 0.24 | 0.55 | 1.97 | 4.45 |
 | MLX, GPU, before the speedups | 0.35 | 0.14 | 0.10 | 0.24 | 0.13 | 2.00 | 3.00 |
-| **MLX, CPU** | 0.09 | 0.83 | 0.75 | 0.05 | 0.55 | 0.59 | 2.90 |
-| **MLX, GPU** | 0.09 | 0.11 | 0.08 | 0.05 | 0.13 | 0.21 | 0.69 |
+| **MLX, CPU** | 0.08 | 0.79 | 0.62 | 0.05 | 0.46 | 0.57 | 2.60 |
+| **MLX, GPU** | 0.08 | 0.04 | 0.07 | 0.04 | 0.03 | 0.19 | 0.47 |
 
 - **TRPO.** The rollout evaluates the policy once per environment step. On Metal every such call costs about
   0.4 ms of dispatch and synchronization, which makes the rollout 3× slower than on the CPU (1.5 s vs 0.48 s per
@@ -248,11 +254,12 @@ Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
   MLX CPU. Before the speedups below, the Q fit (1,000 small Adam steps per epoch) cost about the same on both
   devices, and the rollout was slower on the GPU for the same reason as in TRPO. The first GPU epoch includes
   compilation and the Metal warm-up.
-- Peak memory: the MLX CPU runs reached about 2.7 GB RSS (the MLX buffer cache), against about 0.3 GB for MLX on
-  the GPU and 0.75 GB for torch.
+- Peak memory, with the 2 GiB cache cap: the MLX CPU runs reach about 2.7 GB RSS and MLX on the GPU about 0.7 GB,
+  against 0.75 GB for torch. The batched annotation peaks at 0.5 GB of live MLX buffers on the CPU and 1.6 GB on the
+  GPU.
 - This is why `auto` uses the GPU for MPO and the CPU for TRPO.
 
-**Two MLX speedups for MPO.** The per-step costs of the M-step and the Q fit were the host work around each small
+**MLX speedups for MPO.** The per-step costs of the M-step and the Q fit were the host work around each small
 step: walking the trajectories for a minibatch, the copy from numpy and one dispatch per Adam step. The rollout on
 the GPU paid a Metal round trip per environment step. Two changes address this:
 
@@ -261,14 +268,32 @@ the GPU paid a Metal round trip per environment step. Two changes address this:
    on both devices.
 2. With the networks on the GPU, the rollout evaluates the policy on the CPU stream. This changes the results by
    float noise only (about 5e-7 on a 75-step rollout, `tests/test_metal.py`), which compounds over training.
+3. The resampling, the Q annotation and Retrace run over all trajectories in a few large calls instead of one call
+   per trajectory. The annotations, the temperature dual and the ranking stay on the device (float noise; the ranking
+   differs from the numpy one by at most 4.8e-7).
+4. The temperature dual and the M-step run 20 and 10 Adam steps per compiled call, and the rollout reads the log
+   likelihoods once per episode. These are bit-identical.
 
 Re-timed on 2026-10-24: MPO, seed 1, 60 epochs, the median epoch of epochs 50–59 (full memory), 3 repeats each, one
 run at a time with nice 10. The load average was 5–14, from desktop apps. The repeats differ by less than 4%.
 
 | MLX device | before (ebd5a3b) | 1. flat replay, ten Adam steps per call | 1. + 2. rollout on the CPU stream |
 |---|---|---|---|
-| GPU | 2.89 s, 346 steps/s | 0.92 s, 1,084 steps/s (3.1×) | **0.69 s, 1,442 steps/s (4.2×)** |
-| CPU | 4.35 s, 230 steps/s | **2.90 s, 345 steps/s (1.5×)** | – (the rollout is on the CPU already) |
+| GPU | 2.89 s, 346 steps/s | 0.92 s, 1,084 steps/s (3.1×) | 0.69 s, 1,442 steps/s (4.2×) |
+| CPU | 4.35 s, 230 steps/s | 2.90 s, 345 steps/s (1.5×) | – (the rollout is on the CPU already) |
+
+Steps 3 and 4 were timed the same way, at a load average of 4–6, against 84b558e (steps 1 and 2) as the baseline.
+The repeats differ by less than 1.5%. The baseline took 0.64 s on the GPU in this session (0.69 s above, at a
+higher load).
+
+| MLX device | 1. + 2. (84b558e) | 1.–4. | gain |
+|---|---|---|---|
+| GPU | 0.638 s, 1,568 steps/s | **0.468 s, 2,135 steps/s** | 1.36× |
+| CPU | 2.785 s, 359 steps/s | **2.595 s, 385 steps/s** | 1.07× |
+
+On the GPU, the Q fit (1,000 small Adam steps, 39% of the epoch) is now the largest phase, ahead of the rollout (17%)
+and the temperature dual (14%). On the CPU, the annotation and Retrace (48%) dominate. Batching them is not faster
+there, because the MLX CPU spends that time in the network arithmetic, not in dispatch.
 
 ### torch with MPS
 
@@ -324,8 +349,8 @@ and about 11 min for MPO (GPU, two seeds at a time; 44 min before the speedups).
   - The port keeps the architecture.
   - It matches the PyTorch implementation numerically.
   - It learns as well: Pendulum 5/5 for both algorithms, with returns within the spread of `main`.
-  - It is faster than torch on every configuration that was measured, by 1.2× for TRPO and up to 2.8× for MPO on
-    the CPU, and 11.6× for MPO with the full memory on the GPU.
+  - It is faster than torch on every configuration that was measured, by 1.2× for TRPO and up to 3.1× for MPO on
+    the CPU, and 17× for MPO with the full memory on the GPU.
 - **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
   bound by the per-step policy evaluation of the Gymnasium rollout and is best on the CPU.
 - **Remaining limits:** no full covariance (Cholesky without a gradient), one extra workaround (ELU), and
