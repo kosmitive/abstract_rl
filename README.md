@@ -162,6 +162,9 @@ modules. There is no backend abstraction: the layout, the operators and the trai
 - `cpu` or `gpu` (Metal) select the device directly.
 - `auto` is the default. It selects the GPU for MPO, if Metal is available, and the CPU for TRPO (see the
   throughput below).
+- With MPO on the GPU, the rollout still evaluates the policy on the CPU stream (`env_rollout_on_cpu: true` in
+  `conf/alg/mpo.yaml`). One small policy evaluation per environment step is faster on the CPU, and the parameters
+  are shared through the unified memory, so nothing is copied.
 
 ### Deviations from the PyTorch version
 
@@ -176,6 +179,10 @@ modules. There is no backend abstraction: the layout, the operators and the trai
   are seeded, but they are not identical to the ones of `main`.
 - **Diagonal covariance only.** `cov_type: full` raises an error, because `mx.linalg.cholesky` has no gradient
   (vjp).
+- **Minibatches.** The M-step and the V and Q fits gather their minibatches on the device from one flat float32
+  copy of the replay memory per fit (`FlatReplay`). The indices are drawn with the same numpy calls as in
+  `TrajectoryCollection.sample`, so the batches are identical. The V and Q fits run ten Adam steps per compiled
+  call; the log line of every tenth step is printed after the fit.
 - **ELU.** `mlx.nn.elu` has a NaN gradient for pre-activations above about 88. The port uses its own ELU
   (`misc/mixed.py`). Without it, the MPO critic diverges after about 25 epochs on Pendulum.
 - **Storage.** Models are stored as safetensors instead of `torch.save` files.
@@ -211,13 +218,15 @@ Notes on the setup:
   Mac on 2026-10-23). JAX jits the whole epoch, including JAX versions of the environments (gymnax), instead of
   Gymnasium. Its "5 seeds" is one process, looping over the seeds (`loop`) or vmapping them (`vmap`), and its MPO
   number is measured on epochs 1–11.
+- The MLX numbers for MPO epochs 50–59 include the two speedups described below the tables (re-timed on
+  2026-10-24). The other MPO columns were measured before them.
 
 | Implementation | Device | TRPO, 1 seed | TRPO, 5 seeds | MPO epochs 1–4, 1 seed | MPO epochs 1–4, 5 seeds | MPO epochs 15–24 | MPO epochs 50–59 |
 |---|---|---|---|---|---|---|---|
 | torch (`main`) | CPU | 5,272 | 25,471 | 542 | 2,427 | 222 | 124 |
 | torch (`main` + 3 fixes) | MPS | 245 | 1,171 | 38 | 170 | – | – |
-| **MLX (this branch)** | **CPU** | **6,357** | **26,054** | **1,068** | **3,730** | **444** | **225** |
-| **MLX (this branch)** | **GPU** | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **333** |
+| **MLX (this branch)** | **CPU** | **6,357** | **26,054** | **1,068** | **3,730** | **444** | **345** |
+| **MLX (this branch)** | **GPU** | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **1,442** |
 | JAX (PR #9) | CPU | 61,860 | 85,167 loop / 65,837 vmap | 963 | 2,271 loop / 1,076 vmap | – | – |
 | JAX (PR #9) | Metal (jax-mps) | 2,469 | 11,469 vmap | 316 | 1,307 vmap | – | – |
 
@@ -226,19 +235,40 @@ Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
 | Implementation | rollout | resample + annotation | E-step | M-step | Retrace | Q fit | epoch |
 |---|---|---|---|---|---|---|---|
 | torch (`main`), CPU | 0.12 | 1.50 | 1.72 | 0.38 | 0.91 | 3.42 | 8.07 |
-| MLX, CPU | 0.09 | 0.83 | 0.75 | 0.24 | 0.55 | 1.97 | 4.45 |
-| MLX, GPU | 0.35 | 0.14 | 0.10 | 0.24 | 0.13 | 2.00 | 3.00 |
+| MLX, CPU, before the speedups | 0.09 | 0.83 | 0.75 | 0.24 | 0.55 | 1.97 | 4.45 |
+| MLX, GPU, before the speedups | 0.35 | 0.14 | 0.10 | 0.24 | 0.13 | 2.00 | 3.00 |
+| **MLX, CPU** | 0.09 | 0.83 | 0.75 | 0.05 | 0.55 | 0.59 | 2.90 |
+| **MLX, GPU** | 0.09 | 0.11 | 0.08 | 0.05 | 0.13 | 0.21 | 0.69 |
 
 - **TRPO.** The rollout evaluates the policy once per environment step. On Metal every such call costs about
   0.4 ms of dispatch and synchronization, which makes the rollout 3× slower than on the CPU (1.5 s vs 0.48 s per
   epoch). The compiled TRPO step itself is faster on the GPU (0.012 s vs 0.034 s), but it is a small part of an
   epoch. MLX on the CPU is about 20% faster than torch on the CPU.
 - **MPO.** With the full memory, resampling, annotation, E-step and Retrace are 4–8× faster on the GPU than on the
-  MLX CPU. The Q fit (1,000 small Adam steps per epoch) costs about the same on both devices. The rollout is slower
-  on the GPU for the same reason as in TRPO. The first GPU epoch includes compilation and the Metal warm-up.
+  MLX CPU. Before the speedups below, the Q fit (1,000 small Adam steps per epoch) cost about the same on both
+  devices, and the rollout was slower on the GPU for the same reason as in TRPO. The first GPU epoch includes
+  compilation and the Metal warm-up.
 - Peak memory: the MLX CPU runs reached about 2.7 GB RSS (the MLX buffer cache), against about 0.3 GB for MLX on
   the GPU and 0.75 GB for torch.
 - This is why `auto` uses the GPU for MPO and the CPU for TRPO.
+
+**Two MLX speedups for MPO.** The per-step costs of the M-step and the Q fit were the host work around each small
+step: walking the trajectories for a minibatch, the copy from numpy and one dispatch per Adam step. The rollout on
+the GPU paid a Metal round trip per environment step. Two changes address this:
+
+1. The minibatches are gathered on the device from one flat copy of the replay memory, and the value fits run ten
+   Adam steps per compiled call. The results are bit-identical: the rewards of all 60 epochs are the same as before
+   on both devices.
+2. With the networks on the GPU, the rollout evaluates the policy on the CPU stream. This changes the results by
+   float noise only (about 5e-7 on a 75-step rollout, `tests/test_metal.py`), which compounds over training.
+
+Re-timed on 2026-10-24: MPO, seed 1, 60 epochs, the median epoch of epochs 50–59 (full memory), 3 repeats each, one
+run at a time with nice 10. The load average was 5–14, from desktop apps. The repeats differ by less than 4%.
+
+| MLX device | before (ebd5a3b) | 1. flat replay, ten Adam steps per call | 1. + 2. rollout on the CPU stream |
+|---|---|---|---|
+| GPU | 2.89 s, 346 steps/s | 0.92 s, 1,084 steps/s (3.1×) | **0.69 s, 1,442 steps/s (4.2×)** |
+| CPU | 4.35 s, 230 steps/s | **2.90 s, 345 steps/s (1.5×)** | – (the rollout is on the CPU already) |
 
 ### torch with MPS
 
@@ -292,8 +322,8 @@ wall time for 800k steps is about 2 min for TRPO (CPU) and about 44 min for MPO 
   - The port keeps the architecture.
   - It matches the PyTorch implementation numerically.
   - It learns as well: Pendulum 5/5 for both algorithms, with returns within the spread of `main`.
-  - It is faster than torch on every configuration that was measured, by 1.2× for TRPO and up to 2× for MPO on the
-    CPU, and 2.7× for MPO with the full memory on the GPU.
+  - It is faster than torch on every configuration that was measured, by 1.2× for TRPO and up to 2.8× for MPO on
+    the CPU, and 11.6× for MPO with the full memory on the GPU.
 - **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
   bound by the per-step policy evaluation of the Gymnasium rollout and is best on the CPU.
 - **Remaining limits:** no full covariance (Cholesky without a gradient), one extra workaround (ELU), and
