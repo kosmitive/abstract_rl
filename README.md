@@ -330,7 +330,7 @@ If you use this code, please cite the repository (see [`CITATION.cff`](CITATION.
 ```bibtex
 @software{semmler_abstract_rl,
   author = {Semmler, Markus},
-  title  = {Abstract RL: modular PyTorch TRPO and MPO},
+  title  = {Abstract RL: modular MLX TRPO and MPO},
   url    = {https://github.com/kosmitive/abstract_rl},
   year   = {2026}
 }
