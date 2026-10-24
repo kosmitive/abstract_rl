@@ -42,7 +42,7 @@ def test_flat_replay_matches_list_sampling(make_pendulum_mc):
 
 
 def test_draw_batches_matches_draw(make_pendulum_mc):
-    mc, tc = _collection(make_pendulum_mc)
+    _, tc = _collection(make_pendulum_mc)
     replay = tc.flatten([])
     for batch_size in (1, 64, 10_000):
         np.random.seed(7)  # noqa: NPY002
