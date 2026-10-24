@@ -41,6 +41,19 @@ def test_flat_replay_matches_list_sampling(make_pendulum_mc):
     mc.env.close()
 
 
+def test_draw_batches_matches_draw(make_pendulum_mc):
+    mc, tc = _collection(make_pendulum_mc)
+    replay = tc.flatten([])
+    for batch_size in (1, 64, 10_000):
+        np.random.seed(7)  # noqa: NPY002
+        expected = np.stack([replay.draw(batch_size) for _ in range(30)])
+        after = np.random.rand()  # noqa: NPY002
+        np.random.seed(7)  # noqa: NPY002
+        drawn = replay.draw_batches(30, batch_size)
+        assert np.random.rand() == after  # noqa: NPY002
+        np.testing.assert_array_equal(drawn, expected)
+
+
 def test_compiled_value_fit_matches_one_step_at_a_time(make_pendulum_mc, capsys):
     from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 

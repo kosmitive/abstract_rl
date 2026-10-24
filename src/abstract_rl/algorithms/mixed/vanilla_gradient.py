@@ -4,7 +4,6 @@ from typing import Any
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-import numpy as np
 from mlx.utils import tree_map
 
 from abstract_rl.algorithms.mixed.background_fit import BackgroundFit
@@ -144,7 +143,7 @@ class VanillaGradient:
 
         # the indices of all batches, drawn in the order and with the calls of one tc.sample per step
         replay = tc.flatten(fields)
-        indices = mx.array(np.stack([replay.draw(batch_size) for _ in range(num_steps)]), dtype=mx.int32)
+        indices = mx.array(replay.draw_batches(num_steps, batch_size), dtype=mx.int32)
         if self._worker is not None:
             self.finish_mult_sgd()
             self._worker.submit(self._model.parameters(), replay.tree, indices)

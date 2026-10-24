@@ -206,7 +206,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
         # the indices of all batches, drawn in the order and with the calls of one replay.sample per step
         replay = tc.flatten(["add_act", "grad_ranking"])
-        indices = mx.array(np.stack([replay.draw(batch_size) for _ in range(num_steps)]), dtype=mx.int32)
+        indices = mx.array(replay.draw_batches(num_steps, batch_size), dtype=mx.int32)
         step_fn, log_fn = self._step_fns()
         logs = []
         for s in range(0, num_steps, M_STEPS_PER_CALL):

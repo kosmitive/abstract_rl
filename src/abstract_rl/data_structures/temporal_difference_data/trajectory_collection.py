@@ -54,6 +54,16 @@ class FlatReplay:
     def draw(self, batch_size: int) -> np.ndarray:
         return draw_indices(self.num_data_points, batch_size)
 
+    def draw_batches(self, num_batches: int, batch_size: int) -> np.ndarray:
+        """
+        The indices [num_batches, batch_size] of num_batches calls of draw, also the same state of numpy's RNG after
+        it: randint draws its values one after another, so one call for all batches gives the same values.
+        """
+        batch_size = min(batch_size, self.num_data_points)
+        indices = np.random.randint(0, self.num_data_points, size=(num_batches, batch_size))  # noqa: NPY002
+        # the same order, sorting int32 is about three times faster
+        return np.sort(indices.astype(np.int32), axis=1) if self.num_data_points <= 2**31 else np.sort(indices, axis=1)
+
     def gather(self, indices: Any) -> dict[str, Any]:
         """The rows at the indices of every array of the tree."""
         indices = mx.array(indices, dtype=mx.int32) if isinstance(indices, np.ndarray) else indices
