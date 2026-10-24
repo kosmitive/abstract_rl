@@ -6,6 +6,11 @@ env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
 env_render: false
+# gymnasium (default) or jax. See trpo.yaml. Training stays on MLX.
+env_rollout_backend: gymnasium
+env_num_envs: 32
+env_jax_devices: 1
+env_jax_dtype: float64
 # evaluate the policy of the rollout on the CPU stream, also with device=gpu (only a speed setting)
 env_rollout_on_cpu: true
 policy_structure: [64, 64]

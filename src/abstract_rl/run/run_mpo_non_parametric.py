@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from os.path import join
 from typing import Any
 
@@ -49,7 +50,8 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     logger = DataLogger(mc.data_dir)
     mc.add_main("log", logger)
 
-    # create an environment wrapper
+    # create an environment wrapper. gymnasium is the default; jax is opt-in and imports JAX itself
+    rollout_backend = conf.get("env_rollout_backend", "gymnasium")
     with conf.ns("env"):
         render = conf["render"]
         num_new_steps = conf["sample"]
@@ -57,7 +59,7 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         # one policy evaluation per environment step is faster on the CPU, also when the networks are on the GPU,
         # the parameters are shared through the unified memory
         rollout_device = mx.cpu if conf["rollout_on_cpu"] else mx.default_device()
-        env = RolloutEnvWrapper(mc)
+        env = _make_env(mc, rollout_backend)
         mc.add_environment(env)
 
     # create the memory and get some settings
@@ -71,7 +73,7 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         policy_opt_size = conf["opt_steps"]
         policy_batch_size = conf["batch_size"]
         sync_steps = conf["sync_steps"]
-        policy = select_policy(mc)
+        policy = _make_policy(mc, rollout_backend)
         mc.add_syncable("policy", policy, sync_steps)
 
     # get obj_watcher
@@ -140,10 +142,13 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         # first of all run the deterministic policy afterwards
         # run the stochastic ones and save them in the memory.
 
-        with cli.header("stochastic evaluation", 1), mx.stream(rollout_device):
-            new_tc = env.execute_policy(
-                policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
-            )
+        with cli.header("stochastic evaluation", 1):
+            # the JAX env does not evaluate the policy on an MLX stream; the Gymnasium path still does
+            stream = mx.stream(rollout_device) if rollout_backend == "gymnasium" else nullcontext()
+            with stream:
+                new_tc = env.execute_policy(
+                    policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
+                )
             tc.merge(new_tc)
             filter.transform_all(tc)
 
@@ -183,3 +188,29 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     env.close()
     rew_plot.close()
     return logger.get([stoch_reward], num_epochs)[0]
+
+
+def _make_env(mc: ModelConfiguration, backend: str) -> Any:
+    """The rollout. ``gymnasium`` is the wrapper this file always used."""
+    match backend:
+        case "gymnasium":
+            return RolloutEnvWrapper(mc)
+        case "jax":
+            from abstract_rl.interop.rollout import JaxRolloutEnv
+
+            return JaxRolloutEnv(mc)
+        case _:
+            raise ValueError(f"unknown env_rollout_backend {backend}")
+
+
+def _make_policy(mc: ModelConfiguration, backend: str) -> Any:
+    """The policy. The JAX rollout trains the one shared buffer; Gymnasium keeps ``select_policy``."""
+    match backend:
+        case "gymnasium":
+            return select_policy(mc)
+        case "jax":
+            from abstract_rl.interop.policy import SharedGaussianPolicy
+
+            return SharedGaussianPolicy(mc)
+        case _:
+            raise ValueError(f"unknown env_rollout_backend {backend}")

@@ -32,6 +32,13 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory import Traj
 from abstract_rl.misc.cli_printer import CliPrinter
 
 
+def _concat(parts: list[Any]) -> Any:
+    """Concatenate trajectory fields. MLX arrays stay on MLX; NumPy arrays stay on NumPy."""
+    if parts and isinstance(parts[0], mx.array):
+        return mx.concatenate(parts, axis=0)
+    return np.concatenate(parts, 0)
+
+
 def draw_indices(num_data_points: int, batch_size: int) -> np.ndarray:
     """Draw the sorted transition indices of one batch from numpy's global RNG, at most every transition once."""
     batch_size = min(batch_size, num_data_points)
@@ -100,14 +107,16 @@ class TrajectoryCollection:
             titstr % ("id [len]", "entropy", "action_stats", "reward_stats", "avg_rew", "tot_rew", "disc_rew")
         ).line()
         for traj in self.__trajectories:
+            actions = np.asarray(traj.actions)
+            rewards = np.asarray(traj.rewards)
             print_str = fmtstr % (
                 traj.traj_id,
                 len(traj),
                 traj.entropy,
-                np.mean(traj.actions),
-                np.std(traj.actions),
-                np.min(traj.rewards),
-                np.max(traj.rewards),
+                np.mean(actions),
+                np.std(actions),
+                np.min(rewards),
+                np.max(rewards),
                 traj.average_reward,
                 traj.total_reward,
                 traj.discounted_reward(traj.env.discount()),
@@ -203,14 +212,14 @@ class TrajectoryCollection:
             for a in fields:
                 annots[a].append(traj[a])
 
-        states = np.concatenate(states, 0)
-        actions = np.concatenate(actions, 0)
-        lls = np.concatenate(lls, 0)
-        nxt_states = np.concatenate(nxt_states, 0)
-        rewards = np.concatenate(rewards, 0)
-        ds = np.concatenate(ds, 0)
+        states = _concat(states)
+        actions = _concat(actions)
+        lls = _concat(lls)
+        nxt_states = _concat(nxt_states)
+        rewards = _concat(rewards)
+        ds = _concat(ds)
         for a in fields:
-            annots[a] = np.concatenate(annots[a], 0)
+            annots[a] = _concat(annots[a])
 
         batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
         assert len(batch) > 0
@@ -258,14 +267,14 @@ class TrajectoryCollection:
             for a in fields:
                 annots[a].append(traj[a][m_indices])
 
-        states = np.concatenate(states, 0)
-        actions = np.concatenate(actions, 0)
-        lls = np.concatenate(lls, 0)
-        nxt_states = np.concatenate(nxt_states, 0)
-        rewards = np.concatenate(rewards, 0)
-        ds = np.concatenate(ds, 0)
+        states = _concat(states)
+        actions = _concat(actions)
+        lls = _concat(lls)
+        nxt_states = _concat(nxt_states)
+        rewards = _concat(rewards)
+        ds = _concat(ds)
         for a in fields:
-            annots[a] = np.concatenate(annots[a], 0)
+            annots[a] = _concat(annots[a])
 
         batch = Batch(states, actions, lls, rewards, nxt_states, ds, annots)
         assert len(batch) > 0

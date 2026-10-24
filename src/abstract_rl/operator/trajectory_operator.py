@@ -84,10 +84,23 @@ def pad_rows(x: mx.array, n: int) -> mx.array:
 
 
 def stack_field(trajectories: list[Trajectory], field: str, n: int) -> mx.array:
-    """A field of all trajectories (e.g. states) concatenated, as float32 MLX array padded with zero rows to n rows."""
-    x = np.concatenate([getattr(t, field) for t in trajectories])
-    out = np.zeros((n, *x.shape[1:]), dtype=np.float32)
-    out[: len(x)] = x
+    """A field of all trajectories concatenated, as a float32 MLX array padded with zero rows to ``n`` rows.
+
+    NumPy fields are copied into a new MLX array, which is what the Gymnasium rollout produces. MLX fields are
+    concatenated on MLX. A JAX rollout's episodes are separate slices of one arena (a row prefix is not contiguous
+    with the next episode, because the final next-state sits between them), so this is the one concatenation the
+    training operators need.
+    """
+    parts = [getattr(t, field) for t in trajectories]
+    if parts and isinstance(parts[0], mx.array):
+        stacked = parts[0] if len(parts) == 1 else mx.concatenate(parts, axis=0)
+        if stacked.shape[0] == n:
+            return stacked
+        pad = mx.zeros((n - stacked.shape[0], *stacked.shape[1:]), dtype=stacked.dtype)
+        return mx.concatenate([stacked, pad], axis=0)
+    stacked_np = np.concatenate(parts)
+    out = np.zeros((n, *stacked_np.shape[1:]), dtype=np.float32)
+    out[: len(stacked_np)] = stacked_np
     return mx.array(out)
 
 
