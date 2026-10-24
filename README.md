@@ -311,10 +311,12 @@ changed.
 | Algorithm | MLX device | MLX: greedy return (mean ± std over seeds) | MLX: solved | torch (`main`) | JAX (PR #9) |
 |---|---|---|---|---|---|
 | TRPO | CPU | -124.5 ± 1.2 | 5/5 | -127.7 ± 2.7, 5/5 | -111.3, 5/5 |
-| MPO | GPU (`auto`) | -122.3 ± 1.6 | 5/5 | -123.3 ± 0.4, 5/5 | -106.2, 5/5 |
+| MPO | GPU (`auto`), rollout on the CPU stream | -122.7 ± 1.5 | 5/5 | -123.3 ± 0.4, 5/5 | -106.2, 5/5 |
+| MPO | GPU, before the speedups (ebd5a3b) | -122.3 ± 1.6 | 5/5 | | |
 
-Per seed: TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.9, -120.6, -122.3, -124.5, -123.1 (seeds 1–5). The
-wall time for 800k steps is about 2 min for TRPO (CPU) and about 44 min for MPO (GPU, two seeds at a time).
+Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.6, -122.4, -124.4, -122.4, -123.8, and
+before the speedups -120.9, -120.6, -122.3, -124.5, -123.1. The wall time for 800k steps is about 2 min for TRPO (CPU)
+and about 11 min for MPO (GPU, two seeds at a time; 44 min before the speedups).
 
 ### Verdict
 
