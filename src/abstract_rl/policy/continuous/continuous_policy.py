@@ -85,6 +85,13 @@ class ContinuousPolicy(Policy, Syncable):
             fns[opt] = mx.compile(fn, inputs=state, outputs=[mx.random.state])
         return fns[opt](states)
 
+    def host_actor(self) -> Any:
+        """
+        A ``HostActor`` sampling exactly the actions (and noise) of ``act`` on the CPU stream with NumPy, or None if
+        the configuration is not supported. Valid until the parameters change.
+        """
+        return None
+
     def kl_divergence(
         self, batch: Batch, suff_stats: mx.array | None = None, mode: str = "i-projection", est: str = "sum"
     ) -> mx.array:

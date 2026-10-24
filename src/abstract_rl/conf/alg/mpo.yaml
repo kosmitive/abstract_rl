@@ -8,6 +8,8 @@ env_num_threads: 1
 env_render: false
 # evaluate the policy of the rollout on the CPU stream, also with device=gpu (only a speed setting)
 env_rollout_on_cpu: true
+# sample the rollout actions with NumPy where that gives the same actions and random keys as MLX: auto or false
+env_host_policy: auto
 policy_structure: [64, 64]
 policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false

@@ -71,6 +71,10 @@ class RolloutEnvWrapper:
         self._reward_scale = conf.get("reward_scale", 1.0)
         self._reward_offset = conf.get("reward_offset", 0.0)
 
+        # sample the actions of the exploring rollout with NumPy (same actions and random keys as the MLX policy),
+        # auto uses it where it is bit identical, see abstract_rl.policy.continuous.host_actor
+        self._host_policy = conf.get("host_policy", "auto")
+
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
 
@@ -190,16 +194,22 @@ class RolloutEnvWrapper:
         raw_return = 0.0
         # the log likelihoods stay MLX arrays until the end of the episode, only the action is read in every step
         t_lls = []
+        actor = None
+        if not opt and self._host_policy not in (False, "false") and hasattr(policy, "host_actor"):
+            actor = policy.host_actor()
 
         # repeat for the number of steps
         while max_steps is None or t < max_steps:
-            # sample action and calc log likelihood in one compiled call, the env stays on the host
-            tcs = mx.array(np.asarray(cs, dtype=np.float32).reshape([1, -1]))
-            t_a, t_ll = policy.act(tcs, opt)
-            t_lls.append(t_ll)
+            if actor is not None:
+                a = actor(np.asarray(cs, dtype=np.float32).reshape([1, -1])).astype(np.float64)
+            else:
+                # sample action and calc log likelihood in one compiled call, the env stays on the host
+                tcs = mx.array(np.asarray(cs, dtype=np.float32).reshape([1, -1]))
+                t_a, t_ll = policy.act(tcs, opt)
+                t_lls.append(t_ll)
 
-            # prepare for usage, reading the action evaluates the log likelihood with it (one compiled call)
-            a = np.array(t_a).reshape(-1).astype(np.float64)
+                # prepare for usage, reading the action evaluates the log likelihood with it (one compiled call)
+                a = np.array(t_a).reshape(-1).astype(np.float64)
             cs, r, terminated, truncated, _info = env.step(a)
             done = terminated or truncated
             cs = self._preprocess(cs)
@@ -221,7 +231,9 @@ class RolloutEnvWrapper:
                 break
 
         # compile using the discount factor
-        if t_lls:
+        if actor is not None:
+            traj_builder.set_log_likelihoods(actor.finish())
+        elif t_lls:
             traj_builder.set_log_likelihoods(np.array(mx.concatenate([x.reshape(-1)[:1] for x in t_lls])))
         traj = traj_builder.finalize()
         traj.raw_return = raw_return

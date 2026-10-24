@@ -17,6 +17,7 @@ from abstract_rl.policy.continuous.continuous_policy import (
     normal_kl,
     normal_log_prob,
 )
+from abstract_rl.policy.continuous.host_actor import HostActor, host_actor
 from abstract_rl.policy.continuous.univariate_gaussian_policy import SIGMA_MIN, SQUASH_BOUND, SQUASH_U_MAX
 
 
@@ -237,6 +238,10 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         if self.squash:
             u = self._action_center + self._action_scale * mx.tanh(mx.clip(u, -SQUASH_U_MAX, SQUASH_U_MAX))
         return u
+
+    def host_actor(self) -> HostActor | None:
+        squash = (np.array(self._action_center), np.array(self._action_scale), SQUASH_U_MAX) if self.squash else None
+        return host_actor(self, (1, 1, self.action_dim), squash)
 
     def clone(self) -> "DiagonalGaussianPolicy":
         """
