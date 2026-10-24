@@ -286,4 +286,3 @@ def _columns(spec: GaussianSpec, stats: mx.array) -> tuple[mx.array, mx.array]:
     if spec.kind == "univariate":
         return mu[:, 0], sigma[:, 0]
     return mu, sigma
-

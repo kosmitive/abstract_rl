@@ -240,12 +240,7 @@ class InvertedDoublePendulum:
             + _IDP_GX * (m1 * pz + m2 * az) * c1
             + _IDP_GX * (m2 * pz) * c2
         )
-        h2 = (
-            -(m2 * az * pz) * a_dot**2 * sc
-            - _IDP_DAMPING * c_dot
-            + (-gz) * (m2 * pz) * s2
-            + _IDP_GX * (m2 * pz) * c2
-        )
+        h2 = -(m2 * az * pz) * a_dot**2 * sc - _IDP_DAMPING * c_dot + (-gz) * (m2 * pz) * s2 + _IDP_GX * (m2 * pz) * c2
         rhs = jnp.stack([h0, h1, h2]).astype(self.dtype)
         return jnp.linalg.solve(mass.astype(self.dtype), rhs)
 

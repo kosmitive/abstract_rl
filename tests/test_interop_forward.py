@@ -7,7 +7,12 @@ jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 mx = pytest.importorskip("mlx.core")
 
-from abstract_rl.interop.forward import log_prob_from_stats, mode_from_stats, sample_from_stats, suff_stats  # noqa: E402
+from abstract_rl.interop.forward import (  # noqa: E402
+    log_prob_from_stats,
+    mode_from_stats,
+    sample_from_stats,
+    suff_stats,
+)
 from abstract_rl.interop.namespace import JAX, MLX  # noqa: E402
 from abstract_rl.interop.spec import make_gaussian_spec, pack_module  # noqa: E402
 from abstract_rl.policy.continuous.diagonal_gaussian_policy import DiagonalGaussianPolicy  # noqa: E402
