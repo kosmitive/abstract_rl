@@ -45,6 +45,14 @@ class TrajectoryBuilder:
         # extend the trajectory itself
         self._trajectory.extend([act, ll, rew, done, nxt_state])
 
+    def set_log_likelihoods(self, lls: np.ndarray) -> None:
+        """
+        Replace the likelihoods of all observed steps, e.g. when they are read from the device once per episode.
+        :param lls: A vector with one likelihood per observed step.
+        """
+        assert len(lls) == len(self._trajectory) // 5
+        self._trajectory[2::5] = [float(x) for x in lls]
+
     def finalize(self) -> Trajectory:
         """
         Finalize the trajectory, e.g. create pandas __data frames from it.

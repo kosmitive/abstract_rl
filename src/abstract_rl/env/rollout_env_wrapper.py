@@ -188,15 +188,17 @@ class RolloutEnvWrapper:
         traj_builder = TrajectoryBuilder(new_id, self, cs)
         t = 0
         raw_return = 0.0
+        # the log likelihoods stay MLX arrays until the end of the episode, only the action is read in every step
+        t_lls = []
 
         # repeat for the number of steps
         while max_steps is None or t < max_steps:
             # sample action and calc log likelihood in one compiled call, the env stays on the host
             tcs = mx.array(np.asarray(cs, dtype=np.float32).reshape([1, -1]))
             t_a, t_ll = policy.act(tcs, opt)
+            t_lls.append(t_ll)
 
-            # prepare for usage
-            ll = float(t_ll.reshape(-1)[0].item())
+            # prepare for usage, reading the action evaluates the log likelihood with it (one compiled call)
             a = np.array(t_a).reshape(-1).astype(np.float64)
             cs, r, terminated, truncated, _info = env.step(a)
             done = terminated or truncated
@@ -208,7 +210,7 @@ class RolloutEnvWrapper:
 
             t += 1
             # only true terminations are stored as done, so truncated episodes can be bootstrapped
-            traj_builder.observe(a, float(r), cs, ll, int(terminated))
+            traj_builder.observe(a, float(r), cs, 0.0, int(terminated))
 
             # render if needed
             if render:
@@ -219,6 +221,8 @@ class RolloutEnvWrapper:
                 break
 
         # compile using the discount factor
+        if t_lls:
+            traj_builder.set_log_likelihoods(np.array(mx.concatenate([x.reshape(-1)[:1] for x in t_lls])))
         traj = traj_builder.finalize()
         traj.raw_return = raw_return
         self.max_traj_len = max(self.max_traj_len, t)
