@@ -24,8 +24,14 @@ def temperature_dual(q_tensor: mx.array, eta: mx.array, eps: float | mx.array) -
     return eta * eps + mx.mean(max_q) + eta * mx.mean(log_mean_exp)
 
 
+# number of Adam steps of the dual in one compiled call: one call of all 200 steps is not faster, but it is compiled
+# again for every new memory size (0.1-0.4 s each) while the memory fills
+DUAL_STEPS_PER_CALL = 20
+
+
 def _adam_dual_step(
-    q_tensor: mx.array,
+    q_centered: mx.array,
+    mean_max_q: mx.array,
     eps: mx.array,
     lr: mx.array,
     log_eta: mx.array,
@@ -33,10 +39,15 @@ def _adam_dual_step(
     v: mx.array,
     step: mx.array,
 ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
-    """One Adam step on the log temperature, with the update rule of torch.optim.Adam (betas 0.9, 0.999, eps 1e-8)."""
+    """
+    One Adam step on the log temperature, with the update rule of torch.optim.Adam (betas 0.9, 0.999, eps 1e-8). The
+    dual is the one of temperature_dual, with Q(s, a) - max_a Q(s, a) and the mean of max_a Q(s, a) computed once.
+    """
 
     def dual(le: mx.array) -> mx.array:
-        return temperature_dual(q_tensor, mx.exp(le), eps).sum()
+        eta = mx.exp(le)
+        log_mean_exp = mx.logsumexp(q_centered / eta, axis=1) - math.log(q_centered.shape[1])
+        return (eta * eps + mean_max_q + eta * mx.mean(log_mean_exp)).sum()
 
     obj, g = mx.value_and_grad(dual)(log_eta)
     m = 0.9 * m + 0.1 * g
@@ -48,7 +59,22 @@ def _adam_dual_step(
     return log_eta, m, v, obj
 
 
-_compiled_dual_step = mx.compile(_adam_dual_step)
+@mx.compile
+def _adam_dual_steps(
+    q_centered: mx.array,
+    mean_max_q: mx.array,
+    eps: mx.array,
+    lr: mx.array,
+    log_eta: mx.array,
+    m: mx.array,
+    v: mx.array,
+    obj: mx.array,
+    steps: mx.array,
+) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+    """Runs the Adam steps with the step numbers in steps (a vector) unrolled in one compiled function."""
+    for i in range(steps.shape[0]):
+        log_eta, m, v, obj = _adam_dual_step(q_centered, mean_max_q, eps, lr, log_eta, m, v, steps[i])
+    return log_eta, m, v, obj
 
 
 def find_optimal_temperature(
@@ -84,10 +110,14 @@ def find_optimal_temperature(
     v = mx.zeros_like(log_eta)
     eps_a, lr_a = mx.array(eps, dtype=dtype), mx.array(lr, dtype=dtype)
     obj = log_eta * 0
+    max_q = mx.max(q_tensor, axis=1, keepdims=True)
+    q_centered, mean_max_q = q_tensor - max_q, mx.mean(max_q)
+    steps = mx.arange(1, max_steps + 1, dtype=dtype)
 
-    # the steps are built lazily and evaluated at once
-    for step in range(1, max_steps + 1):
-        log_eta, m, v, obj = _compiled_dual_step(q_tensor, eps_a, lr_a, log_eta, m, v, mx.array(step, dtype=dtype))
+    # the steps run in a few compiled calls, which are built lazily and evaluated at once
+    for c in range(0, max_steps, DUAL_STEPS_PER_CALL):
+        chunk = steps[c : c + DUAL_STEPS_PER_CALL]
+        log_eta, m, v, obj = _adam_dual_steps(q_centered, mean_max_q, eps_a, lr_a, log_eta, m, v, obj, chunk)
     mx.eval(log_eta, obj)
     eta_v = math.exp(cast(float, log_eta.item()))
 
