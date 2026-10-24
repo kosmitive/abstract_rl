@@ -9,7 +9,6 @@ import numpy as np
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
-from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 
 
 class ModelConfiguration:
@@ -140,15 +139,18 @@ class ModelConfiguration:
         ti = 1 if not target else 2
         return self.data[key] if key in self.data else self.syncables[key][ti]
 
-    def add_environment(self, env: RolloutEnvWrapper) -> None:
+    def add_environment(self, env: Any) -> None:
         """
-        Adds an environment.
+        Adds an environment. The Gymnasium wrapper is the usual one. Anything else has to offer the same
+        rollout surface, which is how the opt-in JAX backend registers itself without importing JAX here.
         :param env: The environment to add internally.
         """
-        assert isinstance(env, RolloutEnvWrapper)
+        required = ("execute_policy", "observation_dim", "action_dim", "discount", "close")
+        if not all(hasattr(env, name) for name in required):
+            raise TypeError(f"environment is missing {[name for name in required if not hasattr(env, name)]}")
         self.env = env
 
-    def get_environment(self) -> RolloutEnvWrapper:
+    def get_environment(self) -> Any:
         """
         Pass back an environment.
         :return: Return the internal instance of environment.

@@ -6,6 +6,15 @@ env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
 env_render: false
+# gymnasium (default) or jax. jax rolls Pendulum, MountainCar and the inverted pendulums
+# on the JAX CPU. HalfCheetah stays on gymnasium: MJX on CPU is not usable.
+env_rollout_backend: gymnasium
+env_num_envs: 32
+# 1 needs no extra flags. 8 or 16 needs XLA_FLAGS=--xla_force_host_platform_device_count=N
+# set before the process imports JAX.
+env_jax_devices: 1
+# float64 matches MuJoCo. float32 is the fast path and drifts after a few dozen steps.
+env_jax_dtype: float64
 policy_structure: [64, 64]
 policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false

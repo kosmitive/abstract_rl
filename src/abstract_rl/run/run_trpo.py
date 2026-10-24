@@ -45,10 +45,11 @@ def run_trpo(conf: Any) -> np.ndarray:
     logger = DataLogger(mc.data_dir)
     mc.add_main("log", logger)
 
-    # create an environment wrapper
+    # create an environment wrapper. gymnasium is the default; jax is opt-in and imports JAX itself
+    rollout_backend = conf.get("env_rollout_backend", "gymnasium")
     with conf.ns("env"):
         render = conf["render"]
-        env = RolloutEnvWrapper(mc)
+        env = _make_env(mc, rollout_backend)
         mc.add_environment(env)
 
     # define namespace for v
@@ -63,7 +64,7 @@ def run_trpo(conf: Any) -> np.ndarray:
     with conf.ns("policy"):
         policy_batch_size = conf["batch_size"]
         sync_steps = conf["sync_steps"]
-        policy = select_policy(mc)
+        policy = _make_policy(mc, rollout_backend)
         mc.add_syncable("policy", policy, sync_steps)
 
     with conf.ns("filter"):
@@ -150,3 +151,29 @@ def run_trpo(conf: Any) -> np.ndarray:
     env.close()
     rew_plot.close()
     return logger.get([stoch_reward], num_epochs)[0]
+
+
+def _make_env(mc: ModelConfiguration, backend: str) -> Any:
+    """The rollout. ``gymnasium`` is the wrapper this file always used."""
+    match backend:
+        case "gymnasium":
+            return RolloutEnvWrapper(mc)
+        case "jax":
+            from abstract_rl.interop.rollout import JaxRolloutEnv
+
+            return JaxRolloutEnv(mc)
+        case _:
+            raise ValueError(f"unknown env_rollout_backend {backend}")
+
+
+def _make_policy(mc: ModelConfiguration, backend: str) -> Any:
+    """The policy. The JAX rollout trains the one shared buffer; Gymnasium keeps ``select_policy``."""
+    match backend:
+        case "gymnasium":
+            return select_policy(mc)
+        case "jax":
+            from abstract_rl.interop.policy import SharedGaussianPolicy
+
+            return SharedGaussianPolicy(mc)
+        case _:
+            raise ValueError(f"unknown env_rollout_backend {backend}")
