@@ -5,11 +5,13 @@ dual) spend most of their time encoding. The kernels here do the work of such a 
 """
 
 import math
+import zlib
 from functools import cache
 from typing import Any
 
 import mlx.core as mx
 import mlx.optimizers as optim
+import numpy as np
 from mlx.utils import tree_flatten, tree_map_with_path
 
 _THREADS = 256
@@ -165,16 +167,20 @@ def temperature_dual_adam(
 _ADAM_GROUP = 3
 
 
-def _adam_source(sizes: tuple[int, ...]) -> str:
+def _adam_source(sizes: tuple[int, ...], consts: tuple[float, ...]) -> str:
     """
     The update of Adam (bias corrected) of the flattened parameters p0, p1, ... with the given sizes, one element per
-    thread. The operations and their order are the ones of the compiled kernel of optim.Adam.apply_single, one
-    statement per operation, so the results are the same bits.
+    thread, for the step and the learning rate lr. The operations and their order are the ones of the compiled kernels
+    of optim.Adam.apply_single, one statement per operation, so the results are the same bits.
+    :param consts: The float32 values b1, 1 - b1, b2, 1 - b2 and eps.
     """
+    # the decimal of the float32 value, read back as the same float32 value
+    b1, ob1, b2, ob2, eps = (f"{float(np.float32(c))!r}f" for c in consts)
     lines = [
         "uint i = thread_position_in_grid.x;",
-        "float b1 = consts[0], ob1 = consts[1], b2 = consts[2], ob2 = consts[3], eps = consts[4];",
-        "float c1 = consts[5], c2 = consts[6];",
+        "float t = static_cast<float>(step[0]);",
+        f"float c1 = lr[0] / (1.0f - metal::pow({b1}, t));",
+        f"float c2 = metal::precise::rsqrt(1.0f - metal::pow({b2}, t));",
     ]
     offset = 0
     for k, size in enumerate(sizes):
@@ -182,17 +188,17 @@ def _adam_source(sizes: tuple[int, ...]) -> str:
             f"{'if' if k == 0 else 'else if'} (i < {offset + size}u) {{",
             f"    uint j = i - {offset}u;",
             f"    float g = g{k}[j];",
-            f"    float t0 = b1 * m{k}[j];",
-            "    float t1 = ob1 * g;",
+            f"    float t0 = {b1} * m{k}[j];",
+            f"    float t1 = {ob1} * g;",
             "    float m = t0 + t1;",
-            f"    float t2 = b2 * v{k}[j];",
+            f"    float t2 = {b2} * v{k}[j];",
             "    float t3 = g * g;",
-            "    float t4 = ob2 * t3;",
+            f"    float t4 = {ob2} * t3;",
             "    float v = t2 + t4;",
             "    float num = c1 * m;",
             "    float t5 = metal::precise::sqrt(v);",
             "    float t6 = t5 * c2;",
-            "    float den = t6 + eps;",
+            f"    float den = t6 + {eps};",
             "    float upd = num / den;",
             f"    m_out{k}[j] = m;",
             f"    v_out{k}[j] = v;",
@@ -204,13 +210,14 @@ def _adam_source(sizes: tuple[int, ...]) -> str:
 
 
 @cache
-def _adam_kernel(sizes: tuple[int, ...]) -> Any:
+def _adam_kernel(sizes: tuple[int, ...], consts: tuple[float, ...]) -> Any:
     n = len(sizes)
+    source = _adam_source(sizes, consts)
     return mx.fast.metal_kernel(
-        name="fused_adam_" + "_".join(str(s) for s in sizes),
-        input_names=[f"{t}{k}" for t in "pgmv" for k in range(n)] + ["consts"],
+        name=f"fused_adam_{n}_{zlib.crc32(source.encode()):08x}",
+        input_names=[f"{t}{k}" for t in "pgmv" for k in range(n)] + ["lr", "step"],
         output_names=[f"{t}_out{k}" for t in "pmv" for k in range(n)],
-        source=_adam_source(sizes),
+        source=source,
     )
 
 
@@ -239,15 +246,9 @@ class FusedAdam(optim.Adam):
         flat_grads = dict(grads)
         flat_params = dict(tree_flatten(parameters))
         flat_state = dict(tree_flatten(self.state))
-        # the scalars of apply_single, computed with the same operations
-        lr = self.learning_rate.astype(mx.float32)
         b1, b2 = self.betas
-        step = self.step
-        c1 = (lr / (1 - b1**step)).astype(mx.float32)
-        c2 = mx.rsqrt(1 - b2**step).astype(mx.float32)
-        consts = mx.concatenate(
-            [mx.array([b1, 1 - b1, b2, 1 - b2, self.eps], dtype=mx.float32), c1.reshape(1), c2.reshape(1)]
-        )
+        consts = (b1, 1 - b1, b2, 1 - b2, self.eps)
+        scalars = [self.learning_rate.astype(mx.float32).reshape(1), self.step.reshape(1)]
 
         new: dict[str, mx.array] = {}
         for a in range(0, len(keys), _ADAM_GROUP):
@@ -255,12 +256,12 @@ class FusedAdam(optim.Adam):
             n = len(group)
             g = [flat_grads[k] for k in group]
             sizes = tuple(x.size for x in g)
-            outs = _adam_kernel(sizes)(
+            outs = _adam_kernel(sizes, consts)(
                 inputs=[flat_params[k] for k in group]
                 + g
                 + [flat_state[k + ".m"] for k in group]
                 + [flat_state[k + ".v"] for k in group]
-                + [consts],
+                + scalars,
                 grid=(sum(sizes), 1, 1),
                 threadgroup=(_THREADS, 1, 1),
                 output_shapes=[x.shape for x in g] * 3,

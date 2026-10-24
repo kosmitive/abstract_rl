@@ -142,12 +142,14 @@ def test_fused_adam_matches_adam():
     from abstract_rl.misc.metal_kernels import FusedAdam
     from abstract_rl.misc.mixed import ELU
 
-    def run(opt_cls: Any) -> list[np.ndarray]:
+    def run(opt_cls: Any, step: int) -> list[np.ndarray]:
         mx.random.seed(0)
         # 6 parameters, two dispatches
         model = nn.Sequential(nn.Linear(7, 64), ELU(), nn.Linear(64, 32), ELU(), nn.Linear(32, 1))
         opt = opt_cls(learning_rate=1e-2, bias_correction=True)
         opt.init(model.trainable_parameters())
+        # the bias correction depends on the step
+        opt.state["step"] = mx.array(step, mx.uint64)
         x = mx.random.normal([30, 128, 7])
         y = mx.random.normal([30, 128])
         mx.eval(model.parameters(), x, y)
@@ -165,11 +167,12 @@ def test_fused_adam_matches_adam():
             mx.eval(fn(x[c : c + 10], y[c : c + 10]), model.parameters(), opt.state)
         return [np.array(v) for _, v in tree_flatten(model.parameters()) + tree_flatten(opt.state)]
 
-    set_device("gpu")
-    try:
-        expected, fused = run(optim.Adam), run(FusedAdam)
-    finally:
-        set_device("cpu")
-    assert len(expected) == len(fused) == 20
-    for a, b in zip(expected, fused, strict=True):
-        np.testing.assert_array_equal(a, b)
+    for step in (0, 123_456):
+        set_device("gpu")
+        try:
+            expected, fused = run(optim.Adam, step), run(FusedAdam, step)
+        finally:
+            set_device("cpu")
+        assert len(expected) == len(fused) == 20
+        for a, b in zip(expected, fused, strict=True):
+            np.testing.assert_array_equal(a, b)
