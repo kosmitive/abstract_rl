@@ -54,6 +54,9 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         render = conf["render"]
         num_new_steps = conf["sample"]
         num_traj = conf["traj_evaluations"]
+        # one policy evaluation per environment step is faster on the CPU, also when the networks are on the GPU,
+        # the parameters are shared through the unified memory
+        rollout_device = mx.cpu if conf["rollout_on_cpu"] else mx.default_device()
         env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
 
@@ -137,7 +140,7 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         # first of all run the deterministic policy afterwards
         # run the stochastic ones and save them in the memory.
 
-        with cli.header("stochastic evaluation", 1):
+        with cli.header("stochastic evaluation", 1), mx.stream(rollout_device):
             new_tc = env.execute_policy(
                 policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
             )

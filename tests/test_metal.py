@@ -82,3 +82,26 @@ def test_q_annotation_of_50k_states_with_20_actions(tmp_path):
     cpu, gpu = run("cpu"), run("gpu")
     assert gpu.shape == (50_000, 20)
     np.testing.assert_allclose(gpu, cpu, rtol=1e-4, atol=1e-4)
+
+
+def test_rollout_on_the_cpu_stream_matches_the_gpu(tmp_path):
+    # MPO with device=gpu evaluates the policy of the rollout on the CPU stream (env_rollout_on_cpu)
+    def rollout(stream: Any, sub: str) -> Any:
+        set_device("gpu")
+        try:
+            mc = build_mpo(tmp_path / sub)
+            mx.random.seed(0)
+            np.random.seed(0)  # noqa: NPY002
+            with mx.stream(stream):
+                tc = mc.env.execute_policy(mc.get("policy", target=False), 25, 75)
+            mc.env.close()
+            return tc.to_batch()
+        finally:
+            set_device("cpu")
+
+    gpu, cpu = rollout(mx.gpu, "gpu"), rollout(mx.cpu, "cpu")
+    assert len(gpu) == len(cpu) == 75
+    # the same exploration noise, the trajectories differ by float noise of the policy evaluation only
+    for field in ("states", "actions", "log_likelihoods", "rewards", "next_states"):
+        assert np.allclose(getattr(gpu, field), getattr(cpu, field), rtol=1e-4, atol=1e-4), field
+    assert np.array_equal(gpu.dones, cpu.dones)
