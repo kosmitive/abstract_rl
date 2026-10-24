@@ -133,6 +133,7 @@ src/abstract_rl/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, target sync, IO)
 │   └── temporal_difference_data/     Trajectory, TrajectoryBuilder, TrajectoryCollection (replay), Batch
 ├── env/                              RolloutEnvWrapper: runs whole episodes of a policy in a Gymnasium env
+├── interop/                          optional shared JAX rollout (one policy buffer, sharded CPU envs)
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
 ├── policy/                           univariate and diagonal Gaussian policy (+ select_policy), non-parametric policy
 ├── value_functions/                  fully connected V and Q networks
@@ -458,6 +459,122 @@ If you use this code, please cite the repository (see [`CITATION.cff`](CITATION.
   year      = {2016},
   url       = {https://arxiv.org/abs/1606.02647}
 }
+```
+
+## Shared JAX rollout
+
+The Gymnasium wrapper is the rollout the training loops use. `env_rollout_backend: jax`
+is an opt-in that runs Pendulum, MountainCarContinuous, InvertedPendulum and
+InvertedDoublePendulum on the JAX CPU and hands the trajectories to the same MLX
+TRPO or MPO update. The policy is stored once. Value networks stay ordinary MLX modules.
+
+JAX earns its place on the inverted pendulums. On an M3 Max (JAX 0.11.2 CPU, MLX 0.32.4),
+a pure MLX GPU rollout was faster for Pendulum and MountainCar at 1024 environments and
+above (30M steps/s on Pendulum at 4096). HalfCheetah stays on Gymnasium: MJX on that CPU
+did 0.4k to 2.9k steps/s against 37k for Gymnasium, and this backend does not add it.
+
+### One definition
+
+`abstract_rl.interop.spec` is the layout and `abstract_rl.interop.forward` is the forward,
+written once against a tiny array namespace (`mlx.core` or `jax.numpy`). Both frameworks
+call that function. The weights are `[out, in]` then bias, layer by layer, which is how
+`mlx.nn.Linear` multiplies. A trainable state-independent `log_sigma` sits at the end of
+the vector. A frozen `log_sigma` is a separate argument, so training cannot move it.
+Checkpoints are written back out under the names `select_policy` saves
+(`network.layers.i.weight`, `bias`, `cov`), so `eval_returns` loads a JAX-trained policy
+with the ordinary module.
+
+The activation is the clamped ELU `where(x > 0, x, exp(minimum(x, 0)) - 1)`. `mlx.nn.elu`
+produces NaN gradients for large positive inputs. Layer norm is mean and variance over the
+last axis, epsilon `1e-5`, only after the first layer, with no affine, matching the MLP.
+
+### Who owns the buffer
+
+MLX allocates the vector. The allocation is sliced so the data pointer is 64-byte aligned,
+which is what `jax.device_put` of a NumPy memoryview needs in order to alias the bytes.
+`SharedParams.as_jax()` and `replicated()` are that alias. On JAX 0.12 CPU, replicating the
+view onto several host devices with `NamedSharding` kept the MLX address on every device.
+Pass the JAX array into `jit` as an argument. A closed-over device array becomes a
+device-0 input, and `shard_map` rejects it. Donation does not give the arena back: on JAX
+0.12 CPU, `donate_argnums` allocated a new address and left the MLX buffer untouched.
+
+MLX updates return a new array. The bytes are copied back into the arena, and the module
+is rebound to the view. That copy is one `float32` vector. A 64-64 univariate policy is
+4482 floats. TRPO's compiled step cannot write the arena (evaluating a tracer raises);
+the eager `set_flat` that follows the compiled step copies once per epoch. MPO's Adam
+steps stay inside the compiled update, so the copy happens once per rollout, in
+`export_for_rollout`, when the pointer has changed. Call `mx.eval` on the new parameters
+before JAX reads them, and `block_until_ready` before MLX reads a JAX result.
+
+On an M3 Max the parameter handoff was 160 to 430 µs per chunk and the trajectory handoff
+was 25 to 160 µs, all zero-copy, under 3% of the step at 1024 environments and above. An
+MLX GPU training step read that buffer at native speed. `mx.from_dlpack` of a JAX CPU
+array is that zero-copy path on the Mac. This Linux CPU build of MLX refuses
+`from_dlpack(..., copy=False)` for a CPU array, so the portable path is the aligned
+memoryview.
+
+### Sharding
+
+One XLA host device uses a handful of cores. The rollout shards the env axis with
+`shard_map` (`jax.shard_map`, or `jax.experimental.shard_map` on older JAX). The policy
+vector is replicated. The keys are sharded. `n_envs` has to be a multiple of the device
+count; the collector pads to that multiple and drops the padding.
+
+Set the device count before the process imports JAX:
+
+```bash
+export XLA_FLAGS=--xla_force_host_platform_device_count=8
+uv run python -m abstract_rl.scripts.run env=inverted_pendulum alg=trpo \
+  alg.env_rollout_backend=jax alg.env_jax_devices=8 alg.env_jax_dtype=float64
+```
+
+`env_jax_devices` defaults to 1, which needs no flag. On the M3 Max, 8 or 16 devices
+were the useful counts. At 4096 Pendulum environments the rate went from 3.44M to 27M
+steps/s; InvertedPendulum went from 1.41M to 10.4M; InvertedDoublePendulum went from
+0.54M to 3.9–5.0M, with about 11 or 12 cores busy. Separate processes gave 1.4–2x.
+The sharded trajectories matched the single-device ones within 1e-6. JAX 0.12's manual-axis
+check rejects a `lax.cond` that mixes a per-env value with a Python constant (the done
+flag, the observation scale), so the scan passes `check_vma=False`.
+
+The same benchmark on a 4-core Linux CPU (JAX 0.12.0.1, MLX 0.32.4, eight host devices
+on four cores) is a different machine. Pendulum at horizon 50 went from 4.4M steps/s on
+one device to 6.3M on eight, at 1024 environments. The parameter view shared the MLX
+pointer, and copying the 4482-float vector first did not move the rate. The M3 Max
+numbers above are the ones the sharding is for.
+
+XLA does not fill a caller-owned buffer here. Each device's shard is copied once into
+its slice of a preallocated MLX arena, and the episode is a view of that arena. Joining
+the shards into one array first cost 0.9–2.6 ms per chunk on the M3 Max (1.5–21% of the
+chunk). Training still concatenates episode rows when it builds a batch: the final
+next-state sits between two episodes, so those rows are not one contiguous span.
+
+### Dynamics dtype
+
+`env_jax_dtype` is `float64` by default and `float32` for the fast path. It applies to
+the inverted pendulums. Gymnax Pendulum and MountainCar stay float32. Requesting float64
+sets `jax_enable_x64` for the process; without that, JAX stores the state as float32 and
+warns. The flag stays on for later work in the same process.
+
+The M3 Max measurements are the ones to plan around: float64 matched MuJoCo to 1e-14,
+and float32 drifted by more than 1e-3 after about 50 steps, with the returns still
+matching. A check on Linux (JAX 0.12, MuJoCo 3.17) saw float64 agree to about 1e-15 on
+`q` and `v`. On the short upright episodes tried there, float32 stayed near 1e-7 and
+once crossed the fall threshold two steps early. The double-pendulum reward uses the
+tip of the final state. Gymnasium reads `site_xpos` from inside `mj_step`, which lags
+that state, so the reward can differ by about 1e-5 while `q` and `v` already match.
+The slider limits are not modelled, and `qfrc_constraint` in the observation is 0.
+
+`render`, `obs_norm`, `filter_states` and `filter_rewards` raise on this backend.
+`env_normalize` (divide observations by a finite positive `observation_space.high`) is
+applied, as in `RolloutEnvWrapper`.
+
+JAX and gymnax are optional. The package imports without them, and CI does not install
+them (`uv sync` stays frozen). Install them beside the environment when you turn the
+backend on: `uv pip install jax gymnax`. The micro-benchmark prints this machine's
+handoff time and Pendulum steps/s, including a duplicated-parameter baseline:
+
+```bash
+PYTHONPATH=src python -m abstract_rl.interop.benchmark
 ```
 
 ## License
