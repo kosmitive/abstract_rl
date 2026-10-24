@@ -349,7 +349,7 @@ def jax_sigmoid(x: Any) -> Any:
     """Logistic sigmoid. ``jnp.sigmoid`` is filled in lazily, so it is looked up by name."""
     import jax.numpy as jnp
 
-    return jnp.sigmoid(x)  # type: ignore[attr-defined]
+    return jnp.sigmoid(x)  # type: ignore[attr-defined,unused-ignore]
 
 
 MLX = MlxNS()
