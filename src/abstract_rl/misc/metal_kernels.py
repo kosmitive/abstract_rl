@@ -9,6 +9,8 @@ from functools import cache
 from typing import Any
 
 import mlx.core as mx
+import mlx.optimizers as optim
+from mlx.utils import tree_flatten, tree_map_with_path
 
 _THREADS = 256
 
@@ -156,3 +158,123 @@ def temperature_dual_adam(
             output_dtypes=[mx.float32],
         )
     return state[0:1], state[3:4]
+
+
+# Parameters per dispatch of FusedAdam, each takes 7 buffers (parameter, gradient, moments in and out) and a kernel
+# takes at most 31
+_ADAM_GROUP = 3
+
+
+def _adam_source(sizes: tuple[int, ...]) -> str:
+    """
+    The update of Adam (bias corrected) of the flattened parameters p0, p1, ... with the given sizes, one element per
+    thread. The operations and their order are the ones of the compiled kernel of optim.Adam.apply_single, one
+    statement per operation, so the results are the same bits.
+    """
+    lines = [
+        "uint i = thread_position_in_grid.x;",
+        "float b1 = consts[0], ob1 = consts[1], b2 = consts[2], ob2 = consts[3], eps = consts[4];",
+        "float c1 = consts[5], c2 = consts[6];",
+    ]
+    offset = 0
+    for k, size in enumerate(sizes):
+        lines += [
+            f"{'if' if k == 0 else 'else if'} (i < {offset + size}u) {{",
+            f"    uint j = i - {offset}u;",
+            f"    float g = g{k}[j];",
+            f"    float t0 = b1 * m{k}[j];",
+            "    float t1 = ob1 * g;",
+            "    float m = t0 + t1;",
+            f"    float t2 = b2 * v{k}[j];",
+            "    float t3 = g * g;",
+            "    float t4 = ob2 * t3;",
+            "    float v = t2 + t4;",
+            "    float num = c1 * m;",
+            "    float t5 = metal::precise::sqrt(v);",
+            "    float t6 = t5 * c2;",
+            "    float den = t6 + eps;",
+            "    float upd = num / den;",
+            f"    m_out{k}[j] = m;",
+            f"    v_out{k}[j] = v;",
+            f"    p_out{k}[j] = p{k}[j] - upd;",
+            "}",
+        ]
+        offset += size
+    return "\n".join(lines)
+
+
+@cache
+def _adam_kernel(sizes: tuple[int, ...]) -> Any:
+    n = len(sizes)
+    return mx.fast.metal_kernel(
+        name="fused_adam_" + "_".join(str(s) for s in sizes),
+        input_names=[f"{t}{k}" for t in "pgmv" for k in range(n)] + ["consts"],
+        output_names=[f"{t}_out{k}" for t in "pmv" for k in range(n)],
+        source=_adam_source(sizes),
+    )
+
+
+class FusedAdam(optim.Adam):
+    """
+    optim.Adam with the update of all float32 parameters in a few Metal dispatches instead of one per parameter and
+    the operations around it, the results are the same bits. Each MLX operation costs host time to encode, which
+    bounds loops of many small Adam steps. Other devices, dtypes and settings use optim.Adam.
+    """
+
+    def apply_gradients(self, gradients: dict, parameters: dict) -> Any:
+        grads: list[tuple[str, mx.array]] = tree_flatten(gradients)  # type: ignore[assignment]
+        if (
+            not self.bias_correction
+            or self._schedulers
+            or mx.default_device() != mx.gpu
+            or not mx.metal.is_available()
+            or any(g.dtype != mx.float32 for _, g in grads)
+        ):
+            return super().apply_gradients(gradients, parameters)
+        if not self._initialized:
+            self.init(gradients)
+        self.state["step"] = self.step + 1
+
+        keys = [k for k, _ in grads]
+        flat_grads = dict(grads)
+        flat_params = dict(tree_flatten(parameters))
+        flat_state = dict(tree_flatten(self.state))
+        # the scalars of apply_single, computed with the same operations
+        lr = self.learning_rate.astype(mx.float32)
+        b1, b2 = self.betas
+        step = self.step
+        c1 = (lr / (1 - b1**step)).astype(mx.float32)
+        c2 = mx.rsqrt(1 - b2**step).astype(mx.float32)
+        consts = mx.concatenate(
+            [mx.array([b1, 1 - b1, b2, 1 - b2, self.eps], dtype=mx.float32), c1.reshape(1), c2.reshape(1)]
+        )
+
+        new: dict[str, mx.array] = {}
+        for a in range(0, len(keys), _ADAM_GROUP):
+            group = keys[a : a + _ADAM_GROUP]
+            n = len(group)
+            g = [flat_grads[k] for k in group]
+            sizes = tuple(x.size for x in g)
+            outs = _adam_kernel(sizes)(
+                inputs=[flat_params[k] for k in group]
+                + g
+                + [flat_state[k + ".m"] for k in group]
+                + [flat_state[k + ".v"] for k in group]
+                + [consts],
+                grid=(sum(sizes), 1, 1),
+                threadgroup=(_THREADS, 1, 1),
+                output_shapes=[x.shape for x in g] * 3,
+                output_dtypes=[mx.float32] * (3 * n),
+            )
+            for i, k in enumerate(group):
+                new[k] = outs[i]
+                new[k + ".m"] = outs[n + i]
+                new[k + ".v"] = outs[2 * n + i]
+
+        def set_moments(path: str, _: mx.array, state: dict) -> None:
+            state["m"] = new[path + ".m"]
+            state["v"] = new[path + ".v"]
+
+        # the moments of a parameter are the leaves m and v of the dict at its path in the state
+        tree_map_with_path(set_moments, gradients, self.state)
+        return tree_map_with_path(lambda path, _: new[path], gradients)

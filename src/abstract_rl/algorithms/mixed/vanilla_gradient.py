@@ -11,6 +11,7 @@ from abstract_rl.algorithms.mixed.background_fit import BackgroundFit
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.metal_kernels import FusedAdam
 
 # Adam steps per compiled call of perform_mult_sgd, also the interval of its log lines
 STEPS_PER_CALL = 10
@@ -84,8 +85,9 @@ class VanillaGradient:
 
         self.fmtstr = "%10i | %14.10f | %14.10f"
         self.titlestr = "%10s | %14s | %14s"
-        # torch.optim.Adam corrects the bias of the moments, mlx only does that if asked to
-        self.opt = optim.Adam(learning_rate=lr, bias_correction=True)
+        # torch.optim.Adam corrects the bias of the moments, mlx only does that if asked to. FusedAdam is optim.Adam
+        # in fewer GPU dispatches
+        self.opt = FusedAdam(learning_rate=lr, bias_correction=True)
         self.opt.init(self._model.trainable_parameters())
         # a plain attribute, not an entry of the module tree of the inheriting network
         self._compiled: dict[str, Callable]
@@ -188,7 +190,7 @@ def background_adam_fit(model: nn.Module, lr: float, objective: Callable) -> Cal
     The fit of a worker process (see BackgroundFit) for a model fit like VanillaGradient.perform_mult_sgd. The moments
     of Adam live in the returned function.
     """
-    opt = optim.Adam(learning_rate=lr, bias_correction=True)
+    opt = FusedAdam(learning_rate=lr, bias_correction=True)
     opt.init(model.trainable_parameters())
     fns = compile_adam_fns(model, opt, objective)
 

@@ -132,3 +132,44 @@ def test_default_settings_cap_the_buffer_cache(monkeypatch):
         mx.set_cache_limit(previous)
         mx.set_default_device(device)
         mx.clear_cache()
+
+
+def test_fused_adam_matches_adam():
+    import mlx.nn as nn
+    import mlx.optimizers as optim
+    from mlx.utils import tree_flatten
+
+    from abstract_rl.misc.metal_kernels import FusedAdam
+    from abstract_rl.misc.mixed import ELU
+
+    def run(opt_cls: Any) -> list[np.ndarray]:
+        mx.random.seed(0)
+        # 6 parameters, two dispatches
+        model = nn.Sequential(nn.Linear(7, 64), ELU(), nn.Linear(64, 32), ELU(), nn.Linear(32, 1))
+        opt = opt_cls(learning_rate=1e-2, bias_correction=True)
+        opt.init(model.trainable_parameters())
+        x = mx.random.normal([30, 128, 7])
+        y = mx.random.normal([30, 128])
+        mx.eval(model.parameters(), x, y)
+        loss_and_grad = nn.value_and_grad(model, lambda a, b: nn.losses.mse_loss(model(a).reshape(-1), b))
+        state = [model.state, opt.state]
+
+        def steps(xs: mx.array, ys: mx.array) -> mx.array:
+            for j in range(xs.shape[0]):
+                loss, grads = loss_and_grad(xs[j], ys[j])
+                opt.update(model, grads)
+            return loss
+
+        fn = mx.compile(steps, inputs=state, outputs=state)
+        for c in range(0, 30, 10):
+            mx.eval(fn(x[c : c + 10], y[c : c + 10]), model.parameters(), opt.state)
+        return [np.array(v) for _, v in tree_flatten(model.parameters()) + tree_flatten(opt.state)]
+
+    set_device("gpu")
+    try:
+        expected, fused = run(optim.Adam), run(FusedAdam)
+    finally:
+        set_device("cpu")
+    assert len(expected) == len(fused) == 20
+    for a, b in zip(expected, fused, strict=True):
+        np.testing.assert_array_equal(a, b)
