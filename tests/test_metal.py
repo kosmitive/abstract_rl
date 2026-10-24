@@ -105,3 +105,30 @@ def test_rollout_on_the_cpu_stream_matches_the_gpu(tmp_path):
     for field in ("states", "actions", "log_likelihoods", "rewards", "next_states"):
         assert np.allclose(getattr(gpu, field), getattr(cpu, field), rtol=1e-4, atol=1e-4), field
     assert np.array_equal(gpu.dones, cpu.dones)
+
+
+def test_default_settings_cap_the_buffer_cache(monkeypatch):
+    import abstract_rl.misc.mixed as mixed
+
+    previous, device = mx.set_cache_limit(mixed.CACHE_LIMIT_BYTES), mx.default_device()
+    try:
+        # default_settings sets the limit
+        mx.set_cache_limit(previous)
+        mixed.default_settings("gpu")
+        assert mx.set_cache_limit(previous) == mixed.CACHE_LIMIT_BYTES
+
+        # a freed buffer larger than the limit leaves the cache with the next allocation
+        monkeypatch.setattr(mixed, "CACHE_LIMIT_BYTES", 128 * 1024 * 1024)
+        mx.clear_cache()
+        big = mx.zeros((1024, 1024, 128), stream=mx.cpu)  # 512 MiB
+        mx.eval(big)
+        del big
+        assert mx.get_cache_memory() >= 512 * 1024 * 1024
+        mixed.default_settings("gpu")
+        small = mx.ones((16,))
+        mx.eval(small)
+        assert mx.get_cache_memory() <= 128 * 1024 * 1024
+    finally:
+        mx.set_cache_limit(previous)
+        mx.set_default_device(device)
+        mx.clear_cache()

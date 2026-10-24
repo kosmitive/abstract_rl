@@ -4,6 +4,11 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+# Upper bound of MLX's buffer cache. Without it the cache grows to the memory limit (9.2 GB after 60 epochs of
+# Pendulum MPO on Metal, 3 GB on the CPU). 2 GiB holds the buffers reused every epoch (the annotation peaks at 1.5 GB
+# on Metal), so it is as fast as no cap; 256 MiB re-allocated them and cost 9-11 % of an epoch.
+CACHE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+
 
 def default_settings(device: str = "cpu", prefer_gpu: bool = False) -> None:
     """
@@ -12,6 +17,7 @@ def default_settings(device: str = "cpu", prefer_gpu: bool = False) -> None:
     :param prefer_gpu: Whether ``auto`` selects the GPU, if Metal is available.
     """
     set_device(resolve_device(device, prefer_gpu))
+    mx.set_cache_limit(CACHE_LIMIT_BYTES)
 
     def float_formatter(x: Any) -> str:
         return f"{x: 10.4f}"
