@@ -2,7 +2,6 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import mlx.core as mx
-import mlx.optimizers as optim
 import numpy as np
 from mlx.utils import tree_map
 
@@ -14,6 +13,7 @@ from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_params_from
+from abstract_rl.misc.metal_kernels import FusedAdam
 from abstract_rl.misc.mixed import to_mx
 
 # M-steps per compiled call of perform_mult_steps, also the interval of its log lines
@@ -63,10 +63,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.v = self.sample_v()
 
         # optimizers are persistent over all steps, so adam can accumulate its moment estimates (the reference
-        # implementation corrects the bias of the moments, mlx only does that if asked to)
-        self.opt_outer = optim.Adam(learning_rate=self.outer_lr, bias_correction=True)
+        # implementation corrects the bias of the moments, mlx only does that if asked to). FusedAdam is optim.Adam in
+        # fewer GPU dispatches
+        self.opt_outer = FusedAdam(learning_rate=self.outer_lr, bias_correction=True)
         self.opt_outer.init(policy.trainable_parameters())
-        self.opt_inner = optim.Adam(learning_rate=self.inner_lr, bias_correction=True)
+        self.opt_inner = FusedAdam(learning_rate=self.inner_lr, bias_correction=True)
         self.opt_inner.init(self._lm_state)
         self._compiled: dict[str, Callable] = {}
 
