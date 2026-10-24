@@ -99,13 +99,20 @@ def run_in_chunks(fn: Callable[..., tuple[mx.array, ...]], *arrays: mx.array) ->
     return [mx.concatenate(list(o)) if len(outs) > 1 else o[0] for o in zip(*outs, strict=True)]
 
 
-def store_rows(trajectories: list[Trajectory], annotations: dict[str, mx.array]) -> None:
-    """Evaluate row-aligned annotations of the concatenated trajectories and store each trajectory's rows (numpy)."""
-    mx.eval(list(annotations.values()))
-    flat = {k: np.array(v) for k, v in annotations.items()}
+def store_rows(trajectories: TrajectoryCollection | list[Trajectory], annotations: dict[str, mx.array]) -> None:
+    """
+    Store row-aligned annotations of the concatenated trajectories, as MLX arrays on the device: each trajectory gets
+    a view of its rows, a collection also keeps the concatenated arrays for TrajectoryCollection.annotation. The
+    computation starts here without waiting for it.
+    """
+    mx.async_eval(list(annotations.values()))
+    if isinstance(trajectories, TrajectoryCollection):
+        for k, v in annotations.items():
+            trajectories.store_annotation(k, v)
+        return
     offset = 0
     for t in trajectories:
         n = len(t)
-        for k, v in flat.items():
+        for k, v in annotations.items():
             t[k] = v[offset : offset + n]
         offset += n

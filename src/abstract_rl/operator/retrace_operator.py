@@ -71,6 +71,7 @@ class RetraceOperator(TrajectoryOperator):
         expected next-state values is drawn per trajectory as before, so the result is the same as with one call per
         trajectory, up to float rounding.
         """
+        target = trajectories
         if isinstance(trajectories, TrajectoryCollection):
             trajectories = trajectories.trajectories()
         n = sum(len(t) for t in trajectories)
@@ -87,7 +88,7 @@ class RetraceOperator(TrajectoryOperator):
             ).astype(np.int32)
         )
         tq = self._targets_fn()(q_vals, nxt_v_vals, c, r.reshape(-1), seg)
-        store_rows(trajectories, {"q": q_vals[:n].reshape(-1, 1), "tq": tq[:n].reshape(-1, 1)})
+        store_rows(target, {"q": q_vals[:n].reshape(-1, 1), "tq": tq[:n].reshape(-1, 1)})
 
     def _rows_fn(self) -> Callable[..., tuple[mx.array, ...]]:
         """Compiled per-row values: Q(s_t, a_t), the expected value of s_t+1 (0 if done) and the trace coefficient."""

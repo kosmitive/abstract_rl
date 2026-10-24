@@ -54,6 +54,7 @@ class ResampleOperator(TrajectoryOperator):
         calls of chunk_states() states. The noise is drawn per trajectory as before, so the samples are the
         same as with one call per trajectory, up to float rounding.
         """
+        target = trajectories
         if isinstance(trajectories, TrajectoryCollection):
             trajectories = trajectories.trajectories()
         n = sum(len(t) for t in trajectories)
@@ -61,7 +62,7 @@ class ResampleOperator(TrajectoryOperator):
         noise = pad_rows(mx.concatenate([self.policy.sample_noise(len(t), self.add_act) for t in trajectories]), n_pad)
         states = stack_field(trajectories, "states", n_pad)
         actions, log_pi, q_vals = run_in_chunks(self._annotate_fn(), states, noise)
-        store_rows(trajectories, {"add_act": actions[:n], "add_q": q_vals[:n], "add_pi": log_pi[:n]})
+        store_rows(target, {"add_act": actions[:n], "add_q": q_vals[:n], "add_pi": log_pi[:n]})
 
     def _annotate_fn(self) -> Callable[..., tuple[mx.array, ...]]:
         if self._annotate is None:
