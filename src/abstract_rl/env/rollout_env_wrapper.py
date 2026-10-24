@@ -3,8 +3,8 @@ from os.path import exists, join
 from typing import TYPE_CHECKING, Any, cast
 
 import gymnasium as gym
+import mlx.core as mx
 import numpy as np
-import torch
 from gymnasium.spaces import Box
 from gymnasium.wrappers import NormalizeObservation
 
@@ -70,6 +70,10 @@ class RolloutEnvWrapper:
         # report the raw environment return)
         self._reward_scale = conf.get("reward_scale", 1.0)
         self._reward_offset = conf.get("reward_offset", 0.0)
+
+        # sample the actions of the exploring rollout with NumPy (same actions and random keys as the MLX policy),
+        # auto uses it where it is bit identical, see abstract_rl.policy.continuous.host_actor
+        self._host_policy = conf.get("host_policy", "auto")
 
         self.state_filter = RunningCenteredFilter("states", self.observation_dim)
         self.reward_filter = RunningCenteredFilter("rewards", 1)
@@ -188,22 +192,24 @@ class RolloutEnvWrapper:
         traj_builder = TrajectoryBuilder(new_id, self, cs)
         t = 0
         raw_return = 0.0
+        # the log likelihoods stay MLX arrays until the end of the episode, only the action is read in every step
+        t_lls = []
+        actor = None
+        if not opt and self._host_policy not in (False, "false") and hasattr(policy, "host_actor"):
+            actor = policy.host_actor()
 
         # repeat for the number of steps
         while max_steps is None or t < max_steps:
-            # sample distribution based on state
-            tcs = torch.Tensor(cs)
-            tcs = tcs.view([1, -1])
+            if actor is not None:
+                a = actor(np.asarray(cs, dtype=np.float32).reshape([1, -1])).astype(np.float64)
+            else:
+                # sample action and calc log likelihood in one compiled call, the env stays on the host
+                tcs = mx.array(np.asarray(cs, dtype=np.float32).reshape([1, -1]))
+                t_a, t_ll = policy.act(tcs, opt)
+                t_lls.append(t_ll)
 
-            # sample action and calc log likelihood
-            suff_stats = policy.forward(tcs)
-            a = policy.mode(suff_stats=suff_stats) if opt else policy.sample_actions(suff_stats=suff_stats)
-
-            ll = policy.log_prob(a, suff_stats=suff_stats)
-
-            # prepare for usage
-            ll = float(ll.detach().reshape(-1)[0])
-            a = a.detach().reshape(-1).numpy().astype(np.float64)
+                # prepare for usage, reading the action evaluates the log likelihood with it (one compiled call)
+                a = np.array(t_a).reshape(-1).astype(np.float64)
             cs, r, terminated, truncated, _info = env.step(a)
             done = terminated or truncated
             cs = self._preprocess(cs)
@@ -214,7 +220,7 @@ class RolloutEnvWrapper:
 
             t += 1
             # only true terminations are stored as done, so truncated episodes can be bootstrapped
-            traj_builder.observe(a, float(r), cs, ll, int(terminated))
+            traj_builder.observe(a, float(r), cs, 0.0, int(terminated))
 
             # render if needed
             if render:
@@ -225,6 +231,10 @@ class RolloutEnvWrapper:
                 break
 
         # compile using the discount factor
+        if actor is not None:
+            traj_builder.set_log_likelihoods(actor.finish())
+        elif t_lls:
+            traj_builder.set_log_likelihoods(np.array(mx.concatenate([x.reshape(-1)[:1] for x in t_lls])))
         traj = traj_builder.finalize()
         traj.raw_return = raw_return
         self.max_traj_len = max(self.max_traj_len, t)

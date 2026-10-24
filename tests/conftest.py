@@ -80,3 +80,14 @@ def make_pendulum_mc(trpo_conf):
         return mc
 
     return make
+
+
+@pytest.fixture(autouse=True)
+def _mlx_cpu():
+    """Tests run on the MLX CPU device (Metal is the default on Apple silicon), see test_metal.py for the GPU."""
+    import mlx.core as mx
+
+    device = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    yield
+    mx.set_default_device(device)

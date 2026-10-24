@@ -1,17 +1,21 @@
 import math
 from typing import Any, cast
 
+import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.distributions import Normal
-from torch.nn import Parameter
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
-from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
+from abstract_rl.policy.continuous.continuous_policy import (
+    LOG_SQRT_2PI,
+    ContinuousPolicy,
+    normal_kl,
+    normal_log_prob,
+)
 
 # pre-squash samples are limited to |u| <= 5, so tanh stays invertible in float32
 SQUASH_U_MAX = 5.0
@@ -52,21 +56,17 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.cli = CliPrinter().instance
 
         self.num_output_net: int | None = None
-        self.cov_variable: Any = None
         if self.cov_type == "state":
             self.num_output_net = 2
         elif self.cov_type == "fixed":
-            # constant standard deviation, stored in log space and not trained
+            # constant standard deviation, stored in log space and not trained (frozen below)
             init_log_sigma = np.log(run_conf["sigma"])
-            self.cov: torch.Tensor
-            self.register_buffer("cov", torch.full([1, 1], init_log_sigma))
-            self.cov_variable = self.cov
+            self.cov = mx.full([1, 1], float(init_log_sigma))
             self.num_output_net = 1
         elif self.cov_type == "single":
             # single state independent standard deviation, stored in log space
             init_log_sigma = np.log(run_conf.get("sigma", 1.0))
-            self.cov = Parameter(torch.full([1, 1], init_log_sigma), requires_grad=True)
-            self.cov_variable = self.cov
+            self.cov = mx.full([1, 1], float(init_log_sigma))
             self.num_output_net = 1
         else:
             raise NotImplementedError(f"unknown covariance type {self.cov_type}")
@@ -74,7 +74,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         # optionally squash the gaussian with tanh into the (symmetric) action bounds of the environment, so the
         # policy and the q function only ever see actions which the environment actually executes
         self.squash = bool(run_conf.get("squash", False))
-        self.action_scale = np.max(np.abs(mc.env.action_space.high))
+        self.action_scale = float(np.max(np.abs(mc.env.action_space.high)))
 
         # create policy network
         sd = mc.env.observation_dim
@@ -87,14 +87,17 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         self.network = MultilayerPerceptron(
             mc, hidden_neurons=policy_net_structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
         )
-        self.add_module("nn", self.network)
         if self.cov_type == "state":
             # softplus(bias) + SIGMA_MIN = policy_sigma, matching the std single and fixed start from
             raw = math.log(math.expm1(float(run_conf.get("sigma", 1.0)) - SIGMA_MIN))
-            with torch.no_grad():
-                bias = self.network.layers[-1].bias
-                assert bias is not None
-                bias[1] = raw
+            layer = self.network.layers[-1]
+            layer.bias = mx.array([layer.bias[0].item(), raw])
+        if self.cov_type == "fixed":
+            self.freeze(recurse=False, keys=["cov"])
+
+    @property
+    def cov_variable(self) -> Any:
+        return self.cov if self.cov_type in ("fixed", "single") else None
 
     def get_suff_stats_dim(self) -> int:
         """
@@ -104,7 +107,7 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
 
         return 2
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: mx.array) -> mx.array:
         """
         Simply produces sufficient statistics of the univariate gaussian policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
@@ -112,21 +115,22 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         """
 
         if self.cov_type == "state":
-            mu, sigma = torch.split(self.network.forward(states), 1, dim=1)
+            out = self.network.forward(states)
+            mu, sigma = out[:, 0:1], out[:, 1:2]
             # if the activation function of the network already is a softplus on the sigma head, only guard against an
             # underflow to 0, otherwise the unconstrained output is made strictly positive with a softplus
-            sigma = torch.clamp(sigma, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(sigma) + SIGMA_MIN
-            return torch.cat([mu, sigma], 1)
+            sigma = mx.maximum(sigma, SIGMA_MIN) if self._sigma_is_softplus else nn.softplus(sigma) + SIGMA_MIN
+            return mx.concatenate([mu, sigma], 1)
 
         else:
             mu = self.network.forward(states)
-            fw = torch.exp(self.cov_variable)
-            sigma = fw.expand_as(mu)
-            return torch.cat([mu, sigma], 1)
+            fw = mx.exp(self.cov)
+            sigma = mx.broadcast_to(fw, mu.shape)
+            return mx.concatenate([mu, sigma], 1)
 
     def log_prob(
-        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self, actions: mx.array, states: mx.array | None = None, suff_stats: mx.array | None = None
+    ) -> mx.array:
         """
         Can be used to obtain log probability of actions relative to states.
         :param actions: A matrix of size [D, K] containing actions for each state.
@@ -146,20 +150,17 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             assert states is not None
             suff_stats = self.forward(states)
 
-        # extract mu and sigma depending on settings
-        mu, sigma = torch.split(suff_stats, 1, dim=1)
-        std_normal = Normal(mu[:, 0], sigma[:, 0])
+        # extract mu and sigma depending on settings, [D, 1] broadcasts against the K actions of each state
+        mu, sigma = suff_stats[:, 0:1], suff_stats[:, 1:2]
         if not self.squash:
-            ll = std_normal.log_prob(actions.t())
-            return ll.t().contiguous()
+            return normal_log_prob(actions, mu, sigma)
 
         # change of variables a = c * tanh(u): log p(a) = log N(u) - log(c * (1 - tanh(u)^2))
-        y = torch.clamp(actions / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
-        u = torch.atanh(y)
-        ll = std_normal.log_prob(u.t()).t() - torch.log(self.action_scale * (1 - y.pow(2)))
-        return ll
+        y = mx.clip(actions / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
+        u = mx.arctanh(y)
+        return normal_log_prob(u, mu, sigma) - mx.log(self.action_scale * (1 - y**2))
 
-    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
+    def mode(self, states: mx.array | None = None, suff_stats: mx.array | None = None) -> mx.array:
 
         # check if it full fills a xor relation
         assert states is not None or suff_stats is not None
@@ -170,17 +171,26 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             assert states is not None
             suff_stats = self.forward(states)
         mu = suff_stats[:, 0:1]
-        return self.action_scale * torch.tanh(mu) if self.squash else mu
+        return self.action_scale * mx.tanh(mu) if self.squash else mu
+
+    def sample_noise(self, num_states: int, num_actions: int = 1) -> mx.array:
+        """The standard normal noise of sample_actions for num_states states, a matrix [D, K]."""
+        return mx.random.normal((num_states, num_actions))
 
     def sample_actions(
-        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
-    ) -> torch.Tensor:
+        self,
+        states: mx.array | None = None,
+        suff_stats: mx.array | None = None,
+        num_actions: int = 1,
+        noise: mx.array | None = None,
+    ) -> mx.array:
         """
         Can be used to obtain action samples for all states.
         :param states: A matrix of size [D, Ds]. If this None => suff_states not None
         :param suff_stats: A matrix of size [D, get_suff_stats_dim()] containing suff stats.
             If this None => states is not None
         :param num_actions: The number of actions or K.
+        :param noise: The noise to use, see sample_noise. Drawn here if None.
         :return: A matrix [D, K] containing action samples generated by the suff stats of the specific state.
         """
 
@@ -193,12 +203,13 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
             assert states is not None
             suff_stats = self.forward(states)
 
-        # extract mu and sigma depending on settings
-        mu, sigma = torch.split(suff_stats, 1, dim=1)
-        std_normal = Normal(mu[:, 0], sigma[:, 0])
-        samples = std_normal.rsample([num_actions]).t().contiguous()
+        # extract mu and sigma depending on settings, reparametrised samples mu + sigma * z
+        mu, sigma = suff_stats[:, 0:1], suff_stats[:, 1:2]
+        if noise is None:
+            noise = self.sample_noise(suff_stats.shape[0], num_actions)
+        samples = mu + sigma * noise
         if self.squash:
-            samples = self.action_scale * torch.tanh(torch.clamp(samples, -SQUASH_U_MAX, SQUASH_U_MAX))
+            samples = self.action_scale * mx.tanh(mx.clip(samples, -SQUASH_U_MAX, SQUASH_U_MAX))
         return samples
 
     def clone(self) -> "UnivariateGaussianPolicy":
@@ -218,25 +229,21 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
         """
-        v.load_state_dict(self.state_dict())
+        v.update(self.parameters())
         return v
 
-    def entropy(self, batch: Batch) -> torch.Tensor:
+    def entropy(self, batch: Batch) -> mx.array:
         if self.squash:
             # tanh squashed gaussians have no closed form entropy, the gaussian entropy would ignore the jacobian
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
         policy = self.mc.get("policy", False)
-        t_states = torch.Tensor(batch.states)
-        suff_stats = policy.forward(t_states)
-
-        mu, sigma = torch.split(suff_stats, 1, dim=1)
-        std_normal = Normal(mu[:, 0], sigma[:, 0])
-        ent = std_normal.entropy().mean()
-        return ent
+        suff_stats = policy.forward(to_mx(batch.states))
+        sigma = suff_stats[:, 1]
+        return (0.5 + LOG_SQRT_2PI + mx.log(sigma)).mean()
 
     def kl_divergence(
-        self, batch: Batch, suff_stats: torch.Tensor | None = None, mode: str = "i-projection", est: str = "sum"
-    ) -> torch.Tensor:
+        self, batch: Batch, suff_stats: mx.array | None = None, mode: str = "i-projection", est: str = "sum"
+    ) -> mx.array:
         """
         Calculates the kl divergence between the current policy and the saved likelihood values.
         :param batch:
@@ -244,37 +251,28 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         """
 
         # calc sufficient statistics
-        states = torch.Tensor(batch.states)
+        states = to_mx(batch.states)
         if suff_stats is None:
-            assert states is not None
             suff_stats = self.forward(states)
 
         # create this distribution
-        mu, sigma = torch.split(suff_stats, 1, dim=1)
-        std_normal = Normal(mu[:, 0], sigma[:, 0])
+        mu, sigma = suff_stats[:, 0], suff_stats[:, 1]
 
-        # create this distribution
         # get the old sufficient statistics
-        with torch.no_grad():
-            t_policy = self.mc.get("policy", True)
-            t_suff_stats = t_policy.forward(states)
-            t_mu, t_sigma = torch.split(t_suff_stats, 1, dim=1)
-            t_std_normal = Normal(t_mu[:, 0], t_sigma[:, 0])
+        t_policy = self.mc.get("policy", True)
+        t_suff_stats = mx.stop_gradient(t_policy.forward(states))
+        t_mu, t_sigma = t_suff_stats[:, 0], t_suff_stats[:, 1]
 
         # use I projection
         if mode == "i-projection":
-            p = std_normal
-            q = t_std_normal
+            kl = normal_kl(mu, sigma, t_mu, t_sigma)
 
         # use M Projection
         elif mode == "m-projection":
-            q = std_normal
-            p = t_std_normal
+            kl = normal_kl(t_mu, t_sigma, mu, sigma)
 
         else:
             raise NotImplementedError
-
-        kl = torch.distributions.kl.kl_divergence(p, q)
 
         if est == "sum":
             return kl.sum()

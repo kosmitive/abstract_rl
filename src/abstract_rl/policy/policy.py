@@ -1,5 +1,5 @@
-import torch
-from torch.nn import Module
+import mlx.core as mx
+from mlx.nn import Module
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 
@@ -13,6 +13,9 @@ class Policy(Module):
         Module.__init__(self)
         self.mc = mc
 
+    def __call__(self, states: mx.array) -> mx.array:
+        return self.forward(states)
+
     def get_suff_stats_dim(self) -> int:
         """
         Obtain the dimension of sufficient statistics vector for the policy.
@@ -20,7 +23,7 @@ class Policy(Module):
         """
         raise NotImplementedError
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: mx.array) -> mx.array:
         """
         Simply produces sufficient statistics of the policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
@@ -29,8 +32,8 @@ class Policy(Module):
         raise NotImplementedError
 
     def sample_actions(
-        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
-    ) -> torch.Tensor:
+        self, states: mx.array | None = None, suff_stats: mx.array | None = None, num_actions: int = 1
+    ) -> mx.array:
         """
         Can be used to obtain action samples for all states.
         :param states: A matrix of size [D, Ds]. If this None => suff_states not None

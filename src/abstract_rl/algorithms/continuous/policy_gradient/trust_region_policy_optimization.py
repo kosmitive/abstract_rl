@@ -1,4 +1,6 @@
-import torch
+from typing import Any
+
+import mlx.core as mx
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import PolicyOptimizationAlgorithm
 from abstract_rl.algorithms.mixed.trust_region_gradient import TrustRegionGradient
@@ -28,7 +30,11 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
             self, self.policy, trpo_eps, trpo_cg_max_k, trpo_cg_residual_tol, trpo_dvp_damping, "max"
         )
 
-    def tr_distance(self, batch: Batch) -> torch.Tensor:
+    def tr_inputs(self) -> list[Any]:
+        """The KL is measured against the target policy, its parameters are an input of the compiled step."""
+        return [self.mc.get("policy", True).state]
+
+    def tr_distance(self, batch: Batch) -> mx.array:
         """Pass back KL divergence for training divergence.
 
         :param batch: The batch to use.
@@ -36,7 +42,7 @@ class TRPOAlgorithm(PolicyOptimizationAlgorithm, TrustRegionGradient):
         """
         return self.policy.kl_divergence(batch, est="mean", mode="m-projection")
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
+    def tr_obj(self, batch: Batch) -> mx.array:
         """Pass back the likelihood ratio gradient.
 
         :param batch: The batch to use.

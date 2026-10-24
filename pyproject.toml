@@ -1,13 +1,13 @@
 [project]
 name = "abstract-rl"
 version = "0.1.0"
-description = "A modular reinforcement learning library (TRPO, MPO) based on PyTorch."
+description = "A modular reinforcement learning library (TRPO, MPO) based on MLX."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Markus Semmler" }]
 requires-python = ">=3.13,<3.14"
-keywords = ["reinforcement learning", "trpo", "mpo", "policy gradient", "gymnasium", "pytorch"]
+keywords = ["reinforcement learning", "trpo", "mpo", "policy gradient", "gymnasium", "mlx"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
@@ -20,9 +20,11 @@ dependencies = [
     "gymnasium[classic-control]>=1.0",
     "hydra-core>=1.3.7",
     "matplotlib>=3.9",
+    # Metal on macOS, the CPU backend on Linux
+    "mlx>=0.32.4; sys_platform == 'darwin'",
+    "mlx[cpu]>=0.32.4; sys_platform == 'linux'",
     "numpy>=2.1",
     "pandas>=2.2",
-    "torch>=2.5",
 ]
 
 [project.urls]
@@ -37,6 +39,8 @@ mujoco = [
 baselines = [
     "sb3-contrib>=2.4",
     "stable-baselines3>=2.4",
+    # direct dependency of the extra, so the CPU-only index below applies
+    "torch>=2.5",
 ]
 
 [dependency-groups]
@@ -54,7 +58,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/abstract_rl"]
 
-# CPU-only PyTorch wheels (much smaller); remove to use the default CUDA builds.
+# CPU-only PyTorch wheels for the optional baselines (much smaller); remove to use the default CUDA builds.
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 
@@ -91,5 +95,5 @@ warn_return_any = false
 
 [[tool.mypy.overrides]]
 # optional extra `baselines`, only imported by scripts/run_baselines.py
-module = ["stable_baselines3.*", "sb3_contrib.*"]
+module = ["stable_baselines3.*", "sb3_contrib.*", "torch", "torch.*"]
 ignore_missing_imports = true

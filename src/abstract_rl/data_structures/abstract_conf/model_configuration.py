@@ -6,7 +6,6 @@ from shutil import copy, copytree
 from typing import Any
 
 import numpy as np
-import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
@@ -92,7 +91,7 @@ class ModelConfiguration:
 
         for k in self.syncables:
             model = self.syncables[k][1]
-            model.load_state_dict(torch.load(join(self.run_root, "model/last", f"{k}.data")))
+            model.load_weights(join(self.run_root, "model/last", f"{k}.safetensors"))
 
         return self.overall_step
 
@@ -110,10 +109,10 @@ class ModelConfiguration:
 
         for k in self.syncables:
             model = self.syncables[k][1]
-            torch_path = join(self.model_root, name)
-            if not exists(torch_path):
-                mkdir(torch_path)
-            torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
+            model_path = join(self.model_root, name)
+            if not exists(model_path):
+                mkdir(model_path)
+            model.save_weights(join(model_path, f"{k}.safetensors"))
 
     def store_best(self, ret: float, epoch: int) -> None:
         """Copy the stored ``last`` models (and observation statistics) to ``best`` if ``ret`` is a new best return."""

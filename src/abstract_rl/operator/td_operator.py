@@ -1,7 +1,8 @@
-import torch
+import numpy as np
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.operator.trajectory_operator import TrajectoryOperator
 
 
@@ -28,35 +29,32 @@ class TemporalDifferenceOperator(TrajectoryOperator):
 
     def transform(self, trajectory: Trajectory) -> None:
         """
-        Transform a trajectory with the current instance of the evaluation operator.
+        Transform a trajectory with the current instance of the evaluation operator. The values come from the
+        (MLX) value network, the sequential recursion of the targets runs on the host in float32.
         :param trajectory: trajectory to transform.
         """
 
-        # deactivate grad
-        with torch.no_grad():
-            # obtain rewards
-            discount = self.env.discount()
-            t_states = torch.Tensor(trajectory.states)
-            t_rewards = torch.Tensor(trajectory.rewards)
-            dones = torch.Tensor(trajectory.dones)
-            v = self.v_net.forward(t_states)
-            mask = 1 - dones
+        # obtain rewards
+        discount = np.float32(self.env.discount())
+        rewards = np.asarray(trajectory.rewards, dtype=np.float32).reshape(-1)
+        mask = 1 - np.asarray(trajectory.dones, dtype=np.float32).reshape(-1)
 
-            # bootstrap from the last observed state if the trajectory was truncated (e.g. time limit) instead of
-            # treating the end of the trajectory as terminal
-            last_state = torch.Tensor(trajectory.all_states[-1:])
-            last_v = self.v_net.forward(last_state)[0, 0] * mask[-1, 0]
+        # values of all states and the last observed state, which bootstraps truncated (e.g. time limit) trajectories
+        # instead of treating the end of the trajectory as terminal
+        t_states = to_mx(trajectory.all_states)
+        all_v = np.array(self.v_net.forward(t_states)).reshape(-1)
+        v = all_v[:-1]
+        last_v = all_v[-1] * mask[-1]
 
-            tl = len(trajectory)
-            tv = torch.zeros(tl + 1)
-            tv[tl] = last_v
-            td_errors = torch.zeros_like(dones)
-            prev_value = last_v
+        tl = len(trajectory)
+        tv = np.zeros(tl + 1, dtype=np.float32)
+        tv[tl] = last_v
+        for t in reversed(range(tl)):
+            tv[t] = rewards[t] + discount * mask[t] * tv[t + 1]
 
-            for t in reversed(range(tl)):
-                tv[t] = t_rewards[t] + discount * mask[t] * tv[t + 1]
-                td_errors[t] = t_rewards[t] + discount * prev_value * mask[t] - v[t]
-                prev_value = v[t, 0]
+        # the value of the following state, the last one is bootstrapped
+        next_v = np.concatenate([v[1:], [last_v]]).astype(np.float32)
+        td_errors = rewards + discount * next_v * mask - v
 
-            trajectory["tv"] = tv[:-1]
-            trajectory["td"] = td_errors
+        trajectory["tv"] = tv[:-1]
+        trajectory["td"] = td_errors.reshape(-1, 1)

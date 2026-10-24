@@ -2,17 +2,22 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.distributions import MultivariateNormal, Normal
-from torch.nn import Parameter
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.neural_modules.neural_network import MultilayerPerceptron
-from abstract_rl.policy.continuous.continuous_policy import ContinuousPolicy
+from abstract_rl.policy.continuous.continuous_policy import (
+    LOG_SQRT_2PI,
+    ContinuousPolicy,
+    normal_kl,
+    normal_log_prob,
+)
+from abstract_rl.policy.continuous.host_actor import HostActor, host_actor
 from abstract_rl.policy.continuous.univariate_gaussian_policy import SIGMA_MIN, SQUASH_BOUND, SQUASH_U_MAX
 
 
@@ -61,11 +66,8 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
     ``[low, high]`` of the action space, ``a = center + scale * tanh(u)`` with ``u ~ N(mu, sigma)``, and the density
     contains the matching log-determinant of the Jacobian.
 
-    ``cov_type`` ``full`` replaces the standard deviations with a state-dependent Cholesky factor ``L(s)``. The network
-    emits the mean and the lower triangle packed in row-major order. The diagonal of ``L`` is ``softplus(raw) +
-    SIGMA_MIN`` and the off-diagonal entries stay raw. Samples are ``u = mu + L z`` with ``z ~ N(0, I)``. Log
-    probability, entropy and the KL are those of ``N(mu, L L^T)``. The squash is the same componentwise map, and the
-    KL stays the KL of the Gaussian on ``u``.
+    ``cov_type`` ``full`` (a state-dependent Cholesky factor) is not available in the MLX port: MLX has no gradient
+    of the Cholesky decomposition and of the triangular solve, and both only run on the CPU.
 
     Action shapes: samples and additional actions are ``[D, K, A]`` (K actions per state), a single action per state
     can also be passed as ``[D, A]``. Log probabilities are ``[D, K]``.
@@ -90,16 +92,18 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         if self.cov_type == "state":
             self.num_output_net = 2 * a_dim
         elif self.cov_type == "fixed":
-            # constant standard deviation, stored in log space and not trained
-            self.register_buffer("cov", torch.full([1, a_dim], np.log(run_conf["sigma"])))
+            # constant standard deviation, stored in log space and not trained (frozen below)
+            self.cov = mx.full([1, a_dim], float(np.log(run_conf["sigma"])))
             self.num_output_net = a_dim
         elif self.cov_type == "single":
             # one state independent standard deviation per action dimension, stored in log space
-            self.cov = Parameter(torch.full([1, a_dim], np.log(run_conf.get("sigma", 1.0))))
+            self.cov = mx.full([1, a_dim], float(np.log(run_conf.get("sigma", 1.0))))
             self.num_output_net = a_dim
         elif self.cov_type == "full":
-            # mean and the packed lower-triangular Cholesky factor L(s)
-            self.num_output_net = a_dim + a_dim * (a_dim + 1) // 2
+            raise NotImplementedError(
+                "cov_type full is not supported by the MLX port: mlx has no vjp for cholesky / triangular_solve "
+                "and runs them on the CPU only, use policy_cov_type=state, single or fixed"
+            )
         else:
             raise NotImplementedError(f"unknown covariance type {self.cov_type}")
 
@@ -112,103 +116,65 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         center, scale = np.zeros(a_dim), np.ones(a_dim)
         if self.squash:
             center, scale = (high + low) / 2, (high - low) / 2
-        self.action_center: torch.Tensor
-        self.action_scale: torch.Tensor
-        self.register_buffer("action_center", torch.as_tensor(center, dtype=torch.float32))
-        self.register_buffer("action_scale", torch.as_tensor(scale, dtype=torch.float32))
+        # constants, the underscore keeps them out of the parameter tree
+        self._action_center = mx.array(center.astype(np.float32))
+        self._action_scale = mx.array(scale.astype(np.float32))
 
         # create policy network, the activations of the mu / sigma outputs are applied inside of the network.
-        # a full covariance keeps one activation name per layer and softplus-es only diag L
         sd = mc.env.observation_dim
         structure = np.concatenate(([sd], run_conf["structure"], [self.num_output_net]))
-        if self.cov_type == "full":
-            af = list(run_conf["act_fn"])
-            last = af[-1]
-            if isinstance(last, list | tuple):
-                raise ValueError(
-                    "the full-covariance head uses one activation name; softplus is applied to the Cholesky diagonal"
-                )
-            sigma_acts: list[Any] = [last]
-        else:
-            af, sigma_acts = head_activations(run_conf["act_fn"], a_dim)
+        af, sigma_acts = head_activations(run_conf["act_fn"], a_dim)
         self._sigma_is_softplus = sigma_is_softplus(sigma_acts)
         self.network = MultilayerPerceptron(
             mc, hidden_neurons=structure, act_fn=af, layer_norm=run_conf["layer_norm"], init=run_conf["init"]
         )
-        self.add_module("nn", self.network)
-        if self.cov_type in ("state", "full"):
+        if self.cov_type == "state":
             # softplus(bias) + SIGMA_MIN = policy_sigma, matching the std single and fixed start from
             raw = math.log(math.expm1(float(run_conf.get("sigma", 1.0)) - SIGMA_MIN))
-            with torch.no_grad():
-                layer = self.network.layers[-1]
-                bias = layer.bias
-                assert bias is not None
-                # covariance outputs are the bias alone, so sigma and L(s) = policy_sigma * I at every state
-                layer.weight[a_dim:].zero_()
-                if self.cov_type == "state":
-                    bias[a_dim:] = raw
-                else:
-                    bias[a_dim:].zero_()
-                    bias[[a_dim + i for i in self._diag_index()]] = raw
+            layer = self.network.layers[-1]
+            # covariance outputs are the bias alone, so sigma = policy_sigma at every state
+            rows = mx.arange(layer.weight.shape[0])[:, None]
+            layer.weight = mx.where(rows >= a_dim, 0.0, layer.weight)
+            layer.bias = mx.where(mx.arange(layer.bias.shape[0]) >= a_dim, raw, layer.bias)
+        if self.cov_type == "fixed":
+            self.freeze(recurse=False, keys=["cov"])
+
+    @property
+    def action_center(self) -> mx.array:
+        return self._action_center
+
+    @property
+    def action_scale(self) -> mx.array:
+        return self._action_scale
 
     def get_suff_stats_dim(self) -> int:
         """
-        :return: 2 * A, the means followed by the standard deviations, or A + A(A+1)/2 for a full Cholesky factor.
+        :return: 2 * A, the means followed by the standard deviations.
         """
-        a_dim = self.action_dim
-        if self.cov_type == "full":
-            return a_dim + a_dim * (a_dim + 1) // 2
-        return 2 * a_dim
+        return 2 * self.action_dim
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: mx.array) -> mx.array:
         """
         Produces the sufficient statistics of the policy.
         :param states: A matrix of shape [D, Ds] where each row corresponds to one state.
-        :return: A matrix of shape [D, 2A], ``[mu, sigma]`` with sigma strictly positive, or ``[mu, packed L]`` when
-            ``cov_type`` is ``full``.
+        :return: A matrix of shape [D, 2A], ``[mu, sigma]`` with sigma strictly positive.
         """
         a_dim = self.action_dim
-        if self.cov_type == "full":
-            out = self.network.forward(states)
-            mu, raw = out[:, :a_dim], out[:, a_dim:]
-            return torch.cat([mu, self._with_positive_diagonal(raw)], dim=1)
         if self.cov_type == "state":
             out = self.network.forward(states)
             mu, sigma = out[:, :a_dim], out[:, a_dim:]
             # the configured activation of the sigma outputs already is a softplus: only guard against underflow,
             # otherwise the unconstrained output is made positive here (never both, a second softplus floors sigma)
-            sigma = torch.clamp(sigma, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(sigma) + SIGMA_MIN
+            sigma = mx.maximum(sigma, SIGMA_MIN) if self._sigma_is_softplus else nn.softplus(sigma) + SIGMA_MIN
         else:
             mu = self.network.forward(states)
-            sigma = torch.exp(self.cov).expand_as(mu)
-        return torch.cat([mu, sigma], dim=1)
+            sigma = mx.broadcast_to(mx.exp(self.cov), mu.shape)
+        return mx.concatenate([mu, sigma], axis=1)
 
-    def _diag_index(self) -> list[int]:
-        """Row-major index of each diagonal entry inside a packed lower triangle."""
-        return [i * (i + 3) // 2 for i in range(self.action_dim)]
-
-    def _with_positive_diagonal(self, packed: torch.Tensor) -> torch.Tensor:
-        """``softplus(raw) + SIGMA_MIN`` on the diagonal of a packed Cholesky factor. Off-diagonals stay raw."""
-        idx = self._diag_index()
-        diagonal = packed[:, idx]
-        diagonal = torch.clamp(diagonal, min=SIGMA_MIN) if self._sigma_is_softplus else F.softplus(diagonal) + SIGMA_MIN
-        index = torch.tensor(idx, device=packed.device).view(1, -1).expand(packed.shape[0], -1)
-        return packed.scatter(1, index, diagonal)
-
-    def _mu_factor(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Mean and the lower-triangular Cholesky factor ``L`` of a full-covariance statistic row."""
-        a_dim = self.action_dim
-        mu, packed = suff_stats[:, :a_dim], suff_stats[:, a_dim:]
-        rows, cols = torch.tril_indices(a_dim, a_dim, device=suff_stats.device)
-        flat_index = (rows * a_dim + cols).view(1, -1).expand(packed.shape[0], -1)
-        flat = packed.new_zeros(packed.shape[0], a_dim * a_dim)
-        factor = flat.scatter(1, flat_index, packed).view(packed.shape[0], a_dim, a_dim)
-        return mu, factor
-
-    def _split(self, suff_stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _split(self, suff_stats: mx.array) -> tuple[mx.array, mx.array]:
         return suff_stats[:, : self.action_dim], suff_stats[:, self.action_dim :]
 
-    def _suff_stats(self, states: torch.Tensor | None, suff_stats: torch.Tensor | None) -> torch.Tensor:
+    def _suff_stats(self, states: mx.array | None, suff_stats: mx.array | None) -> mx.array:
         assert (states is None) != (suff_stats is None), "pass either states or suff_stats"
         if suff_stats is None:
             assert states is not None
@@ -216,8 +182,8 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         return suff_stats
 
     def log_prob(
-        self, actions: torch.Tensor, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        self, actions: mx.array, states: mx.array | None = None, suff_stats: mx.array | None = None
+    ) -> mx.array:
         """
         Log probability of actions relative to states.
         :param actions: A tensor of size [D, K, A], or [D, A] for one action per state.
@@ -226,61 +192,56 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         :return: A matrix [D, K] containing the log probability of each action.
         """
         stats = self._suff_stats(states, suff_stats)
-        if self.cov_type == "full":
-            return self._full_log_prob(actions, stats)
         mu, sigma = self._split(stats)
-        if actions.dim() == 2:
-            actions = actions.unsqueeze(1)
-        mu, sigma = mu.unsqueeze(1), sigma.unsqueeze(1)
+        if actions.ndim == 2:
+            actions = actions[:, None, :]
+        mu, sigma = mu[:, None, :], sigma[:, None, :]
         if not self.squash:
-            return Normal(mu, sigma).log_prob(actions).sum(dim=-1)
+            return normal_log_prob(actions, mu, sigma).sum(axis=-1)
 
         # change of variables a = center + scale * tanh(u): log p(a) = log N(u) - sum log(scale * (1 - tanh(u)^2))
-        y = torch.clamp((actions - self.action_center) / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
-        u = torch.atanh(y)
-        log_jac = torch.log(self.action_scale * (1 - y.pow(2)))
-        return (Normal(mu, sigma).log_prob(u) - log_jac).sum(dim=-1)
+        y = mx.clip((actions - self._action_center) / self._action_scale, -SQUASH_BOUND, SQUASH_BOUND)
+        u = mx.arctanh(y)
+        log_jac = mx.log(self._action_scale * (1 - y**2))
+        return (normal_log_prob(u, mu, sigma) - log_jac).sum(axis=-1)
 
-    def _full_log_prob(self, actions: torch.Tensor, suff_stats: torch.Tensor) -> torch.Tensor:
-        """Log density of ``N(mu, L L^T)``, with the same squash as the diagonal policy."""
-        mu, factor = self._mu_factor(suff_stats)
-        if actions.dim() == 2:
-            actions = actions.unsqueeze(1)
-        dist = MultivariateNormal(mu.unsqueeze(1), scale_tril=factor.unsqueeze(1))
-        if not self.squash:
-            return dist.log_prob(actions)
-        y = torch.clamp((actions - self.action_center) / self.action_scale, -SQUASH_BOUND, SQUASH_BOUND)
-        u = torch.atanh(y)
-        log_jac = torch.log(self.action_scale * (1 - y.pow(2))).sum(dim=-1)
-        return dist.log_prob(u) - log_jac
-
-    def mode(self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None) -> torch.Tensor:
+    def mode(self, states: mx.array | None = None, suff_stats: mx.array | None = None) -> mx.array:
         """
         :return: A matrix [D, A] with the most likely (mean) action of each state.
         """
         mu, _ = self._split(self._suff_stats(states, suff_stats))
-        return self.action_center + self.action_scale * torch.tanh(mu) if self.squash else mu
+        return self._action_center + self._action_scale * mx.tanh(mu) if self.squash else mu
+
+    def sample_noise(self, num_states: int, num_actions: int = 1) -> mx.array:
+        """The standard normal noise of sample_actions for num_states states, a tensor [D, K, A]."""
+        return mx.random.normal((num_states, num_actions, self.action_dim))
 
     def sample_actions(
-        self, states: torch.Tensor | None = None, suff_stats: torch.Tensor | None = None, num_actions: int = 1
-    ) -> torch.Tensor:
+        self,
+        states: mx.array | None = None,
+        suff_stats: mx.array | None = None,
+        num_actions: int = 1,
+        noise: mx.array | None = None,
+    ) -> mx.array:
         """
         Samples K actions for each state.
         :param states: A matrix of size [D, Ds]. If this None => suff_stats not None
         :param suff_stats: A matrix of size [D, 2A]. If this None => states is not None
         :param num_actions: The number of actions K.
+        :param noise: The noise to use, see sample_noise. Drawn here if None.
         :return: A tensor [D, K, A] of (reparametrised) action samples.
         """
         stats = self._suff_stats(states, suff_stats)
-        if self.cov_type == "full":
-            mu, factor = self._mu_factor(stats)
-            u = MultivariateNormal(mu, scale_tril=factor).rsample((num_actions,)).transpose(0, 1)
-        else:
-            mu, sigma = self._split(stats)
-            u = Normal(mu.unsqueeze(1), sigma.unsqueeze(1)).rsample([num_actions]).transpose(0, 1).squeeze(2)
+        mu, sigma = self._split(stats)
+        z = noise if noise is not None else self.sample_noise(stats.shape[0], num_actions)
+        u = mu[:, None, :] + sigma[:, None, :] * z
         if self.squash:
-            u = self.action_center + self.action_scale * torch.tanh(torch.clamp(u, -SQUASH_U_MAX, SQUASH_U_MAX))
-        return u.contiguous()
+            u = self._action_center + self._action_scale * mx.tanh(mx.clip(u, -SQUASH_U_MAX, SQUASH_U_MAX))
+        return u
+
+    def host_actor(self) -> HostActor | None:
+        squash = (np.array(self._action_center), np.array(self._action_scale), SQUASH_U_MAX) if self.squash else None
+        return host_actor(self, (1, 1, self.action_dim), squash)
 
     def clone(self) -> "DiagonalGaussianPolicy":
         """
@@ -296,73 +257,46 @@ class DiagonalGaussianPolicy(ContinuousPolicy):
         Copies the content of the current instance to the supplied parameter instance.
         :param v: The other instance, where the current values should be copied to.
         """
-        v.load_state_dict(self.state_dict())
+        v.update(self.parameters())
         return v
 
-    def entropy(self, batch: Batch) -> torch.Tensor:
+    def entropy(self, batch: Batch) -> mx.array:
         if self.squash:
             # tanh squashed gaussians have no closed form entropy, the gaussian entropy would ignore the jacobian
             raise NotImplementedError("entropy of a squashed gaussian policy is not available in closed form")
-        stats = self.forward(torch.Tensor(batch.states))
-        if self.cov_type == "full":
-            # 1/2 * A * log(2 pi e) + sum log diag(L), mean over the batch
-            _, factor = self._mu_factor(stats)
-            log_diag = torch.log(torch.diagonal(factor, dim1=-2, dim2=-1)).sum(dim=-1)
-            return (0.5 * self.action_dim * math.log(2 * math.pi * math.e) + log_diag).mean()
+        stats = self.forward(to_mx(batch.states))
         _, sigma = self._split(stats)
-        return (0.5 * math.log(2 * math.pi * math.e) + torch.log(sigma)).sum(dim=1).mean()
+        return (0.5 + LOG_SQRT_2PI + mx.log(sigma)).sum(axis=1).mean()
 
     def kl_divergence(
         self,
         batch: Batch,
-        suff_stats: torch.Tensor | None = None,
+        suff_stats: mx.array | None = None,
         mode: str = "i-projection",
         est: str = "sum",
-    ) -> torch.Tensor:
+    ) -> mx.array:
         """
         Analytic KL divergence between the gaussian of the current policy (or the passed sufficient statistics) and the
-        target policy. A diagonal covariance sums the per-dimension KL. A full covariance is the KL of
-        ``N(mu, L L^T)``, the total of the mean and covariance terms. TRPO constrains that KL, and MPO constrains the
-        same total. For the tanh squashed policy this equals the KL of the underlying gaussians, as the (shared)
-        squashing is a bijection.
+        target policy, the sum of the per-dimension KL. For the tanh squashed policy this equals the KL of the
+        underlying gaussians, as the (shared) squashing is a bijection.
         :param batch: The batch containing the states.
         :param suff_stats: Optional sufficient statistics replacing the current policy.
         :param mode: i-projection computes KL(current, target), m-projection KL(target, current).
         :param est: Sum or mean over the states of the batch.
         """
-        states = torch.Tensor(batch.states)
+        states = to_mx(batch.states)
         if suff_stats is None:
-            assert states is not None
             suff_stats = self.forward(states)
-        if self.cov_type == "full":
-            mu, factor = self._mu_factor(suff_stats)
-            with torch.no_grad():
-                t_mu, t_factor = self._mu_factor(self.mc.get("policy", True).forward(states))
-            current_full = MultivariateNormal(mu, scale_tril=factor)
-            target_full = MultivariateNormal(t_mu, scale_tril=t_factor)
-            if mode == "i-projection":
-                kl_full = torch.distributions.kl.kl_divergence(current_full, target_full)
-            elif mode == "m-projection":
-                kl_full = torch.distributions.kl.kl_divergence(target_full, current_full)
-            else:
-                raise NotImplementedError(mode)
-            if est == "sum":
-                return kl_full.sum()
-            elif est == "mean":
-                return kl_full.mean()
-            raise NotImplementedError(est)
         mu, sigma = self._split(suff_stats)
-        with torch.no_grad():
-            t_mu, t_sigma = self._split(self.mc.get("policy", True).forward(states))
+        t_mu, t_sigma = self._split(mx.stop_gradient(self.mc.get("policy", True).forward(states)))
 
-        current, target = Normal(mu, sigma), Normal(t_mu, t_sigma)
         if mode == "i-projection":
-            kl = torch.distributions.kl.kl_divergence(current, target)
+            kl = normal_kl(mu, sigma, t_mu, t_sigma)
         elif mode == "m-projection":
-            kl = torch.distributions.kl.kl_divergence(target, current)
+            kl = normal_kl(t_mu, t_sigma, mu, sigma)
         else:
             raise NotImplementedError(mode)
-        kl = kl.sum(dim=1)
+        kl = kl.sum(axis=1)
 
         if est == "sum":
             return kl.sum()
