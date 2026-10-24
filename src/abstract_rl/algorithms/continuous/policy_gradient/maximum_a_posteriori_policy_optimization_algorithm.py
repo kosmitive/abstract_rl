@@ -4,6 +4,7 @@ from typing import Any, cast
 import mlx.core as mx
 import mlx.optimizers as optim
 import numpy as np
+from mlx.utils import tree_map
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
     PolicyOptimizationAlgorithm,
@@ -15,6 +16,9 @@ from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_params_from
 from abstract_rl.misc.mixed import to_mx
 
+# M-steps per compiled call of perform_mult_steps, also the interval of its log lines
+M_STEPS_PER_CALL = 10
+
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
     """
@@ -25,7 +29,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
     one in a supervised fashion.
 
     One step of the M-step, the Adam step of the policy followed by the Adam step of the Lagrange multipliers, is one
-    compiled MLX function.
+    compiled MLX function. perform_mult_steps runs M_STEPS_PER_CALL of them, each gathering its batch from a flat
+    replay on the device, in one compiled function.
     """
 
     def __repr__(self) -> str:
@@ -198,10 +203,27 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
         )
 
-        # perform a min step, the batches are gathered on the device from one flat copy of the collection
+        # the indices of all batches, drawn in the order and with the calls of one replay.sample per step
         replay = tc.flatten(["add_act", "grad_ranking"])
-        for s in range(num_steps):
-            self.perform_step(s, Batch.from_tree(replay.sample(batch_size)))
+        indices = mx.array(np.stack([replay.draw(batch_size) for _ in range(num_steps)]), dtype=mx.int32)
+        step_fn, log_fn = self._step_fns()
+        logs = []
+        for s in range(0, num_steps, M_STEPS_PER_CALL):
+            # the first step of a chunk and its log values as in perform_step, then the others in one compiled call
+            tree = replay.gather(indices[s])
+            step_fn(tree)
+            obj, *constraints = log_fn(tree)
+            pairs = [v for pair in zip(self.lagrange_mults, constraints, strict=False) for v in pair]
+            if s + 1 < min(s + M_STEPS_PER_CALL, num_steps):
+                self._compiled["steps"](replay.tree, indices[s + 1 : s + M_STEPS_PER_CALL])
+            mx.async_eval(
+                obj, pairs, self.mc.get("policy", target=False).parameters(), self._lm_state, self.opt_outer.state
+            )
+            logs.append((s, obj, pairs))
+
+        # the log lines of perform_step, printed once all steps are queued
+        for s, obj, pairs in logs:
+            self.cli.print(self.fmtstr % (s, obj.item(), *[v.item() for v in pairs]))
 
     def _step_fns(self) -> tuple[Callable, Callable]:
         """The compiled M-step and the compiled objective and constraints for the log line."""
@@ -240,6 +262,14 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             inputs = [*state, t_policy.state, self._v_state]
             self._compiled["step"] = mx.compile(step, inputs=inputs, outputs=state)
             self._compiled["log"] = mx.compile(log_values, inputs=inputs)
+
+            def steps(tree: dict[str, Any], indices: mx.array) -> None:
+                # one step per row of indices. The log values stay a separate call: in the same graph they share
+                # subexpressions with the step, which changes its fused CPU kernels and the rounding.
+                for j in range(indices.shape[0]):
+                    step(tree_map(lambda v, j=j: mx.take(v, indices[j], axis=0), tree))
+
+            self._compiled["steps"] = mx.compile(steps, inputs=inputs, outputs=state)
         return self._compiled["step"], self._compiled["log"]
 
     def perform_step(self, step: int, batch: Batch) -> None:
