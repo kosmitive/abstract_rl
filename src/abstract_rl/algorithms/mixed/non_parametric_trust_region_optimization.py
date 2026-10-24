@@ -5,6 +5,7 @@ import mlx.core as mx
 import numpy as np
 
 from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.metal_kernels import temperature_dual_adam
 from abstract_rl.misc.mixed import on_gpu
 
 
@@ -82,7 +83,8 @@ def find_optimal_temperature(
 ) -> mx.array:
     """
     Uses a batch of data to find the optimal temperature eta for reweighting by minimizing the convex dual with Adam.
-    The dual is solved in float64 on the CPU, Metal has no float64, so on the GPU it is solved in float32.
+    The dual is solved in float64 on the CPU, Metal has no float64, so on the GPU it is solved in float32 with the
+    Metal kernels of temperature_dual_adam.
     :param q_tensor: A tensor of [NxA] with N states and A actions.
     :param eps: The eps to use.
     :param eta0: The initial eta
@@ -112,12 +114,15 @@ def find_optimal_temperature(
     obj = log_eta * 0
     max_q = mx.max(q_tensor, axis=1, keepdims=True)
     q_centered, mean_max_q = q_tensor - max_q, mx.mean(max_q)
-    steps = mx.arange(1, max_steps + 1, dtype=dtype)
-
-    # the steps run in a few compiled calls, which are built lazily and evaluated at once
-    for c in range(0, max_steps, DUAL_STEPS_PER_CALL):
-        chunk = steps[c : c + DUAL_STEPS_PER_CALL]
-        log_eta, m, v, obj = _adam_dual_steps(q_centered, mean_max_q, eps_a, lr_a, log_eta, m, v, obj, chunk)
+    if on_gpu():
+        # two Metal dispatches per step, the compiled steps spend most of their time encoding small operations
+        log_eta, obj = temperature_dual_adam(q_centered, mean_max_q, eps, lr, eta0_f, max_steps)
+    else:
+        # the steps run in a few compiled calls, which are built lazily and evaluated at once
+        steps = mx.arange(1, max_steps + 1, dtype=dtype)
+        for c in range(0, max_steps, DUAL_STEPS_PER_CALL):
+            chunk = steps[c : c + DUAL_STEPS_PER_CALL]
+            log_eta, m, v, obj = _adam_dual_steps(q_centered, mean_max_q, eps_a, lr_a, log_eta, m, v, obj, chunk)
     mx.eval(log_eta, obj)
     eta_v = math.exp(cast(float, log_eta.item()))
 

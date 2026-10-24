@@ -1,4 +1,4 @@
-"""The chunked compiled temperature dual against the step-by-step version it replaced."""
+"""The chunked compiled temperature dual (CPU) and the Metal kernels (GPU) against the step-by-step version."""
 
 import math
 
@@ -37,7 +37,7 @@ def _step_by_step(q: mx.array, eps: float, eta0: float, lr: float, max_steps: in
 
 @pytest.mark.parametrize("device", ["cpu", "gpu"])
 @pytest.mark.parametrize("max_steps", [200, 45])
-def test_chunked_dual_is_bit_identical_to_step_by_step(device: str, max_steps: int):
+def test_dual_matches_step_by_step(device: str, max_steps: int):
     if device == "gpu" and not mx.metal.is_available():
         pytest.skip("needs MLX with Metal (Apple silicon)")
     rng = np.random.default_rng(3)
@@ -49,6 +49,10 @@ def test_chunked_dual_is_bit_identical_to_step_by_step(device: str, max_steps: i
             expected = np.float32(_step_by_step(q, 0.1, eta0, 0.05, max_steps, dtype))
             eta = find_optimal_temperature(q, 0.1, eta0, 0.05, max_steps)
             assert eta.dtype == mx.float32 and eta.shape == (1,)
-            assert np.array(eta)[0] == expected
+            if device == "cpu":
+                assert np.array(eta)[0] == expected
+            else:
+                # the kernels sum in another order than the compiled graph
+                np.testing.assert_allclose(np.array(eta)[0], expected, rtol=1e-5)
     finally:
         set_device("cpu")
