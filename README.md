@@ -38,9 +38,10 @@ swing-up and balance).
 |---|---|---|---|---|---|---|
 | Pendulum-v1 (≥ -150) | TRPO | CPU | 5 | 800,000 | -124.5 ± 1.2 | 5/5 |
 | Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.9 ± 2.8 | 5/5 |
+| HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8012.9 ± 862.4 | 5/5 |
 
-MountainCarContinuous-v0, InvertedPendulum-v5, InvertedDoublePendulum-v5 and HalfCheetah-v5 have not been trained
-with MLX yet. The per-seed returns and the throughput are in [MLX port (experiment)](#mlx-port-experiment).
+MountainCarContinuous-v0, InvertedPendulum-v5, InvertedDoublePendulum-v5 and TRPO on HalfCheetah-v5 have not been
+trained with MLX yet. The per-seed returns and the throughput are in [MLX port (experiment)](#mlx-port-experiment).
 
 Tuned settings (`conf/tune/`):
 
@@ -272,12 +273,19 @@ speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -
 The wall time for 800k steps is about 2 min for TRPO (CPU) and about 8 min for MPO (GPU, two seeds at a time; 11 min
 with speedups 1–2 and 44 min before the speedups).
 
+### Learning (HalfCheetah-v5, MPO, 1.2M steps, 5 seeds, greedy return of the final policy over 20 episodes)
+
+The configuration of the repository (1,200 epochs of 1,000 steps), on the GPU (`auto`) with speedups 1–4 (86a0cea):
+**8012.9 ± 862.4, 5/5 solved** (threshold 4800). Per seed (seeds 1–5): 7694.1, 6725.0, 8070.0, 8860.6, 8714.9. The
+smoothed training return first reaches 4800 after 204,000 steps (median over the seeds; 132,000–354,000). The wall
+time is 14 min per seed with three seeds at a time and 11.5 min with two at a time.
+
 ### Verdict
 
 - **The MLX port is a drop-in for the implementation on `main`.**
   - It keeps the architecture.
   - It matches `main` numerically on the same weights and batches (parity tests).
-  - It learns: Pendulum 5/5 for both algorithms.
+  - It learns: Pendulum 5/5 for both algorithms and HalfCheetah-v5 5/5 for MPO.
   - MPO with the full memory runs at 2,135 steps/s on the GPU (Pendulum-v1, 2,095 on HalfCheetah-v5), and TRPO at
     6,357 steps/s on the CPU.
 - **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
