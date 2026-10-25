@@ -23,12 +23,19 @@ from abstract_rl.scripts.hydra_conf import load, run_dict
 from abstract_rl.scripts.mpo_pendulum import run_config as mpo_config
 
 # Two epochs of TestPointMass MPO captured on this commit's parent with the flag absent (CPU, seed 1). The CPU
-# kernels of MLX round differently on Linux and macOS, so each platform has its own bit-exact reference.
+# kernels of MLX round differently across platforms and x86 CPUs. The macOS reference is bit-exact on Apple
+# silicon; the Linux one was captured on one x86 machine and is compared within float32 noise elsewhere.
 _GOLDENS = {
     "linux": [[-28.301695227131603, 17.43803590418358], [-13.245070878901272, 5.277140340529596]],
     "darwin": [[-28.301695621975195, 17.438036014413395], [-13.245070751384018, 5.277140248044079]],
 }
 _GOLDEN = np.array(_GOLDENS.get(sys.platform, _GOLDENS["linux"]), dtype=np.float64)
+
+
+def _matches_golden(returns: np.ndarray, golden: np.ndarray) -> bool:
+    if sys.platform == "darwin":
+        return bool(np.array_equal(returns, golden))
+    return bool(np.allclose(returns, golden, rtol=1e-5, atol=0.0))
 
 
 def _fingerprint(module: object) -> np.ndarray:
@@ -130,9 +137,9 @@ def test_default_path_matches_the_synchronous_epoch(tmp_path, monkeypatch):
     one = run_mpo_non_parametric(_conf(tmp_path / "off1", num_epochs=1))
     flagged = run_mpo_non_parametric(_conf(tmp_path / "on1", num_epochs=1, stale_policy_rollout=True))
     two = run_mpo_non_parametric(_conf(tmp_path / "off2"))
-    assert np.array_equal(one, _GOLDEN[:1])
+    assert _matches_golden(one, _GOLDEN[:1])
     assert np.array_equal(flagged, one)
-    assert np.array_equal(two, _GOLDEN)
+    assert _matches_golden(two, _GOLDEN)
 
 
 def test_host_rollout_runs_on_a_thread_until_join(make_pendulum_mc):
@@ -196,8 +203,8 @@ def test_stale_rollout_uses_the_policy_from_before_the_m_step(tmp_path, monkeypa
     monkeypatch.setattr(RolloutEnvWrapper, "execute_policy", record)
     returns = run_mpo_non_parametric(_conf(tmp_path, stale_policy_rollout=True))
     assert returns.shape == (2, 2) and np.all(np.isfinite(returns))
-    assert np.array_equal(returns[0], _GOLDEN[0])
-    assert not np.array_equal(returns, _GOLDEN)
+    assert _matches_golden(returns[0], _GOLDEN[0])
+    assert not _matches_golden(returns, _GOLDEN)
     assert len(recorded) == 2
     assert recorded[0]["frozen"] is None
     assert np.array_equal(recorded[0]["policy"], recorded[0]["live"])
