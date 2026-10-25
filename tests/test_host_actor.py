@@ -42,6 +42,10 @@ CASES = [
     ("TestPointMass-v0", DiagonalGaussianPolicy, {"policy_squash": False, "policy_cov_type": "single"}),
     ("TestPointMass-v0", DiagonalGaussianPolicy, {"policy_squash": True, "policy_cov_type": "fixed"}),
     ("HalfCheetah-v5", DiagonalGaussianPolicy, {"policy_squash": True, "policy_structure": [64, 64]}),
+    ("Pendulum-v1", UnivariateGaussianPolicy, {"policy_squash": True, "policy_cov_type": "single"}),
+    ("Pendulum-v1", UnivariateGaussianPolicy, {"policy_squash": False, "policy_cov_type": "single"}),
+    ("MountainCarContinuous-v0", UnivariateGaussianPolicy, {"policy_squash": True, "policy_cov_type": "fixed"}),
+    ("InvertedDoublePendulum-v5", UnivariateGaussianPolicy, {"policy_squash": True, "policy_cov_type": "single"}),
 ]
 
 
@@ -75,7 +79,7 @@ def test_unsupported_configurations_use_act(make_pendulum_mc):
     assert state_cov.host_actor() is None
     _, elu = _policy(make_pendulum_mc, "TestPointMass-v0", DiagonalGaussianPolicy, policy_act_fn=["elu", "elu", "none"])
     assert elu.host_actor() is None
-    _, univariate = _policy(make_pendulum_mc, "Pendulum-v1", UnivariateGaussianPolicy)
+    _, univariate = _policy(make_pendulum_mc, "Pendulum-v1", UnivariateGaussianPolicy, policy_cov_type="state")
     assert univariate.host_actor() is None
     if mx.metal.is_available():
         _, policy = _policy(make_pendulum_mc, "TestPointMass-v0", DiagonalGaussianPolicy)
@@ -84,14 +88,17 @@ def test_unsupported_configurations_use_act(make_pendulum_mc):
 
 
 @darwin
-def test_rollout_with_and_without_host_actor(make_pendulum_mc):
+@pytest.mark.parametrize(
+    "env,cls", [("TestPointMass-v0", DiagonalGaussianPolicy), ("Pendulum-v1", UnivariateGaussianPolicy)]
+)
+def test_rollout_with_and_without_host_actor(make_pendulum_mc, env, cls):
     trajectories = []
     for host in (True, False):
         mx.random.seed(2)
         mc, policy = _policy(
             make_pendulum_mc,
-            "TestPointMass-v0",
-            DiagonalGaussianPolicy,
+            env,
+            cls,
             policy_squash=True,
             policy_act_fn=["tanh", "tanh", "none"],
             env_host_policy=host,

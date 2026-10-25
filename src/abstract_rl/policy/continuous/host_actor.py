@@ -6,7 +6,8 @@ The host actor reproduces the compiled ``ContinuousPolicy.act`` of the CPU strea
 * the noise uses the same keys as ``mx.random.normal``: the key chain of ``mx.random.split`` and the counters of the
   random bits are the threefry hash of MLX, the conversion of the bits into normal samples is the compiled MLX
   function, evaluated once for a block of steps,
-* the matrix products are the same BLAS calls (one row at a time), the tanh of the hidden layers is the vForce
+* the matrix products are the same BLAS calls (one row at a time; a layer with one output, the mean of a univariate
+  policy, calls ``cblas_sgemm`` directly, NumPy would use a dot product), the tanh of the hidden layers is the vForce
   ``vvtanhf`` of MLX and the tanh of the squashing is the scalar ``tanhf`` MLX uses in compiled kernels for fewer
   than 8 elements,
 * the log likelihoods are computed with the compiled MLX log density for the whole episode at its end.
@@ -119,6 +120,10 @@ class _Accelerate:
         self.lib = ctypes.CDLL("/System/Library/Frameworks/Accelerate.framework/Accelerate")
         self.lib.vvtanhf.restype = None
         self.lib.vvtanhf.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+        self.lib.cblas_sgemm.restype = None
+        # order, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc
+        mat: list[Any] = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.cblas_sgemm.argtypes = [*([ctypes.c_int] * 6), ctypes.c_float, *mat, *mat, ctypes.c_float, *mat]
         self.libm = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
         self.libm.tanhf.restype = ctypes.c_float
         self.libm.tanhf.argtypes = [ctypes.c_float]
@@ -128,6 +133,16 @@ class _Accelerate:
         out = np.empty_like(x)
         n = ctypes.c_int(x.size)
         self.lib.vvtanhf(out.ctypes.data, x.ctypes.data, ctypes.byref(n))
+        return out
+
+    def matmul_t(self, x: np.ndarray, w: np.ndarray) -> np.ndarray:
+        """x [1, K] @ w.T for w [N, K] with ``cblas_sgemm`` (row major, w transposed), the call of MLX."""
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        out = np.empty((x.shape[0], w.shape[0]), np.float32)
+        m, k = x.shape
+        n = w.shape[0]
+        # CblasRowMajor = 101, CblasNoTrans = 111, CblasTrans = 112
+        self.lib.cblas_sgemm(101, 111, 112, m, n, k, 1.0, x.ctypes.data, k, w.ctypes.data, k, 0.0, out.ctypes.data, n)
         return out
 
     def scalar_tanh(self, x: np.ndarray) -> np.ndarray:
@@ -196,7 +211,8 @@ class HostActor:
         h = state
         last = len(self._weights) - 1
         for i, (w, b) in enumerate(self._weights):
-            h = h @ w.T + b
+            # a single output column is a dot product in NumPy, MLX calls sgemm
+            h = (self._acc.matmul_t(h, w) if w.shape[0] == 1 else h @ w.T) + b
             if i < last and self._hidden_tanh[i]:
                 h = self._acc.vtanh(h)
         mu = h.reshape(-1)
@@ -227,7 +243,7 @@ def host_actor(policy: Any, sample_shape: tuple[int, ...], squash: Squash | None
     """Host actor of a gaussian policy with a state independent standard deviation, None if it is not supported.
 
     Supported (and tested to be bit identical): macOS, the default stream on the CPU, a network without layer norm
-    whose hidden activations are tanh or none and whose output has no activation, cov_type single or fixed, 2 to 7
+    whose hidden activations are tanh or none and whose output has no activation, cov_type single or fixed, 1 to 7
     action dimensions.
     """
     net = policy.network
@@ -235,8 +251,7 @@ def host_actor(policy: Any, sample_shape: tuple[int, ...], squash: Squash | None
     num_layers = len(net.layers)
     if sys.platform != "darwin" or mx.default_device() != mx.cpu or net.layer_norm:
         return None
-    # a product with a single output column is not the same BLAS call in NumPy, so at least two action dimensions
-    if policy.cov_type not in ("single", "fixed") or not 2 <= int(np.prod(sample_shape)) < 8:
+    if policy.cov_type not in ("single", "fixed") or not 1 <= int(np.prod(sample_shape)) < 8:
         return None
     if len(acts) != num_layers or any(isinstance(a, list) for a in acts) or not isinstance(acts[-1], Identity):
         return None

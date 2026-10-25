@@ -16,6 +16,7 @@ from abstract_rl.policy.continuous.continuous_policy import (
     normal_kl,
     normal_log_prob,
 )
+from abstract_rl.policy.continuous.host_actor import HostActor, host_actor
 
 # pre-squash samples are limited to |u| <= 5, so tanh stays invertible in float32
 SQUASH_U_MAX = 5.0
@@ -211,6 +212,11 @@ class UnivariateGaussianPolicy(ContinuousPolicy):
         if self.squash:
             samples = self.action_scale * mx.tanh(mx.clip(samples, -SQUASH_U_MAX, SQUASH_U_MAX))
         return samples
+
+    def host_actor(self) -> HostActor | None:
+        scale = np.array([self.action_scale], np.float32)
+        squash = (np.zeros(1, np.float32), scale, SQUASH_U_MAX) if self.squash else None
+        return host_actor(self, (1, 1), squash)
 
     def clone(self) -> "UnivariateGaussianPolicy":
         """
