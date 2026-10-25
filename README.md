@@ -63,6 +63,26 @@ Tuned settings (`conf/tune/`):
   fixed number of epochs and finishes the running episode.
 - Seeds are fixed, but the results are not bit-reproducible across machines or MLX devices.
 
+## Performance
+
+Training times of the runs in [Results](#results) on a MacBook Pro with an Apple M3 Max (48 GB), macOS 26.7.1, MLX
+0.32.4, Python 3.13.12, MuJoCo 3.17.0 and Gymnasium 1.4.0, measured on 2026-10-25 at 34f8be9. Wall-clock time is per
+seed and includes the start-up; an epoch is 1,000 environment steps for MPO and 4,000 for TRPO.
+
+| Environment | Algorithm | MLX device | Steps | Wall-clock, 1 seed at a time | ms/epoch | Steps/s | Wall-clock, 4 seeds at a time | Steps/s per seed |
+|---|---|---|---|---|---|---|---|---|
+| Pendulum-v1 | TRPO | CPU | 800,000 | 1.4 min (86 s) | 428 | 9,341 | 1.8 min (106 s) | 7,560 |
+| Pendulum-v1 | MPO | GPU | 800,000 | 3.4 min (207 s) | 258 | 3,872 | 6.9 min (410–415 s) | 1,940 |
+| HalfCheetah-v5 | MPO | GPU | 1,200,000 | 5.2 min (313 s) | 260 | 3,840 | 12.5 min (746–751 s) | 1,600 |
+
+*1 seed at a time* is seed 1 alone; *4 seeds at a time* is seeds 2–5 run in parallel (the four runs share the GPU, so
+each one is slower, but together they reach about 6,400 steps/s on HalfCheetah). *ms/epoch* is the wall-clock time
+divided by the number of epochs.
+
+Compared with the PyTorch implementation on `main` (eb41282, CPU, measured on 2026-10-24 on the same Mac with the same
+benchmark script, median of epochs 50–59), a HalfCheetah MPO epoch takes 6.19 s with PyTorch (161 steps/s) and 0.23 s
+with MLX (c37bd7b), about 27× faster.
+
 ## Usage
 
 ```bash
