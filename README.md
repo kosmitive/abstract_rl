@@ -38,16 +38,33 @@ swing-up and balance).
 |---|---|---|---|---|---|---|---|
 | Pendulum-v1 (≥ -150) | TRPO | CPU | 5 | 800,000 | -124.5 ± 1.2 | 5/5 | 188,000 |
 | Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.7 ± 2.0 | 5/5 | 36,000 |
+| MountainCarContinuous-v0 (≥ 90) | TRPO | CPU | 5 | 400,923 | 94.9 ± 0.3 | 5/5 | 84,735 |
+| MountainCarContinuous-v0 (≥ 90) | MPO | GPU | 5 | 400,027 | 93.6 ± 0.0 | 5/5 | 34,000 |
+| InvertedPendulum-v5 (≥ 950) | TRPO | CPU | 5 | 150,930 | 1000.0 ± 0.0 | 5/5 | 27,000 |
+| InvertedPendulum-v5 (≥ 950) | MPO | GPU | 5 | 150,401 | 1000.0 ± 0.0 | 5/5 | 20,000 |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO | CPU | 5 | 605,548 | 7904.9 ± 3196.3 | 4/5 | 482,962 |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO | GPU | 5 | 600,488 | 8367.9 ± 1975.5 | 3/5 | 63,074 |
+| HalfCheetah-v5 (≥ 4800) | TRPO | CPU | 5 | 1,200,000 | 4113.4 ± 1579.3 | 2/5 | 837,000 (2/5 seeds) |
 | HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8065.0 ± 913.3 | 5/5 | 192,000 |
 
-*Steps to threshold* is the median over the seeds of the first step at which the smoothed training return reaches the
-threshold (`scripts.compare`). All 15 runs were repeated on 2026-10-25 with the current code (34f8be9), and every seed
-reproduced its greedy return above exactly.
+*Steps* is the median over the seeds of the environment steps of the run. *Steps to threshold* is the median over the
+seeds of the first step at which the smoothed training return reaches the threshold (`scripts.compare`), over the seeds
+that reach it. All 50 runs were trained on 2026-10-25 with the current training code (34f8be9); the 15 Pendulum-v1 and
+HalfCheetah-v5 MPO runs reproduced every seed's greedy return of the earlier runs exactly.
 
 ![Training return over environment steps, mean ± std over 5 seeds; the dotted line is the threshold](docs/benchmark.png)
 
-MountainCarContinuous-v0, InvertedPendulum-v5, InvertedDoublePendulum-v5 and TRPO on HalfCheetah-v5 have not been
-trained with MLX yet. The per-seed returns and the throughput are in [MLX port (experiment)](#mlx-port-experiment).
+Per seed (seeds 1–5), greedy return:
+
+- Pendulum-v1: TRPO -123.4, -124.2, -126.5, -124.4, -124.1; MPO -120.9, -120.9, -122.3, -124.9, -124.8.
+- MountainCarContinuous-v0: TRPO 95.1, 95.0, 94.7, 94.6, 95.2; MPO 93.6, 93.6, 93.6, 93.5, 93.6.
+- InvertedPendulum-v5: TRPO and MPO 1000.0 for every seed.
+- InvertedDoublePendulum-v5: TRPO 9335.9, 9333.3, 2187.1, 9334.7, 9333.4; MPO 8952.6, 9357.1, 4847.3, 9346.2, 9336.4.
+  The training return of MPO reaches the threshold after about 63k steps but then oscillates around it, so the final
+  policy of seeds 1 and 3 misses it.
+- HalfCheetah-v5: TRPO 3840.0, 3707.4, 5509.0, 5695.9, 1814.5; MPO 7786.3, 6977.4, 9049.4, 8974.9, 7537.1.
+
+The throughput is in [Performance](#performance) and [MLX port (experiment)](#mlx-port-experiment).
 
 Tuned settings (`conf/tune/`):
 
@@ -372,7 +389,8 @@ With speedups 1–4 (86a0cea): 8012.9 ± 862.4, 5/5 solved; per seed 7694.1, 672
 - **The MLX port is a drop-in for the implementation on `main`.**
   - It keeps the architecture.
   - It matches `main` numerically on the same weights and batches (parity tests).
-  - It learns: Pendulum 5/5 for both algorithms and HalfCheetah-v5 5/5 for MPO.
+  - It learns: Pendulum-v1, MountainCarContinuous-v0 and InvertedPendulum-v5 5/5 for both algorithms,
+    InvertedDoublePendulum-v5 4/5 (TRPO) and 3/5 (MPO), HalfCheetah-v5 5/5 for MPO and 2/5 for TRPO.
   - MPO with the full memory runs at 3,891 steps/s on the GPU (Pendulum-v1, 4,301 on HalfCheetah-v5), and TRPO at
     6,357 steps/s on the CPU.
 - **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
