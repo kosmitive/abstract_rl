@@ -25,6 +25,7 @@ from numpy import ndarray
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import EngFormatter
 
 from abstract_rl.scripts.hydra_conf import environments, success
 from abstract_rl.scripts.hydra_conf import steps as steps_budget
@@ -161,6 +162,7 @@ def plot(runs: Runs, envs: Sequence[str], output: str) -> None:
         ax.axhline(success()[env], color="gray", ls=":", lw=1)
         ax.set_title(env)
         ax.set_xlabel("environment steps")
+        ax.xaxis.set_major_formatter(EngFormatter(sep=""))  # 200k, 1.2M: no overlapping tick labels
         ax.set_ylabel("training return")
         ax.grid(alpha=0.3)
     axes.flat[0].legend(fontsize=7, loc="lower right")
