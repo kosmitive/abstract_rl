@@ -34,11 +34,17 @@ seeded evaluation episodes with the policy mean (final policy), averaged over se
 seeds whose greedy return reaches the threshold (Gymnasium reward threshold; Pendulum-v1 has none, -150 corresponds to
 swing-up and balance).
 
-| Environment | Algorithm | MLX device | Seeds | Steps | Greedy return (mean ± std) | Solved |
-|---|---|---|---|---|---|---|
-| Pendulum-v1 (≥ -150) | TRPO | CPU | 5 | 800,000 | -124.5 ± 1.2 | 5/5 |
-| Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.7 ± 2.0 | 5/5 |
-| HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8065.0 ± 913.3 | 5/5 |
+| Environment | Algorithm | MLX device | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
+|---|---|---|---|---|---|---|---|
+| Pendulum-v1 (≥ -150) | TRPO | CPU | 5 | 800,000 | -124.5 ± 1.2 | 5/5 | 188,000 |
+| Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.7 ± 2.0 | 5/5 | 36,000 |
+| HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8065.0 ± 913.3 | 5/5 | 192,000 |
+
+*Steps to threshold* is the median over the seeds of the first step at which the smoothed training return reaches the
+threshold (`scripts.compare`). All 15 runs were repeated on 2026-10-25 with the current code (34f8be9), and every seed
+reproduced its greedy return above exactly.
+
+![Training return over environment steps, mean ± std over 5 seeds; the dotted line is the threshold](docs/benchmark.png)
 
 MountainCarContinuous-v0, InvertedPendulum-v5, InvertedDoublePendulum-v5 and TRPO on HalfCheetah-v5 have not been
 trained with MLX yet. The per-seed returns and the throughput are in [MLX port (experiment)](#mlx-port-experiment).
@@ -327,8 +333,8 @@ With speedups 1–10, the synchronized epoch splits into the rollout (0.060 s), 
 
 Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.9, -120.9, -122.3, -124.9, -124.8, with
 speedups 1–4 -120.4, -120.6, -125.8, -125.9, -121.7, with speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -120.9, -120.6, -122.3, -124.5, -123.1.
-The wall time for 800k steps is about 2 min for TRPO (CPU) and about 3 min for MPO with speedups 1–10 (GPU, one seed;
-7 min with four seeds at a time). It was 8 min with speedups 1–4 (two seeds at a time), 11 min with speedups 1–2 and
+The wall time for 800k steps is 1.4 min for TRPO (CPU) and 3.4 min for MPO with speedups 1–10 (GPU), one seed at a
+time; with four seeds at a time it is 1.8 min and 6.9 min (see [Performance](#performance)). It was 8 min with speedups 1–4 (two seeds at a time), 11 min with speedups 1–2 and
 44 min before the speedups.
 
 ### Learning (HalfCheetah-v5, MPO, 1.2M steps, 5 seeds, greedy return of the final policy over 20 episodes)
@@ -336,7 +342,7 @@ The wall time for 800k steps is about 2 min for TRPO (CPU) and about 3 min for M
 The configuration of the repository (1,200 epochs of 1,000 steps), on the GPU (`auto`) with speedups 1–10 (c37bd7b):
 **8065.0 ± 913.3, 5/5 solved** (threshold 4800). Per seed (seeds 1–5): 7786.3, 6977.4, 9049.4, 8974.9, 7537.1. The
 smoothed training return first reaches 4800 after 192,000 steps (median over the seeds; 120,000–318,000). The wall
-time is 8 min per seed with three seeds at a time and 6 min with two at a time.
+time is 5.2 min for one seed at a time and 12.5 min per seed with four seeds at a time (see [Performance](#performance)).
 
 With speedups 1–4 (86a0cea): 8012.9 ± 862.4, 5/5 solved; per seed 7694.1, 6725.0, 8070.0, 8860.6, 8714.9; 4800 after
 204,000 steps (132,000–354,000); 14 min per seed with three seeds at a time and 11.5 min with two at a time.
