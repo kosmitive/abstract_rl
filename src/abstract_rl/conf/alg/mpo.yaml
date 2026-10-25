@@ -10,6 +10,14 @@ env_render: false
 env_rollout_on_cpu: true
 # sample the rollout actions with NumPy where that gives the same actions and random keys as MLX: auto or false
 env_host_policy: auto
+# Opt-in algorithm change. False (default) collects with the latest policy after the previous M-step and is
+# bit-identical to that synchronous epoch. True freezes the policy before this epoch's M-step and collects the
+# next epoch's trajectories from that snapshot while annotation, the E-step, the M-step and Retrace run. The
+# behavior policy is then one update behind. With the NumPy host actor the snapshot is sampled on a thread, so
+# the M-step can update the live parameters; without it the same stale policy is rolled out on the main thread
+# when that collection is joined. On the current HalfCheetah split the rollout is shorter than the learner and
+# already overlaps the background Q fit, so this moves the rollout onto the learner and uncovers the Q fit.
+stale_policy_rollout: false
 policy_structure: [64, 64]
 policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false
