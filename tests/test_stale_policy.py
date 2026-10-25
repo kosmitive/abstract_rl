@@ -1,6 +1,7 @@
 """The opt-in stale-policy rollout is one update behind; the default epoch is unchanged."""
 
 import copy
+import sys
 
 import mlx.core as mx
 import numpy as np
@@ -21,11 +22,13 @@ from abstract_rl.run.run_mpo_non_parametric import run_mpo_non_parametric
 from abstract_rl.scripts.hydra_conf import load, run_dict
 from abstract_rl.scripts.mpo_pendulum import run_config as mpo_config
 
-# Two epochs of TestPointMass MPO captured on this commit's parent with the flag absent (CPU, seed 1).
-_GOLDEN = np.array(
-    [[-28.301695227131603, 17.43803590418358], [-13.245070878901272, 5.277140340529596]],
-    dtype=np.float64,
-)
+# Two epochs of TestPointMass MPO captured on this commit's parent with the flag absent (CPU, seed 1). The CPU
+# kernels of MLX round differently on Linux and macOS, so each platform has its own bit-exact reference.
+_GOLDENS = {
+    "linux": [[-28.301695227131603, 17.43803590418358], [-13.245070878901272, 5.277140340529596]],
+    "darwin": [[-28.301695621975195, 17.438036014413395], [-13.245070751384018, 5.277140248044079]],
+}
+_GOLDEN = np.array(_GOLDENS.get(sys.platform, _GOLDENS["linux"]), dtype=np.float64)
 
 
 def _fingerprint(module: object) -> np.ndarray:
@@ -198,10 +201,11 @@ def test_stale_rollout_uses_the_policy_from_before_the_m_step(tmp_path, monkeypa
     assert len(recorded) == 2
     assert recorded[0]["frozen"] is None
     assert np.array_equal(recorded[0]["policy"], recorded[0]["live"])
-    assert not np.array_equal(recorded[1]["live"], recorded[0]["live"])
     frozen = recorded[1]["frozen"]
     if frozen is None:
-        # cloned module: the rollout argument is the snapshot, not the live policy
+        # cloned module: rolled out at the join, after the M-step changed the live policy
+        assert not np.array_equal(recorded[1]["live"], recorded[0]["live"])
+        # the rollout argument is the snapshot, not the live policy
         assert np.array_equal(recorded[1]["policy"], recorded[0]["policy"])
         assert not np.array_equal(recorded[1]["policy"], recorded[1]["live"])
     else:
