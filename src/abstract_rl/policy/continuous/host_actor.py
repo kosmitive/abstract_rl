@@ -156,6 +156,9 @@ class HostActor:
         squash: Squash | None,
         sample_shape: tuple[int, ...],
         log_prob: Any,
+        key: tuple[int, int] | None = None,
+        noise: np.ndarray | None = None,
+        cursor: list[int] | None = None,
     ) -> None:
         """
         :param weights: The (weight [out, in], bias [out]) of every linear layer.
@@ -175,13 +178,29 @@ class HostActor:
         self._sample_shape = sample_shape
         self._log_prob = log_prob
         self._dim = int(np.prod(sample_shape))
-        k0, k1 = (int(k) for k in np.array(cast(Any, mx.random.state)[0]))
-        self._key = (k0, k1)
-        self._noise = np.empty((0, self._dim), np.float32)
         self._states = np.empty((0, 2), np.uint32)
-        self._pos = 0
         self._actions: list[np.ndarray] = []
         self._stats: list[np.ndarray] = []
+        # A preset buffer is the noise of a frozen snapshot. It does not read or write the global key: the M-step
+        # owns that stream while this actor runs on another thread.
+        self._preset = noise is not None
+        self._cursor = cursor
+        if noise is not None:
+            if cursor is None:
+                raise ValueError("preset noise needs a shared cursor")
+            self._noise = noise
+            self._pos = cursor[0]
+            self._commit_key = False
+            self._key = key if key is not None else (0, 0)
+        else:
+            self._commit_key = key is None
+            if key is None:
+                k0, k1 = (int(k) for k in np.array(cast(Any, mx.random.state)[0]))
+                self._key = (k0, k1)
+            else:
+                self._key = key
+            self._noise = np.empty((0, self._dim), np.float32)
+            self._pos = 0
 
     def _draw(self) -> None:
         subs, self._states = split_chain(self._key, BLOCK)
@@ -192,6 +211,8 @@ class HostActor:
     def __call__(self, state: np.ndarray) -> np.ndarray:
         """The sampled action [A] (float32) for the state [1, Ds] (float32)."""
         if self._pos == self._noise.shape[0]:
+            if self._preset:
+                raise RuntimeError("frozen policy snapshot exhausted its action noise")
             self._draw()
         h = state
         last = len(self._weights) - 1
@@ -202,6 +223,8 @@ class HostActor:
         mu = h.reshape(-1)
         u = mu + self._sigma * self._noise[self._pos]
         self._pos += 1
+        if self._cursor is not None:
+            self._cursor[0] = self._pos
         if self._squash is not None:
             center, scale, u_max = self._squash
             u = center + scale * self._acc.scalar_tanh(np.clip(u, np.float32(-u_max), np.float32(u_max)))
@@ -211,7 +234,7 @@ class HostActor:
 
     def finish(self) -> np.ndarray:
         """Set the MLX key to the one after the last step and return the log likelihoods of the episode [T]."""
-        if self._pos > 0:
+        if self._commit_key and self._pos > 0:
             k0, k1 = (int(k) for k in self._states[self._pos - 1])
             mx.random.seed((k0 << 32) | k1)
         if not self._actions:
@@ -223,13 +246,68 @@ class HostActor:
             return np.array(self._log_prob(mx.array(actions), mx.array(stats))).reshape(-1)
 
 
-def host_actor(policy: Any, sample_shape: tuple[int, ...], squash: Squash | None) -> HostActor | None:
-    """Host actor of a gaussian policy with a state independent standard deviation, None if it is not supported.
+class FrozenHost:
+    """NumPy copy of a supported gaussian policy and the noise of one rollout, shared by every episode.
 
-    Supported (and tested to be bit identical): macOS, the default stream on the CPU, a network without layer norm
-    whose hidden activations are tanh or none and whose output has no activation, cov_type single or fixed, 2 to 7
-    action dimensions.
+    The weights and the noise are taken before the M-step. Later updates of the live policy do not change them, so a
+    rollout thread can sample while the learner writes the live parameters.
     """
+
+    def __init__(
+        self,
+        weights: list[tuple[np.ndarray, np.ndarray]],
+        hidden_tanh: list[bool],
+        sigma: np.ndarray,
+        squash: Squash | None,
+        sample_shape: tuple[int, ...],
+        log_prob: Any,
+        noise: np.ndarray,
+        key: tuple[int, int],
+    ) -> None:
+        self.weights = weights
+        self._hidden_tanh = hidden_tanh
+        self._sigma = sigma
+        self._squash = squash
+        self._sample_shape = sample_shape
+        self._log_prob = log_prob
+        self._noise = noise
+        self.key = key
+        self._cursor = [0]
+        self._actors: list[HostActor] = []
+
+    def spawn(self) -> HostActor:
+        """An actor for the next episode. Episodes share the noise cursor and do not touch the global MLX key."""
+        actor = HostActor(
+            self.weights,
+            self._hidden_tanh,
+            self._sigma,
+            self._squash,
+            self._sample_shape,
+            self._log_prob,
+            key=self.key,
+            noise=self._noise,
+            cursor=self._cursor,
+        )
+        self._actors.append(actor)
+        return actor
+
+    def materialize(self, trajectories: list[Any]) -> None:
+        """Write the log likelihoods of every episode. Call this on the main thread, after the rollout has joined.
+
+        The density uses the stored means and the snapshotted standard deviation, not the live network, so it stays
+        the likelihood of the frozen policy after the M-step has replaced the parameters.
+        """
+        if len(trajectories) != len(self._actors):
+            raise RuntimeError(f"frozen rollout has {len(self._actors)} episodes but {len(trajectories)} trajectories")
+        for traj, actor in zip(trajectories, self._actors, strict=True):
+            lls = np.asarray(actor.finish(), dtype=traj.log_likelihoods.dtype).reshape(traj.log_likelihoods.shape)
+            traj.log_likelihoods[:] = lls
+
+
+def _host_parts(
+    policy: Any, sample_shape: tuple[int, ...]
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[bool], np.ndarray, Any] | None:
+    """Numpy weights, hidden tanh flags, sigma and the compiled log density, or None if the host actor cannot run."""
     net = policy.network
     acts = net.act_fn
     num_layers = len(net.layers)
@@ -253,4 +331,35 @@ def host_actor(policy: Any, sample_shape: tuple[int, ...], squash: Squash | None
 
         fns["log_prob"] = mx.compile(log_prob, inputs=[policy.state])
     hidden_tanh = [isinstance(a, nn.Tanh) for a in acts[:-1]]
-    return HostActor(weights, hidden_tanh, sigma, squash, sample_shape, fns["log_prob"])
+    return weights, hidden_tanh, sigma, fns["log_prob"]
+
+
+def host_actor(policy: Any, sample_shape: tuple[int, ...], squash: Squash | None) -> HostActor | None:
+    """Host actor of a gaussian policy with a state independent standard deviation, None if it is not supported.
+
+    Supported (and tested to be bit identical): macOS, the default stream on the CPU, a network without layer norm
+    whose hidden activations are tanh or none and whose output has no activation, cov_type single or fixed, 2 to 7
+    action dimensions.
+    """
+    parts = _host_parts(policy, sample_shape)
+    if parts is None:
+        return None
+    weights, hidden_tanh, sigma, log_prob = parts
+    return HostActor(weights, hidden_tanh, sigma, squash, sample_shape, log_prob)
+
+
+def frozen_host(
+    policy: Any, sample_shape: tuple[int, ...], squash: Squash | None, key: tuple[int, int], num_actions: int
+) -> FrozenHost | None:
+    """A frozen host actor with ``num_actions`` of noise drawn from ``key``, or None if the host actor is unsupported.
+
+    ``key`` is a private subkey. The global MLX key is not read or written.
+    """
+    parts = _host_parts(policy, sample_shape)
+    if parts is None:
+        return None
+    weights, hidden_tanh, sigma, log_prob = parts
+    dim = int(np.prod(sample_shape))
+    subs, _states = split_chain(key, num_actions)
+    noise = normal_from_bits(random_bits(subs, dim))
+    return FrozenHost(weights, hidden_tanh, sigma, squash, sample_shape, log_prob, noise, key)

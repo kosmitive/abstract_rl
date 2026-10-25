@@ -20,6 +20,7 @@ from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
+from abstract_rl.policy.continuous.policy_snapshot import PendingRollout, behavior_snapshot
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
@@ -121,6 +122,26 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
 
     # if reloaded load old values
     e = 0
+    # true: the next rollout uses a snapshot from before the M-step and, with the host actor, overlaps the learner
+    stale_policy_rollout = bool(conf.get("stale_policy_rollout", False))
+    pending: PendingRollout | None = None
+
+    def schedule_next(epoch_index: int) -> PendingRollout | None:
+        """Start the next epoch's rollout from the policy as it is now, before the M-step updates it."""
+        if not stale_policy_rollout or epoch_index + 1 >= num_epochs:
+            return None
+        done = getattr(env, "total_steps", 0)
+        if max_env_steps and done >= max_env_steps:
+            return None
+        steps = min(epoch_steps, max_env_steps - done) if max_env_steps else epoch_steps
+        if steps <= 0:
+            return None
+        # the last episode may run to max_steps after the batch is one transition short
+        horizon = None if max_steps is None else steps + int(max_steps) - 1
+        # on the rollout stream, so a GPU run still snapshots the CPU host actor
+        with mx.stream(rollout_device):
+            snap = behavior_snapshot(policy, horizon)
+        return PendingRollout(env, policy, snap, max_steps, steps, render, stoch_reward)
 
     def finish_v_step() -> None:
         with cli.header("v-step", 1):
@@ -132,65 +153,80 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     # optional budget of environment steps: stop before num_epochs once reached, the last epoch is shortened
     max_env_steps = conf.get("max_env_steps", None)
     epoch_steps = num_new_steps
-    while e < num_epochs:
-        # initial print of the episode
-        if e % 100 == 0:
-            cli.new_epoch(mc.run_root, e)
-        cli.big_header(f"epoch {e}")
-        if max_env_steps:
-            done_steps = getattr(env, "total_steps", 0)
-            if done_steps >= max_env_steps:
-                break
-            num_new_steps = min(epoch_steps, max_env_steps - done_steps)
+    try:
+        while e < num_epochs:
+            # initial print of the episode
+            if e % 100 == 0:
+                cli.new_epoch(mc.run_root, e)
+            cli.big_header(f"epoch {e}")
+            # a rollout scheduled last epoch already applied this budget; do not drop it
+            if pending is None and max_env_steps:
+                done_steps = getattr(env, "total_steps", 0)
+                if done_steps >= max_env_steps:
+                    break
+                num_new_steps = min(epoch_steps, max_env_steps - done_steps)
 
-        # --------------------------------
-        # test policy
-        # --------------------------------
+            # --------------------------------
+            # test policy
+            # --------------------------------
 
-        # first of all run the deterministic policy afterwards
-        # run the stochastic ones and save them in the memory.
+            # first of all run the deterministic policy afterwards
+            # run the stochastic ones and save them in the memory.
 
-        with cli.header("stochastic evaluation", 1), mx.stream(rollout_device):
-            new_tc = env.execute_policy(
-                policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
-            )
-            tc.merge(new_tc)
-            filter.transform_all(tc)
+            with cli.header("stochastic evaluation", 1), mx.stream(rollout_device):
+                if pending is None:
+                    new_tc = env.execute_policy(
+                        policy, max_steps, num_new_steps, exploration=True, render=render, rew_field_name=stoch_reward
+                    )
+                else:
+                    new_tc = pending.join()
+                    pending = None
+                tc.merge(new_tc)
+                filter.transform_all(tc)
 
-        with cli.header("store model & generate plots", 1):
-            # make and store reward plot
-            res_log = logger.get([stoch_reward], e + 1)
-            rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
-            rew_plot.save(join(mc.plot_root, "performance.png"))
+            with cli.header("store model & generate plots", 1):
+                # make and store reward plot
+                res_log = logger.get([stoch_reward], e + 1)
+                rew_plot.update(*res_log, num_traj)  # type: ignore[call-arg]
+                rew_plot.save(join(mc.plot_root, "performance.png"))
 
-            # the q fit of the last epoch ran during the rollout, the target networks follow it
-            if e > 0:
-                finish_v_step()
+                # the q fit of the last epoch ran during the rollout, the target networks follow it
+                if e > 0:
+                    finish_v_step()
 
-            # save last model and keep it as best model if its epoch return is the highest so far
-            mc.store("last")
-            mc.store_best(float(res_log[0][e, 0]), e)
-            cli.empty().print("last model saved")
+                # save last model and keep it as best model if its epoch return is the highest so far
+                mc.store("last")
+                mc.store_best(float(res_log[0][e, 0]), e)
+                cli.empty().print("last model saved")
 
-        # --------------------------------
-        # calc value fns and policies
-        # --------------------------------
+            # the next rollout samples the policy before the M-step and, with the host actor, runs on a thread
+            # through annotation, the E-step, the M-step and Retrace. The Q fit still starts afterwards and overlaps
+            # whatever of that rollout is left. The flag stays off the synchronous path.
+            if stale_policy_rollout:
+                pending = schedule_next(e)
 
-        with cli.header("e-step", 1):
-            # resample extra actions and q values
-            res.transform_all(tc)
-            rnk.hook()
-            rnk.transform_all(tc)
+            # --------------------------------
+            # calc value fns and policies
+            # --------------------------------
 
-        with cli.header("m-step", 1):
-            alg.perform_mult_steps(policy_opt_size, tc, policy_batch_size)
+            with cli.header("e-step", 1):
+                # resample extra actions and q values
+                res.transform_all(tc)
+                rnk.hook()
+                rnk.transform_all(tc)
 
-        with cli.header("v-step", 1):
-            ret.transform_all(tc)
-            # the rollout does not need the q function, so its fit finishes in the next epoch
-            q_network.start_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
+            with cli.header("m-step", 1):
+                alg.perform_mult_steps(policy_opt_size, tc, policy_batch_size)
 
-        e += 1
+            with cli.header("v-step", 1):
+                ret.transform_all(tc)
+                # the rollout does not need the q function, so its fit finishes in the next epoch
+                q_network.start_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
+
+            e += 1
+    finally:
+        if pending is not None:
+            pending.abandon()
 
     if e > 0:
         finish_v_step()

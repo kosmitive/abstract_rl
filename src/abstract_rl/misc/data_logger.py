@@ -1,3 +1,4 @@
+import threading
 from os.path import join
 from typing import Any
 
@@ -15,6 +16,8 @@ class DataLogger:
         self._data: dict[str, list[Any]] = {}
         self._filepath = fp
         self._header: dict[str, int] = {}
+        # the stale-policy rollout logs an epoch while the learner logs the temperature
+        self._lock = threading.Lock()
 
     def create_field(self, name: str, dim: int) -> None:
         """Create a new field internally for logging.
@@ -57,12 +60,13 @@ class DataLogger:
         :param vals: The values to log
         """
 
-        for key, value in vals.items():
-            vp_value = np.asarray(value)
-            assert len(vp_value) == self._header[key]
-            assert vp_value.ndim == 1
-            self._data[key].append(value)
+        with self._lock:
+            for key, value in vals.items():
+                vp_value = np.asarray(value)
+                assert len(vp_value) == self._header[key]
+                assert vp_value.ndim == 1
+                self._data[key].append(value)
 
-            path = join(self._filepath, f"{key}.txt")
-            with open(path, "a") as handle:
-                np.savetxt(handle, value)
+                path = join(self._filepath, f"{key}.txt")
+                with open(path, "a") as handle:
+                    np.savetxt(handle, value)
