@@ -83,32 +83,30 @@ Tuned settings (`conf/tune/`):
 ## Performance
 
 Training times of the runs in [Results](#results) on a MacBook Pro with an Apple M3 Max (48 GB), macOS 26.7.1, MLX
-0.32.4, Python 3.13.12, MuJoCo 3.17.0 and Gymnasium 1.4.0, measured on 2026-10-25 at 34f8be9. Wall-clock time is per
-seed and includes the start-up; an epoch is 1,000 environment steps for MPO and `policy_batch_size` steps for TRPO
-(4,000; 2,000 on InvertedPendulum-v5, 8,000 on InvertedDoublePendulum-v5).
+0.32.4, Python 3.13.12, MuJoCo 3.17.0 and Gymnasium 1.4.0. The *1 seed at a time* columns were measured on 2026-10-26
+at c8387fa on an otherwise idle machine, the *4 seeds at a time* columns on 2026-10-25 at 34f8be9, partly while a game
+was running. Wall-clock time is per seed and includes the start-up; an epoch is 1,000 environment steps for MPO and
+`policy_batch_size` steps for TRPO (4,000; 2,000 on InvertedPendulum-v5, 8,000 on InvertedDoublePendulum-v5).
 
 | Environment | Algorithm | MLX device | Steps | Wall-clock, 1 seed at a time | ms/epoch | Steps/s | Wall-clock, 4 seeds at a time | Steps/s per seed |
 |---|---|---|---|---|---|---|---|---|
-| Pendulum-v1 | TRPO | CPU | 800,000 | 1.4 min (86 s) | 428 | 9,341 | 1.8 min (106 s) | 7,560 |
-| Pendulum-v1 | MPO | GPU | 800,000 | 3.4 min (207 s) | 258 | 3,872 | 6.9 min (410–415 s) | 1,940 |
-| MountainCarContinuous-v0 † | TRPO | CPU | 400,923 | 0.9 min (51 s) | 515 | 8,096 | 1.9 min (104–124 s) | 3,618 |
-| MountainCarContinuous-v0 † | MPO | GPU | 400,027 | 3.0 min (179 s) | 485 | 2,231 | 6.4 min (367–397 s) | 1,041 |
-| InvertedPendulum-v5 † | TRPO | CPU | 150,930 | 0.4 min (26 s) | 350 | 5,768 | 0.7 min (38–52 s) | 3,554 |
-| InvertedPendulum-v5 † | MPO | GPU | 150,401 | 1.9 min (112 s) | 748 | 1,382 | 4.0 min (225–251 s) | 657 |
-| InvertedDoublePendulum-v5 † | TRPO | CPU | 605,548 | 2.7 min (161 s) | 2,143 | 3,774 | 2.5 min (143–159 s) | 4,024 |
-| InvertedDoublePendulum-v5 † | MPO | GPU | 600,488 | 4.9 min (292 s) | 487 | 2,173 | 10.5 min (616–641 s) | 1,015 |
-| HalfCheetah-v5 † | TRPO | CPU | 1,200,000 | 2.3 min (139 s) | 462 | 8,649 | 2.4 min (144–146 s) | 8,265 |
-| HalfCheetah-v5 | MPO | GPU | 1,200,000 | 5.2 min (313 s) | 260 | 3,840 | 12.5 min (746–751 s) | 1,600 |
-
-† Measured on 2026-10-25 while another application (a game) was using the GPU and the CPU, so these rows are upper
-bounds. With the game running, a Pendulum-v1 TRPO run took 93 s instead of 86 s and a HalfCheetah-v5
-MPO run 505 s instead of 313 s. The rows without † were measured on an otherwise idle machine.
+| Pendulum-v1 | TRPO | CPU | 800,000 | 1.0 min (62 s) | 309 | 12,960 | 1.8 min (106 s) | 7,560 |
+| Pendulum-v1 | MPO | GPU | 800,000 | 3.3 min (197 s) | 247 | 4,053 | 6.9 min (410–415 s) | 1,940 |
+| MountainCarContinuous-v0 | TRPO | CPU | 400,923 | 0.6 min (34 s) | 344 | 12,121 | 1.9 min (104–124 s) | 3,618 |
+| MountainCarContinuous-v0 | MPO | GPU | 400,027 | 1.7 min (104 s) | 282 | 3,837 | 6.4 min (367–397 s) | 1,041 |
+| InvertedPendulum-v5 | TRPO | CPU | 150,930 | 0.3 min (19 s) | 256 | 7,885 | 0.7 min (38–52 s) | 3,554 |
+| InvertedPendulum-v5 | MPO | GPU | 150,401 | 1.0 min (63 s) | 418 | 2,471 | 4.0 min (225–251 s) | 657 |
+| InvertedDoublePendulum-v5 | TRPO | CPU | 605,548 | 2.1 min (127 s) | 1,699 | 4,760 | 2.5 min (143–159 s) | 4,024 |
+| InvertedDoublePendulum-v5 | MPO | GPU | 600,488 | 2.8 min (166 s) | 277 | 3,826 | 10.5 min (616–641 s) | 1,015 |
+| HalfCheetah-v5 | TRPO | CPU | 1,200,000 | 2.1 min (128 s) | 428 | 9,339 | 2.4 min (144–146 s) | 8,265 |
+| HalfCheetah-v5 | MPO | GPU | 1,200,000 | 5.0 min (302 s) | 251 | 3,977 | 12.5 min (746–751 s) | 1,600 |
 
 *1 seed at a time* is seed 1 alone; *4 seeds at a time* is seeds 2–5 run in parallel (the four runs share the GPU, so
 each one is slower, but together they reach about 6,400 steps/s on HalfCheetah). *ms/epoch* is the wall-clock time
-divided by the number of epochs. The rows were measured before c8387fa, which adds the NumPy host actor (see
-[MLX port (experiment)](#mlx-port-experiment)) to the 1-D action environments (all but HalfCheetah-v5); the training
-results do not change.
+divided by the number of epochs. c8387fa adds the NumPy host actor (see [MLX port (experiment)](#mlx-port-experiment))
+to the 1-D action environments (all but HalfCheetah-v5); it cuts a Pendulum-v1 TRPO epoch from 428 ms to 309 ms and an
+MPO epoch from 258 ms to 247 ms, and the training returns of seed 1 are bit-identical to the runs in
+[Results](#results) in every environment.
 
 Compared with the PyTorch implementation on `main` (eb41282, CPU, measured on 2026-10-24 on the same Mac with the same
 benchmark script, median of epochs 50–59), a HalfCheetah MPO epoch takes 6.19 s with PyTorch (161 steps/s) and 0.23 s
@@ -119,23 +117,22 @@ with MLX (c37bd7b), about 27× faster.
 The training return of [Results](#results) over the wall-clock training time in seconds instead of the environment
 steps, MPO and TRPO on the same axis. Mean ± std over seeds 1–5 at the same environment step; the time axis is the
 clock of seed 1 run alone (the *1 seed at a time* column of [Performance](#performance), start-up included), the
-time at which each epoch was logged. The time axes of the environments marked † in [Performance](#performance) were
-measured with a game running and are upper bounds.
+time at which each epoch was logged.
 
 ![Training return over wall-clock training time, mean ± std over 5 seeds; the dotted line is the threshold](docs/return_over_time.png)
 
 | Environment | Algorithm | Time to threshold | Full run |
 |---|---|---|---|
-| Pendulum-v1 | TRPO | 20 s | 86 s |
-| Pendulum-v1 | MPO | 9 s | 207 s |
-| MountainCarContinuous-v0 † | TRPO | 11 s | 51 s |
-| MountainCarContinuous-v0 † | MPO | 7 s | 179 s |
-| InvertedPendulum-v5 † | TRPO | 6 s | 26 s |
-| InvertedPendulum-v5 † | MPO | 12 s | 112 s |
-| InvertedDoublePendulum-v5 † | TRPO | 134 s | 161 s |
-| InvertedDoublePendulum-v5 † | MPO | 40 s | 292 s |
-| HalfCheetah-v5 † | TRPO | 97 s (2/5 seeds) | 139 s |
-| HalfCheetah-v5 | MPO | 45 s | 313 s |
+| Pendulum-v1 | TRPO | 15 s | 62 s |
+| Pendulum-v1 | MPO | 8 s | 197 s |
+| MountainCarContinuous-v0 | TRPO | 7 s | 34 s |
+| MountainCarContinuous-v0 | MPO | 5 s | 104 s |
+| InvertedPendulum-v5 | TRPO | 7 s | 19 s |
+| InvertedPendulum-v5 | MPO | 9 s | 63 s |
+| InvertedDoublePendulum-v5 | TRPO | 116 s | 127 s |
+| InvertedDoublePendulum-v5 | MPO | 29 s | 166 s |
+| HalfCheetah-v5 | TRPO | 90 s (2/5 seeds) | 128 s |
+| HalfCheetah-v5 | MPO | 47 s | 302 s |
 
 *Time to threshold* is the time of seed 1 at the median *steps to threshold* of [Results](#results).
 
