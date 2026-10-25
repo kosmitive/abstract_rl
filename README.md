@@ -114,6 +114,31 @@ Compared with the PyTorch implementation on `main` (eb41282, CPU, measured on 20
 benchmark script, median of epochs 50–59), a HalfCheetah MPO epoch takes 6.19 s with PyTorch (161 steps/s) and 0.23 s
 with MLX (c37bd7b), about 27× faster.
 
+## Return over training time
+
+The training return of [Results](#results) over the wall-clock training time in seconds instead of the environment
+steps, MPO and TRPO on the same axis. Mean ± std over seeds 1–5 at the same environment step; the time axis is the
+clock of seed 1 run alone (the *1 seed at a time* column of [Performance](#performance), start-up included), the
+time at which each epoch was logged. The time axes of the environments marked † in [Performance](#performance) were
+measured with a game running and are upper bounds.
+
+![Training return over wall-clock training time, mean ± std over 5 seeds; the dotted line is the threshold](docs/return_over_time.png)
+
+| Environment | Algorithm | Time to threshold | Full run |
+|---|---|---|---|
+| Pendulum-v1 | TRPO | 20 s | 86 s |
+| Pendulum-v1 | MPO | 9 s | 207 s |
+| MountainCarContinuous-v0 † | TRPO | 11 s | 51 s |
+| MountainCarContinuous-v0 † | MPO | 7 s | 179 s |
+| InvertedPendulum-v5 † | TRPO | 6 s | 26 s |
+| InvertedPendulum-v5 † | MPO | 12 s | 112 s |
+| InvertedDoublePendulum-v5 † | TRPO | 134 s | 161 s |
+| InvertedDoublePendulum-v5 † | MPO | 40 s | 292 s |
+| HalfCheetah-v5 † | TRPO | 97 s (2/5 seeds) | 139 s |
+| HalfCheetah-v5 | MPO | 45 s | 313 s |
+
+*Time to threshold* is the time of seed 1 at the median *steps to threshold* of [Results](#results).
+
 ## Usage
 
 ```bash
