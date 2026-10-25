@@ -119,8 +119,6 @@ class RolloutEnvWrapper:
         exploration: bool = True,
         render: bool = False,
         rew_field_name: str | None = None,
-        frozen: Any = None,
-        quiet: bool = False,
     ) -> TrajectoryCollection:
         """
         Executes the policy for complete episodes (each at most max_steps long) until at least batch_size
@@ -131,8 +129,6 @@ class RolloutEnvWrapper:
         :param exploration: Sample from the policy if True, otherwise use its mode.
         :param render: Render the first episode.
         :param rew_field_name: If given, log the mean and std of the episodic return under this name.
-        :param frozen: A ``FrozenHost`` whose episodes sample a snapshotted policy instead of ``policy``.
-        :param quiet: Skip the trajectory table. The caller prints it after filling deferred log likelihoods.
         :return: A trajectory collection.
         """
 
@@ -140,7 +136,7 @@ class RolloutEnvWrapper:
         k = 0
         trajectories = []
         while t < batch_size:
-            tr = self.execute_policy_once(max_steps, policy, render and k == 0, opt=not exploration, frozen=frozen)
+            tr = self.execute_policy_once(max_steps, policy, render and k == 0, opt=not exploration)
             trajectories.append(tr)
             t += len(tr)
             k += 1
@@ -168,17 +164,11 @@ class RolloutEnvWrapper:
 
         tj = TrajectoryCollection(self, sum([len(tra) for tra in trajectories]))
         tj.extend(trajectories)
-        if not quiet:
-            tj.print()
+        tj.print()
         return tj
 
     def execute_policy_once(
-        self,
-        max_steps: int | None,
-        policy: Any,
-        render: bool = False,
-        opt: bool = False,
-        frozen: Any = None,
+        self, max_steps: int | None, policy: Any, render: bool = False, opt: bool = False
     ) -> "Trajectory":
         """
         Execute a policy once for the maximum number of steps or the environment sends done.
@@ -205,9 +195,7 @@ class RolloutEnvWrapper:
         # the log likelihoods stay MLX arrays until the end of the episode, only the action is read in every step
         t_lls = []
         actor = None
-        if not opt and frozen is not None:
-            actor = frozen.spawn()
-        elif not opt and self._host_policy not in (False, "false") and hasattr(policy, "host_actor"):
+        if not opt and self._host_policy not in (False, "false") and hasattr(policy, "host_actor"):
             actor = policy.host_actor()
 
         # repeat for the number of steps
@@ -244,11 +232,7 @@ class RolloutEnvWrapper:
 
         # compile using the discount factor
         if actor is not None:
-            # a frozen snapshot defers the density: finish() evaluates an MLX graph and must not run beside the learner
-            if frozen is not None:
-                traj_builder.set_log_likelihoods(np.zeros(t, np.float64))
-            else:
-                traj_builder.set_log_likelihoods(actor.finish())
+            traj_builder.set_log_likelihoods(actor.finish())
         elif t_lls:
             traj_builder.set_log_likelihoods(np.array(mx.concatenate([x.reshape(-1)[:1] for x in t_lls])))
         traj = traj_builder.finalize()
