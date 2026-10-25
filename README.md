@@ -106,8 +106,9 @@ MPO run 505 s instead of 313 s. The rows without † were measured on an otherwi
 
 *1 seed at a time* is seed 1 alone; *4 seeds at a time* is seeds 2–5 run in parallel (the four runs share the GPU, so
 each one is slower, but together they reach about 6,400 steps/s on HalfCheetah). *ms/epoch* is the wall-clock time
-divided by the number of epochs. The 1-D action environments (all but HalfCheetah-v5) sample their rollout actions
-with MLX, the NumPy host actor needs 2–7 action dimensions (see [MLX port (experiment)](#mlx-port-experiment)).
+divided by the number of epochs. The rows were measured before c8387fa, which adds the NumPy host actor (see
+[MLX port (experiment)](#mlx-port-experiment)) to the 1-D action environments (all but HalfCheetah-v5); the training
+results do not change.
 
 Compared with the PyTorch implementation on `main` (eb41282, CPU, measured on 2026-10-24 on the same Mac with the same
 benchmark script, median of epochs 50–59), a HalfCheetah MPO epoch takes 6.19 s with PyTorch (161 steps/s) and 0.23 s
@@ -211,8 +212,8 @@ This branch implements the existing modules with [MLX](https://github.com/ml-exp
   bit-identical.
 - **Host actor.** The rollout samples the actions of the Gaussian policy with NumPy (`env_host_policy: auto` in
   `conf/alg/mpo.yaml`), from the same random bits as MLX. The results are bit-identical.
-  It covers the diagonal policy with 2–7 action dimensions (HalfCheetah-v5, also for TRPO); the univariate policy of
-  the 1-D action environments samples with MLX.
+  It covers the univariate and the diagonal policy with up to 7 action dimensions, for MPO and TRPO (c8387fa adds the
+  univariate policy; a layer with one output calls `cblas_sgemm` like MLX).
 - **Metal kernels.** On the GPU, the temperature dual runs as two Metal kernels per Adam step, and the Q fit and the
   M-step use a fused Adam kernel (`misc/metal_kernels.py`). The fused Adam is bit-identical to `mlx.optimizers.Adam`;
   the dual differs by float noise (relative 8e-7 in the temperature).
