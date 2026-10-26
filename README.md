@@ -109,10 +109,6 @@ c8387fa adds the NumPy host actor (see [MLX port (experiment)](#mlx-port-experim
 (all but HalfCheetah-v5); it cuts a Pendulum-v1 TRPO epoch from 428 ms to 309 ms and an MPO epoch from 258 ms to
 247 ms, and the training returns of all 50 timed runs are bit-identical to the runs in [Results](#results).
 
-Compared with the PyTorch implementation on `main` (eb41282, CPU, measured on 2026-10-24 on the same Mac with the same
-benchmark script, median of epochs 50–59), a HalfCheetah MPO epoch takes 6.19 s with PyTorch (161 steps/s) and 0.23 s
-with MLX (c37bd7b), about 27× faster.
-
 ## Return over training time
 
 The training return of [Results](#results) over the wall-clock training time in seconds instead of the environment
@@ -139,6 +135,35 @@ run takes 1.3× (InvertedDoublePendulum-v5) to 3.3× (InvertedPendulum-v5) less 
 | HalfCheetah-v5 | MPO | 47 s | 302 s |
 
 *Time to threshold* is the time of seed 1 at the median *steps to threshold* of [Results](#results).
+
+## Comparison with PyTorch (`main`)
+
+The only non-MLX numbers in this README: the PyTorch implementation on `main` (eb41282, the runs of its README) against
+this branch ([Results](#results)), 5 seeds (1–5) per cell, the same configurations and environment-step budgets.
+Greedy return of the final policy over 20 episodes, mean ± std over the seeds (ddof 1 for both, so the PyTorch std is
+larger than the population std in the README of `main`); *Solved* as in [Results](#results).
+
+| Environment | Algorithm | PyTorch greedy return | PyTorch solved | MLX greedy return | MLX solved | Epoch time, PyTorch / MLX |
+|---|---|---|---|---|---|---|
+| Pendulum-v1 (≥ -150) | TRPO | -127.7 ± 3.0 | 5/5 | -124.5 ± 1.2 | 5/5 | – |
+| Pendulum-v1 (≥ -150) | MPO | -123.3 ± 0.5 | 5/5 | -122.7 ± 2.0 | 5/5 | – |
+| MountainCarContinuous-v0 (≥ 90) | TRPO | 94.1 ± 0.8 | 5/5 | 94.9 ± 0.3 | 5/5 | – |
+| MountainCarContinuous-v0 (≥ 90) | MPO | 93.6 ± 0.0 | 5/5 | 93.6 ± 0.0 | 5/5 | – |
+| InvertedPendulum-v5 (≥ 950) | TRPO | 1000.0 ± 0.0 | 5/5 | 1000.0 ± 0.0 | 5/5 | – |
+| InvertedPendulum-v5 (≥ 950) | MPO | 1000.0 ± 0.0 | 5/5 | 1000.0 ± 0.0 | 5/5 | – |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO | 9332.8 ± 4.2 | 5/5 | 7904.9 ± 3196.3 | 4/5 | – |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO | 9332.9 ± 8.3 | 5/5 | 8367.9 ± 1975.5 | 3/5 | – |
+| HalfCheetah-v5 (≥ 4800) | TRPO | 4471.7 ± 1839.9 | 3/5 | 4113.4 ± 1579.3 | 2/5 | – |
+| HalfCheetah-v5 (≥ 4800) | MPO | 7940.5 ± 1563.2 | 5/5 | 8065.0 ± 913.3 | 5/5 | 6.19 s / 0.23 s (27×) |
+
+- The PyTorch runs were made on Linux and a MacBook with one CPU thread and several runs in parallel, so their
+  wall-clock times are not comparable and are not shown. The MLX runs are the ones of [Performance](#performance)
+  (M3 Max).
+- The one comparable timing is the HalfCheetah-v5 MPO epoch: the median of epochs 50–59 (full replay memory) of a
+  62-epoch run with the same benchmark script on the same M3 Max, measured on 2026-10-24, PyTorch on the CPU
+  (eb41282, 161 steps/s) and MLX on the GPU (c37bd7b, 4,301 steps/s).
+- MLX draws other random numbers than PyTorch, so the same seed gives another run (see
+  [Deviations from `main`](#deviations-from-main)).
 
 ## Usage
 
@@ -412,8 +437,8 @@ With speedups 1–10, the synchronized epoch splits into the rollout (0.060 s), 
 
 Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.9, -120.9, -122.3, -124.9, -124.8, with
 speedups 1–4 -120.4, -120.6, -125.8, -125.9, -121.7, with speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -120.9, -120.6, -122.3, -124.5, -123.1.
-The wall time for 800k steps is 1.4 min for TRPO (CPU) and 3.4 min for MPO with speedups 1–10 (GPU), one seed at a
-time; with four seeds at a time it is 1.8 min and 6.9 min (see [Performance](#performance)). It was 8 min with speedups 1–4 (two seeds at a time), 11 min with speedups 1–2 and
+The wall time for 800k steps is 1.0 min for TRPO (CPU) and 3.3 min for MPO (GPU), one seed at a time; with four
+seeds at a time it is 1.1 min and 7.0 min (see [Performance](#performance)). It was 8 min with speedups 1–4 (two seeds at a time), 11 min with speedups 1–2 and
 44 min before the speedups.
 
 ### Learning (HalfCheetah-v5, MPO, 1.2M steps, 5 seeds, greedy return of the final policy over 20 episodes)
@@ -421,7 +446,7 @@ time; with four seeds at a time it is 1.8 min and 6.9 min (see [Performance](#pe
 The configuration of the repository (1,200 epochs of 1,000 steps), on the GPU (`auto`) with speedups 1–10 (c37bd7b):
 **8065.0 ± 913.3, 5/5 solved** (threshold 4800). Per seed (seeds 1–5): 7786.3, 6977.4, 9049.4, 8974.9, 7537.1. The
 smoothed training return first reaches 4800 after 192,000 steps (median over the seeds; 120,000–318,000). The wall
-time is 5.2 min for one seed at a time and 12.5 min per seed with four seeds at a time (see [Performance](#performance)).
+time is 5.0 min for one seed at a time and 13.3 min per seed with four seeds at a time (see [Performance](#performance)).
 
 With speedups 1–4 (86a0cea): 8012.9 ± 862.4, 5/5 solved; per seed 7694.1, 6725.0, 8070.0, 8860.6, 8714.9; 4800 after
 204,000 steps (132,000–354,000); 14 min per seed with three seeds at a time and 11.5 min with two at a time.
