@@ -19,6 +19,9 @@ from abstract_rl.misc.mixed import to_mx
 # M-steps per compiled call of perform_mult_steps, also the interval of its log lines
 M_STEPS_PER_CALL = 10
 
+# added to softplus(lm) with a bound on the multipliers, so the multiplier stays positive (as in Acme MPO)
+MULTIPLIER_EPS = 1e-8
+
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
     """
@@ -55,6 +58,11 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.split_constraint = self.conf["coordinate_ascent_constraint"]
         self.cli = CliPrinter().instance
         self.l2_reg = self.conf.get("l2_reg", 0.0)
+
+        # opt-in bound on the multipliers: None keeps exp(lm) with an unbounded lm, [low, high] uses
+        # softplus(lm) + MULTIPLIER_EPS and clips lm to [low, high] after each step of the multipliers (as in Acme MPO)
+        lm_bound = self.conf.get("lm_bound", None)
+        self.lm_bound = None if lm_bound is None else (float(lm_bound[0]), float(lm_bound[1]))
 
         num_params = 1 if not self.split_constraint else num_lagrange_multipliers
         # the multipliers and the sampled trust regions live in trees, which the compiled step reads and writes
@@ -94,8 +102,14 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
     @property
     def lagrange_mults(self) -> list[mx.array]:
-        """The (log) Lagrange multipliers, they enter as exp(lm)."""
+        """The unconstrained Lagrange multipliers lm, they enter as multiplier(lm)."""
         return self._lm_state["lm"]
+
+    def multiplier(self, lm: mx.array) -> mx.array:
+        """The Lagrange multiplier of lm: exp(lm), or softplus(lm) + MULTIPLIER_EPS with a bound."""
+        if self.lm_bound is None:
+            return mx.exp(lm)
+        return mx.logaddexp(lm, 0.0) + MULTIPLIER_EPS
 
     def shuffle_up_stats(self, batch: Batch) -> list[mx.array]:
         """Use this to create a list, where each sufficient statistic from the
@@ -188,7 +202,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         obj = self.main_obj(batch, l_suff_stats)
         constraints = self.main_constraints(batch, l_suff_stats)
         for lm, c in zip(self.lagrange_mults, constraints, strict=False):
-            obj = obj + mx.exp(lm) * c
+            obj = obj + self.multiplier(lm) * c
 
         return obj
 
@@ -250,7 +264,10 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
                 lm_state = {"lm": list(self._lm_state["lm"])}
                 lm_grads = mx.grad(lm_obj)(lm_state)
-                self._lm_state["lm"] = self.opt_inner.apply_gradients(lm_grads, lm_state)["lm"]
+                lms = self.opt_inner.apply_gradients(lm_grads, lm_state)["lm"]
+                if self.lm_bound is not None:
+                    lms = [mx.clip(lm, *self.lm_bound) for lm in lms]
+                self._lm_state["lm"] = lms
 
             def log_values(tree: dict[str, Any]) -> list[mx.array]:
                 batch = Batch.from_tree(tree)
