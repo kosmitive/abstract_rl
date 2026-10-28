@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
 import mlx.core as mx
+import numpy as np
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
@@ -8,6 +9,7 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.operator.trajectory_operator import (
     TrajectoryOperator,
     compile_for_device,
+    pad_np,
     pad_rows,
     padded_size,
     run_in_chunks,
@@ -63,6 +65,17 @@ class ResampleOperator(TrajectoryOperator):
         states = stack_field(trajectories, "states", n_pad)
         actions, log_pi, q_vals = run_in_chunks(self._annotate_fn(), states, noise)
         store_rows(target, {"add_act": actions[:n], "add_q": q_vals[:n], "add_pi": log_pi[:n]})
+
+    def annotate_states(self, states: np.ndarray) -> dict[str, mx.array]:
+        """
+        The annotations of transform_all (add_act, add_q, add_pi) for the rows of states only, with the noise drawn
+        for all of them at once.
+        """
+        n = len(states)
+        n_pad = padded_size(n)
+        noise = pad_rows(self.policy.sample_noise(n, self.add_act), n_pad)
+        actions, log_pi, q_vals = run_in_chunks(self._annotate_fn(), pad_np(states, n_pad), noise)
+        return {"add_act": actions[:n], "add_q": q_vals[:n], "add_pi": log_pi[:n]}
 
     def _annotate_fn(self) -> Callable[..., tuple[mx.array, ...]]:
         if self._annotate is None:

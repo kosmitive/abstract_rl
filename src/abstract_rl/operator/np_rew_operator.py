@@ -1,3 +1,5 @@
+import mlx.core as mx
+
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
@@ -26,8 +28,9 @@ class VariationalRankingOperator(TrajectoryOperator):
         self.num_add_actions = self.conf.get_root("res_add_acts")
         self.b = NonParametricVariationalPolicyBuilder(self.mc)
 
-    def hook(self) -> None:
-        self.b.calc_eta()
+    def hook(self, add_q: mx.array | None = None) -> None:
+        """Solve for the temperature, on the sampled q values add_q or on those of the whole memory if None."""
+        self.b.calc_eta(add_q)
 
     def transform(self, trajectory: Trajectory) -> None:
         """

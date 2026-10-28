@@ -9,6 +9,7 @@ from abstract_rl.data_structures.temporal_difference_data.trajectory_collection 
 from abstract_rl.operator.trajectory_operator import (
     TrajectoryOperator,
     compile_for_device,
+    pad_np,
     pad_rows,
     padded_size,
     run_in_chunks,
@@ -89,6 +90,36 @@ class RetraceOperator(TrajectoryOperator):
         )
         tq = self._targets_fn()(q_vals, nxt_v_vals, c, r.reshape(-1), seg)
         store_rows(target, {"q": q_vals[:n].reshape(-1, 1), "tq": tq[:n].reshape(-1, 1)})
+
+    def targets_at(self, tc: TrajectoryCollection, indices: np.ndarray) -> tuple[mx.array, mx.array]:
+        """
+        The Q values (q) and the Retrace targets (tq) of transform_all for the rows at the sorted unique indices of
+        the concatenated trajectories only. The trace of a row needs the next mem_bootstrap_steps - 1 rows of its
+        trajectory, so these rows are evaluated too, as runs of consecutive rows: a trace stops at the end of its
+        run, which is the end of the trajectory for every row of indices. The noise of the expected next-state
+        values is drawn for all evaluated rows at once.
+        :return: q and tq of the rows at indices, as [N, 1] arrays.
+        """
+        ends = tc.trajectory_ends()
+        row_ends = ends[np.searchsorted(ends, indices, side="right")]
+        window = np.arange(max(self.ret_bootstrap, 1))
+        rows = (indices[:, None] + window[None, :]).reshape(-1)
+        rows = np.unique(rows[rows < np.repeat(row_ends, len(window))])
+        n = len(rows)
+        n_pad = padded_size(n)
+        batch = tc.batch_at(rows)
+        noise = pad_rows(self.policy.sample_noise(n, EXP_ACTIONS), n_pad)
+        fields = [batch.states, batch.actions, batch.next_states, batch.dones, batch.rewards, batch.log_likelihoods]
+        s, a, nxt_s, dones, r, beh_lls = (pad_np(f, n_pad) for f in fields)
+        q_vals, nxt_v_vals, c = run_in_chunks(self._rows_fn(), s, a, nxt_s, dones, beh_lls, noise)
+
+        # consecutive rows of the same trajectory share a run index, the padding rows get -1
+        run_start = np.ones(n, dtype=bool)
+        run_start[1:] = (rows[1:] != rows[:-1] + 1) | np.isin(rows[1:], ends)
+        seg = mx.array(np.concatenate([np.cumsum(run_start), np.full(n_pad - n, -1)]).astype(np.int32))
+        tq = self._targets_fn()(q_vals, nxt_v_vals, c, r.reshape(-1), seg)
+        pos = mx.array(np.searchsorted(rows, indices).astype(np.int32))
+        return q_vals[pos].reshape(-1, 1), tq[pos].reshape(-1, 1)
 
     def _rows_fn(self) -> Callable[..., tuple[mx.array, ...]]:
         """Compiled per-row values: Q(s_t, a_t), the expected value of s_t+1 (0 if done) and the trace coefficient."""

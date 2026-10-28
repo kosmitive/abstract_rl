@@ -32,15 +32,16 @@ class NonParametricVariationalPolicyBuilder:
         self.log = self.mc["log"]
         self.log.create_field("eta", 1)
 
-    def calc_eta(self) -> None:
+    def calc_eta(self, add_q: mx.array | None = None) -> None:
         """
         Calculate the optimal eta using the find optimal temperature function.
+        :param add_q: The sampled q values [NxA] to use, those of all states of the memory if None.
         """
-        tc = self.mc.get("tc")
-
-        # the sampled q values of all states, as the annotation stored them on the device
+        if add_q is None:
+            # the sampled q values of all states, as the annotation stored them on the device
+            add_q = self.mc.get("tc").annotation("add_q")
         eta = find_optimal_temperature(
-            tc.annotation("add_q"), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
+            add_q, self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
         )
 
         self.eta_mx = eta

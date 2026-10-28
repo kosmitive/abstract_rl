@@ -64,3 +64,7 @@ mpo_l2_reg: 0.0
 # bound on the m-step Lagrange multipliers: null keeps exp(lm), [low, high] uses softplus(lm) + 1e-8 with lm clipped to
 # [low, high] after each step, e.g. [-18.0, 18.0]
 mpo_lm_bound: null
+# annotate (e-step weights, retrace targets) only the transitions the m-step and the q fit draw in an epoch, instead
+# of the whole memory, so an epoch costs the same for every memory size. The temperature is then solved on the states
+# of the m-step batches only
+mpo_sampled_annotation: false

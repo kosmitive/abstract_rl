@@ -147,12 +147,23 @@ class VanillaGradient:
         # the indices of all batches, drawn in the order and with the calls of one tc.sample per step
         replay = tc.flatten(fields)
         indices = mx.array(replay.draw_batches(num_steps, batch_size), dtype=mx.int32)
+        self._start_steps(replay.tree, indices)
+
+    def start_mult_sgd_on(self, replay: dict[str, Any], indices: mx.array) -> None:
+        """
+        As start_mult_sgd, one step per row of indices into the rows of replay (a tree of Batch.to_tree with the
+        annotations of the objective).
+        """
+        self.cli.print(self.titlestr % ("k", "pre_objective", "post_objective")).line()
+        self._start_steps(replay, indices)
+
+    def _start_steps(self, replay: dict[str, Any], indices: mx.array) -> None:
         if self._worker is not None:
             self.finish_mult_sgd()
-            self._worker.submit(self._model.parameters(), replay.tree, indices)
+            self._worker.submit(self._model.parameters(), replay, indices)
             return
         self._adam_fns()
-        self._logs = run_adam_steps(self._compiled["steps"], self._model, self.opt, replay.tree, indices)
+        self._logs = run_adam_steps(self._compiled["steps"], self._model, self.opt, replay, indices)
 
     def finish_mult_sgd(self) -> None:
         """Waits for the steps of start_mult_sgd, sets the parameters of a background fit and prints the log lines."""

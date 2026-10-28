@@ -214,23 +214,30 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         """
 
         self.sample_v()
-        self.cli.empty().print(
-            self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
-        )
+        self.print_title()
 
         # the indices of all batches, drawn in the order and with the calls of one replay.sample per step
         replay = tc.flatten(["add_act", "grad_ranking"])
         indices = mx.array(replay.draw_batches(num_steps, batch_size), dtype=mx.int32)
+        self.perform_steps_on(replay.tree, indices)
+
+    def perform_steps_on(self, replay: dict[str, Any], indices: mx.array) -> None:
+        """
+        The steps of perform_mult_steps, one per row of indices into the rows of replay (a tree of
+        Batch.to_tree with the annotations add_act and grad_ranking). The trust regions are the ones of the last
+        sample_v, the caller prints the title line (print_title).
+        """
+        num_steps = int(indices.shape[0])
         step_fn, log_fn = self._step_fns()
         logs = []
         for s in range(0, num_steps, M_STEPS_PER_CALL):
             # the first step of a chunk and its log values as in perform_step, then the others in one compiled call
-            tree = replay.gather(indices[s])
+            tree = tree_map(lambda v, s=s: mx.take(v, indices[s], axis=0), replay)
             step_fn(tree)
             obj, *constraints = log_fn(tree)
             pairs = [v for pair in zip(self.lagrange_mults, constraints, strict=False) for v in pair]
             if s + 1 < min(s + M_STEPS_PER_CALL, num_steps):
-                self._compiled["steps"](replay.tree, indices[s + 1 : s + M_STEPS_PER_CALL])
+                self._compiled["steps"](replay, indices[s + 1 : s + M_STEPS_PER_CALL])
             mx.async_eval(
                 obj, pairs, self.mc.get("policy", target=False).parameters(), self._lm_state, self.opt_outer.state
             )
@@ -239,6 +246,12 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         # the log lines of perform_step, printed once all steps are queued
         for s, obj, pairs in logs:
             self.cli.print(self.fmtstr % (s, obj.item(), *[v.item() for v in pairs]))
+
+    def print_title(self) -> None:
+        """The title line of the log lines of perform_mult_steps."""
+        self.cli.empty().print(
+            self.titlestr % ("k", "objective", *[f"lm_{i} x constr_{i}" for i in range(len(self.lagrange_mults))])
+        )
 
     def _step_fns(self) -> tuple[Callable, Callable]:
         """The compiled M-step and the compiled objective and constraints for the log line."""

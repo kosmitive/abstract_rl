@@ -83,6 +83,13 @@ def pad_rows(x: mx.array, n: int) -> mx.array:
     return mx.concatenate([x, mx.zeros((n - x.shape[0], *x.shape[1:]), dtype=x.dtype)])
 
 
+def pad_np(x: np.ndarray, n: int) -> mx.array:
+    """x as float32 MLX array with zero rows appended up to n rows."""
+    out = np.zeros((n, *x.shape[1:]), dtype=np.float32)
+    out[: len(x)] = x
+    return mx.array(out)
+
+
 def stack_field(trajectories: list[Trajectory], field: str, n: int) -> mx.array:
     """A field of all trajectories (e.g. states) concatenated, as float32 MLX array padded with zero rows to n rows."""
     x = np.concatenate([getattr(t, field) for t in trajectories])

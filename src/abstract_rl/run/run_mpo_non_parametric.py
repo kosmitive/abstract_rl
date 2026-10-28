@@ -3,6 +3,7 @@ from typing import Any
 
 import mlx.core as mx
 import numpy as np
+from mlx.utils import tree_map
 
 from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_policy_optimization_algorithm import (
     MPOAlgorithm,
@@ -10,7 +11,10 @@ from abstract_rl.algorithms.continuous.policy_gradient.maximum_a_posteriori_poli
 
 # create the environment in initial state.
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
-from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import (
+    TrajectoryCollection,
+    draw_batch_indices,
+)
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.data_logger import DataLogger
@@ -19,9 +23,24 @@ from abstract_rl.operator.filter_operator import FilterOperator
 from abstract_rl.operator.np_rew_operator import VariationalRankingOperator
 from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
+from abstract_rl.operator.trajectory_operator import pad_rows
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
 from abstract_rl.policy.continuous.select_policy import select_policy
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
+
+
+def sampled_rows(
+    tc: TrajectoryCollection, indices: np.ndarray, annotations: dict[str, mx.array], rows: np.ndarray
+) -> tuple[dict[str, Any], mx.array]:
+    """
+    The replay of the rows (the sorted unique values of indices) with their annotations, as a tree of
+    Batch.to_tree padded with zero rows to indices.size rows, so its shape is the same in every epoch, and the
+    indices into it.
+    """
+    tree = tc.batch_at(rows).to_tree([])
+    tree["annotations"] = annotations
+    tree = tree_map(lambda v: pad_rows(v, indices.size), tree)
+    return tree, mx.array(np.searchsorted(rows, indices).astype(np.int32))
 
 
 # title of the script
@@ -79,6 +98,8 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     with conf.ns(alg_name):
         alg = MPOAlgorithm(mc)
         mc.add_main("alg", alg)
+        # annotate only the transitions the m-step and the q fit draw instead of the whole memory, see the e-step
+        sampled_annotation = bool(conf.get("sampled_annotation", False))
 
     with conf.ns("val"):
         q_opt_steps = conf["opt_steps"]
@@ -176,19 +197,42 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
         # calc value fns and policies
         # --------------------------------
 
-        with cli.header("e-step", 1):
-            # resample extra actions and q values
-            res.transform_all(tc)
-            rnk.hook()
-            rnk.transform_all(tc)
+        if sampled_annotation and policy_opt_size > 0 and q_opt_steps > 0:
+            # the batches of the m-step and the q fit are drawn first, then only their transitions are annotated,
+            # with the same networks as below. The temperature is solved on the states of the m-step batches.
+            with cli.header("e-step", 1):
+                alg.sample_v()
+                m_indices = draw_batch_indices(tc.num_data_points, policy_opt_size, policy_batch_size)
+                m_rows = np.unique(m_indices)
+                ann = res.annotate_states(tc.batch_at(m_rows).states)
+                rnk.hook(ann["add_q"])
+                m_ann = {"add_act": ann["add_act"], "grad_ranking": rnk.b.log_weights(ann["add_q"])}
+                m_replay, m_pos = sampled_rows(tc, m_indices, m_ann, m_rows)
 
-        with cli.header("m-step", 1):
-            alg.perform_mult_steps(policy_opt_size, tc, policy_batch_size)
+            with cli.header("m-step", 1):
+                alg.print_title()
+                alg.perform_steps_on(m_replay, m_pos)
 
-        with cli.header("v-step", 1):
-            ret.transform_all(tc)
-            # the rollout does not need the q function, so its fit finishes in the next epoch
-            q_network.start_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
+            with cli.header("v-step", 1):
+                q_indices = draw_batch_indices(tc.num_data_points, q_opt_steps, q_batch_size)
+                q_rows = np.unique(q_indices)
+                q, tq = ret.targets_at(tc, q_rows)
+                q_replay, q_pos = sampled_rows(tc, q_indices, {"tq": tq, "q": q}, q_rows)
+                q_network.start_mult_sgd_on(q_replay, q_pos)
+        else:
+            with cli.header("e-step", 1):
+                # resample extra actions and q values
+                res.transform_all(tc)
+                rnk.hook()
+                rnk.transform_all(tc)
+
+            with cli.header("m-step", 1):
+                alg.perform_mult_steps(policy_opt_size, tc, policy_batch_size)
+
+            with cli.header("v-step", 1):
+                ret.transform_all(tc)
+                # the rollout does not need the q function, so its fit finishes in the next epoch
+                q_network.start_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
 
         e += 1
 

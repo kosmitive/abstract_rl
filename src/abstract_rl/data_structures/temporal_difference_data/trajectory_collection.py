@@ -38,6 +38,17 @@ def draw_indices(num_data_points: int, batch_size: int) -> np.ndarray:
     return np.sort(np.random.randint(0, num_data_points, size=batch_size))  # noqa: NPY002
 
 
+def draw_batch_indices(num_data_points: int, num_batches: int, batch_size: int) -> np.ndarray:
+    """
+    The indices [num_batches, batch_size] of num_batches calls of draw_indices, also the same state of numpy's RNG
+    after it: randint draws its values one after another, so one call for all batches gives the same values.
+    """
+    batch_size = min(batch_size, num_data_points)
+    indices = np.random.randint(0, num_data_points, size=(num_batches, batch_size))  # noqa: NPY002
+    # the same order, sorting int32 is about three times faster
+    return np.sort(indices.astype(np.int32), axis=1) if num_data_points <= 2**31 else np.sort(indices, axis=1)
+
+
 class FlatReplay:
     """
     The transitions of a trajectory collection concatenated once into float32 MLX arrays. Drawing a batch is then one
@@ -55,14 +66,8 @@ class FlatReplay:
         return draw_indices(self.num_data_points, batch_size)
 
     def draw_batches(self, num_batches: int, batch_size: int) -> np.ndarray:
-        """
-        The indices [num_batches, batch_size] of num_batches calls of draw, also the same state of numpy's RNG after
-        it: randint draws its values one after another, so one call for all batches gives the same values.
-        """
-        batch_size = min(batch_size, self.num_data_points)
-        indices = np.random.randint(0, self.num_data_points, size=(num_batches, batch_size))  # noqa: NPY002
-        # the same order, sorting int32 is about three times faster
-        return np.sort(indices.astype(np.int32), axis=1) if self.num_data_points <= 2**31 else np.sort(indices, axis=1)
+        """The indices [num_batches, batch_size] of num_batches calls of draw, see draw_batch_indices."""
+        return draw_batch_indices(self.num_data_points, num_batches, batch_size)
 
     def gather(self, indices: Any) -> dict[str, Any]:
         """The rows at the indices of every array of the tree."""
@@ -144,6 +149,15 @@ class TrajectoryCollection:
             self.__trajectories = self.__trajectories[i:]
 
         self.__num_data_points = sum([len(t) for t in self.__trajectories])
+
+    @property
+    def num_data_points(self) -> int:
+        """The number of transitions of all trajectories."""
+        return self.__num_data_points
+
+    def trajectory_ends(self) -> np.ndarray:
+        """For every trajectory the index after its last transition, in the concatenation of all trajectories."""
+        return np.cumsum([len(t) for t in self.__trajectories])
 
     def __iter__(self) -> Iterator[Trajectory]:
         return iter(self.__trajectories)
@@ -232,8 +246,15 @@ class TrajectoryCollection:
 
     def sample(self, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
 
+        return self.batch_at(draw_indices(self.__num_data_points, batch_size), copy_fields)
+
+    def batch_at(self, tindices: np.ndarray, copy_fields: list[str] | None = None) -> Batch:
+        """The transitions at the sorted indices tindices of the concatenation of all trajectories, as a batch.
+
+        :param tindices: The sorted indices.
+        :param copy_fields: The fields to copy into the batch.
+        """
         fields = copy_fields if copy_fields is not None else []
-        tindices = draw_indices(self.__num_data_points, batch_size)
 
         # define basic lists
         states: Any = []
