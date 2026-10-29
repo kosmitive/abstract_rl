@@ -4,7 +4,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
-from jaxtyping import PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray
 
 from abstract_rl.algorithms.continuous.policy_gradient.policy_optimization_algorithm import (
     PolicyOptimizationAlgorithm,
@@ -14,6 +14,9 @@ from abstract_rl.data_structures.abstract_conf.model_state import ModelState
 from abstract_rl.misc.cli_printer import CliPrinter
 from abstract_rl.misc.flat_params import get_flat_params_from
 from abstract_rl.misc.typing import DTYPE
+
+# added to softplus(lm) when a bound is set, so the multiplier stays positive (as in Acme MPO)
+MULTIPLIER_EPS = 1e-8
 
 
 class MPOAlgorithm(PolicyOptimizationAlgorithm):
@@ -47,10 +50,27 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         self.split_constraint = self.conf["coordinate_ascent_constraint"]
         self.cli = CliPrinter().instance
         self.l2_reg = self.conf.get("l2_reg", 0.0)
+        # None keeps exp(lm). A pair clips lm after each multiplier step and uses softplus(lm) + MULTIPLIER_EPS.
+        self.lm_bound = _lm_bound(self.conf.get("lm_bound", None))
 
         self.num_params = 1 if not self.split_constraint else num_lagrange_multipliers
         self.fmtstr = "%10i | %10.5f" + self.num_params * " | %10.5f x %10.5f"
         self.titlestr = "%10s | %10s" + self.num_params * " | %23s"
+
+    def multiplier(self, lm: Array) -> Array:
+        """Positive Lagrange multiplier of the unconstrained parameter ``lm``.
+
+        Args:
+            lm: Unconstrained multiplier parameter, a scalar or a vector.
+
+        Returns:
+            ``exp(lm)`` when no bound is set, otherwise ``softplus(lm) + 1e-8``.
+        """
+        match self.lm_bound:
+            case None:
+                return jnp.exp(lm)
+            case _:
+                return jax.nn.softplus(lm) + MULTIPLIER_EPS
 
     def init_state(self, policy: Any) -> dict[str, Any]:
         """Lagrange multipliers (log space, initialised to one like torch) and the persistent Adam states."""
@@ -167,7 +187,7 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
         obj = self.main_obj(state, batch, l_suff_stats, policy)
         constraints = self.main_constraints(state, batch, l_suff_stats, policy, v)
         for i, c in enumerate(constraints):
-            obj = obj + jnp.exp(lagrange_mults[i]) * c
+            obj = obj + self.multiplier(lagrange_mults[i]) * c
 
         return obj
 
@@ -245,8 +265,8 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
 
     def __min_step(self, state: ModelState, batch: Any, v: list[Any]) -> tuple[ModelState, Any, list[Any]]:
         """
-        Minimizes the Lagrangian with respect to the Lagrange multipliers only. They enter as exp(lm), so they
-        stay positive.
+        Minimizes the Lagrangian with respect to the Lagrange multipliers only. They enter through ``multiplier``,
+        so they stay positive. With a bound, ``lm`` is clipped after the Adam step.
         """
 
         policy = state.get("policy")
@@ -259,10 +279,26 @@ class MPOAlgorithm(PolicyOptimizationAlgorithm):
             constraints = self.main_constraints(state, batch, l_suff_stats, policy, v)
             obj = main
             for i, c in enumerate(constraints):
-                obj = obj + jnp.exp(lagrange_mults[i]) * c
+                obj = obj + self.multiplier(lagrange_mults[i]) * c
             return obj, (main, constraints)
 
         (_, (obj, constraints)), grads = jax.value_and_grad(objective, has_aux=True)(state.get("lagrange_mults"))
         updates, opt_state = opt.update(grads, state.get("opt_inner"))
-        state = state.set("lagrange_mults", state.get("lagrange_mults") + updates).set("opt_inner", opt_state)
+        lm = state.get("lagrange_mults") + updates
+        match self.lm_bound:
+            case (lo, hi):
+                lm = jnp.clip(lm, lo, hi)
+            case None:
+                pass
+        state = state.set("lagrange_mults", lm).set("opt_inner", opt_state)
         return state, obj, constraints
+
+
+def _lm_bound(raw: Any) -> tuple[float, float] | None:
+    """``None`` or a ``(low, high)`` pair from the ``mpo_lm_bound`` config value."""
+    match raw:
+        case None:
+            return None
+        case _:
+            lo, hi = raw
+            return (float(lo), float(hi))

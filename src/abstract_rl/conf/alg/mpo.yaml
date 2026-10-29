@@ -57,5 +57,8 @@ mpo_trust_regions: [0.01]
 mpo_coordinate_ascent_objective: false
 mpo_coordinate_ascent_constraint: false
 mpo_l2_reg: 0.0
+# bound on the m-step Lagrange multipliers: null keeps exp(lm), [low, high] uses softplus(lm) + 1e-8 with lm clipped to
+# [low, high] after each step, e.g. [-18.0, 18.0]
+mpo_lm_bound: null
 # epochs per jitted call (logging and checkpoints happen once per call)
 epochs_per_call: 1
