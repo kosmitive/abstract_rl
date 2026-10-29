@@ -6,6 +6,9 @@ Usage::
     uv run python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=50
     uv run --extra gym python -m abstract_rl.scripts.run env=humanoid alg=mpo seed=1 \\
         alg.mpo_outer_lr=0.0001 alg.rnk_eps=0.05 'alg.mpo_lm_bound=[-18.0,18.0]'
+    uv run --extra cuda --extra gym python -m abstract_rl.scripts.run env=humanoid alg=mpo \\
+        jax_platform=cuda seed=1 alg.mpo_outer_lr=0.0001 alg.rnk_eps=0.05 \\
+        'alg.mpo_lm_bound=[-18.0,18.0]'
     uv run python -m abstract_rl.scripts.run --cfg job env=mountaincar alg=mpo   # print the composed config
 
 Environments: pendulum, mountaincar, inverted_pendulum, inverted_double_pendulum, halfcheetah, humanoid.

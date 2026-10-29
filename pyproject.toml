@@ -53,6 +53,10 @@ baselines = [
 gym = [
     "gymnasium[mujoco]>=1.0",
 ]
+# CUDA 12 JAX build. The default `jax` dependency stays the CPU wheel.
+cuda = [
+    "jax[cuda12]>=0.11,<0.12",
+]
 
 [dependency-groups]
 dev = [

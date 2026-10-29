@@ -49,7 +49,9 @@ uv run python -m abstract_rl.scripts.bench_jax --env pendulum --seeds 1 4 16 --e
 uv run python -m abstract_rl.scripts.bench_jax --alg mpo --env pendulum --seeds 1 4 --epochs 4
 ```
 
-The `mps` extra (`uv sync --extra mps`) installs the Metal backend for JAX, selected with `jax_platform=mps`. Metal
+The `cuda` extra (`uv sync --extra cuda`) installs the CUDA 12 JAX build, selected with `jax_platform=cuda`. The default
+install stays the CPU wheel. The `mps` extra (`uv sync --extra mps`) installs the Metal backend, selected with
+`jax_platform=mps`. Metal
 runs the TRPO networks on the gymnax environments; the MJX environments and MPO (whose seed-batched replay-memory
 update uses a scatter Metal does not support) need `jax_platform=cpu` (the default).
 
