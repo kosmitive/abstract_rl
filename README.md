@@ -257,7 +257,9 @@ Configuration ([Hydra](https://hydra.cc)) ships inside the package in `src/abstr
 `data_root`, `max_env_steps`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
 `success` threshold, `steps` budget), `tune_all/<env>.yaml` (overrides for both algorithms) and
 `tune/<env>_<alg>.yaml` (per-algorithm overrides). Environments: `pendulum`,
-`mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
+`mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`, `humanoid`.
+`humanoid` is Gymnasium Humanoid-v5 on the CPU (`uv sync --extra gym`); the MPO update stays in JAX. An MJX humanoid
+is not that environment. `alg.<key>=...` overrides beat the
 tune files. The training loops get a flat dictionary with prefixes (`env_*`, `policy_*`, `val_*`, `trpo_*`,
 `mpo_*`). Runs are written to `data/<env>/<alg>/<timestamp>/` (configuration, returns, models, plots).
 Environments with another action dimension work out of the box: `select_policy` chooses the univariate or the
@@ -275,8 +277,8 @@ src/abstract_rl/
 │   ├── abstract_conf/                SharedConf (namespaced config), ModelConfiguration (registry, IO),
 │   │                                 ModelState (the traced pytree of models, optimiser states and buffers)
 │   └── temporal_difference_data/     Trajectory, TrajectoryCollection (replay buffer), Batch (equinox pytrees)
-├── env/                              JAX env ports (jax_envs.py: gymnax, MJX, Brax), RolloutEnvWrapper (jitted
-│                                     rollouts in parallel lanes), offscreen rendering (render.py)
+├── env/                              JAX env ports (jax_envs.py: gymnax, MJX, Brax), host Gymnasium Humanoid-v5,
+│                                     RolloutEnvWrapper (jitted rollouts in parallel lanes), rendering (render.py)
 ├── operator/                         trajectory operators: TD, GAE, Retrace, action resampling, MPO reweighting, filters
 ├── policy/                           univariate and diagonal Gaussian policy (+ select_policy), non-parametric policy
 ├── value_functions/                  fully connected V and Q networks

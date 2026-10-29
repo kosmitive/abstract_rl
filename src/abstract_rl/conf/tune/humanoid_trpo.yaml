@@ -1,0 +1,2 @@
+# @package alg
+# Humanoid-v5 is stepped with Gymnasium on the host and wired for MPO. This file lets `env=humanoid alg=trpo` compose.

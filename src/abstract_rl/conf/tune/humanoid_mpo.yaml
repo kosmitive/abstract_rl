@@ -1,0 +1,12 @@
+# @package alg
+num_epochs: 15000
+policy_sigma: 0.5
+mpo_trust_regions: [0.02]
+tc_size: 1000000
+policy_structure: [256, 256, 256]
+policy_act_fn: [elu, elu, elu, none]
+val_struct: [512, 512, 256]
+val_act_fn: [elu, elu, elu, none]
+val_layer_norm: true
+obs_norm: true
+# the run adds, on the command line: alg.mpo_outer_lr=0.0001 alg.rnk_eps=0.05 alg.mpo_lm_bound=[-18.0,18.0]

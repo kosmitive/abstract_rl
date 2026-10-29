@@ -6,6 +6,8 @@ Benchmark runs with Hydra (`src/abstract_rl/conf/` selects the algorithm and env
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seeds=[1,2,3,4,5]   # seeds vmapped in one program
 uv run python -m abstract_rl.scripts.run env=halfcheetah alg=mpo seed=2 alg.num_epochs=100 alg.policy_sigma=0.5
+uv run --extra gym python -m abstract_rl.scripts.run env=humanoid alg=mpo seed=1 \
+    alg.mpo_outer_lr=0.0001 alg.rnk_eps=0.05 'alg.mpo_lm_bound=[-18.0,18.0]'
 uv run python -m abstract_rl.scripts.trpo_pendulum    # thin wrappers for Pendulum-v1
 uv run python -m abstract_rl.scripts.mpo_pendulum
 ```

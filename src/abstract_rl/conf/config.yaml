@@ -14,12 +14,14 @@ defaults:
 seed: 1
 # several seeds trained at once in one vmapped program (null: just `seed`), e.g. seeds=[1,2,3,4]
 seeds: null
-# JAX backend of a run: cpu (default) or mps (Metal, needs the `mps` extra; MJX environments only run on cpu)
+# JAX backend of a run: cpu (default) or mps (Metal, needs the `mps` extra; MJX environments only run on cpu).
+# Humanoid-v5 is a host Gymnasium env: the rollout stays on CPU and the learner follows this platform.
 # an already set JAX_PLATFORMS environment variable takes precedence
 jax_platform: cpu
 data_root: data
 # hard env-step budget (null: keep the value from the algorithm node, which is unset unless a tune file sets one)
 max_env_steps: null
+# Humanoid-v5 is configured (conf/env/humanoid.yaml) but is not part of this JAX benchmark order
 env_order:
   - Pendulum-v1
   - MountainCarContinuous-v0

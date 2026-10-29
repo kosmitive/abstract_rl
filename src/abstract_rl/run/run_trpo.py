@@ -52,6 +52,9 @@ def run_trpo(conf: Any) -> np.ndarray:
     with conf.ns("env"):
         env = RolloutEnvWrapper(mc)
         mc.add_environment(env)
+    if env.uses_host:
+        env.close()
+        raise RuntimeError(f"{env.env_name} is stepped on the host with Gymnasium and is set up for MPO, not TRPO")
     for k, v in env.init_state().items():
         mc.add_main(k, runs.broadcast(v))
     mc.add_main("key", runs.keys)

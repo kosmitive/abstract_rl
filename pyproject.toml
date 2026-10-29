@@ -49,10 +49,14 @@ baselines = [
     "stable-baselines3>=2.4",
     "torch>=2.5",
 ]
+# Gymnasium MuJoCo envs stepped on the host (Humanoid-v5). Torch stays in `baselines`.
+gym = [
+    "gymnasium[mujoco]>=1.0",
+]
 
 [dependency-groups]
 dev = [
-    "gymnasium[classic-control]>=1.0",
+    "gymnasium[classic-control,mujoco]>=1.0",
     "mypy>=2.4.0",
     "pandas-stubs>=3.0.5.260914",
     "pytest>=8.3",
@@ -113,7 +117,17 @@ warn_return_any = false
 
 [[tool.mypy.overrides]]
 # optional extra `baselines` (scripts/run_baselines.py) and the JAX environment backends, which ship no stubs
-module = ["stable_baselines3.*", "sb3_contrib.*", "gymnax.*", "brax.*", "mujoco_playground.*", "mujoco.*"]
+module = [
+    "stable_baselines3.*",
+    "sb3_contrib.*",
+    "gymnax.*",
+    "brax.*",
+    "mujoco_playground.*",
+    "mujoco.*",
+    "gymnasium.*",
+    "torch",
+    "torch.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
