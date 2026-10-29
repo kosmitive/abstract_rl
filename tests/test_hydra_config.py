@@ -47,6 +47,37 @@ def test_command_line_overrides_beat_environment_defaults():
     assert "max_env_steps" not in run_dict(load(["env=pendulum", "alg=trpo"]))
 
 
+def test_humanoid_mpo_tune():
+    conf = run_dict(load(["env=humanoid", "alg=mpo"]))
+    assert conf["env_name"] == "Humanoid-v5"
+    assert conf["max_steps"] == 1000
+    assert conf["num_epochs"] == 15000
+    assert conf["policy_sigma"] == 0.5
+    assert conf["mpo_trust_regions"] == [0.02]
+    assert conf["tc_size"] == 1_000_000
+    assert conf["policy_structure"] == [256, 256, 256]
+    assert conf["policy_act_fn"] == ["elu", "elu", "elu", "none"]
+    assert conf["val_struct"] == [512, 512, 256]
+    assert conf["val_act_fn"] == ["elu", "elu", "elu", "none"]
+    assert conf["val_layer_norm"] is True and conf["obs_norm"] is True
+    # the bound stays opt-in; the Humanoid run sets it on the command line
+    assert conf["mpo_lm_bound"] is None
+    over = run_dict(
+        load(
+            [
+                "env=humanoid",
+                "alg=mpo",
+                "alg.mpo_outer_lr=0.0001",
+                "alg.rnk_eps=0.05",
+                "alg.mpo_lm_bound=[-18.0,18.0]",
+            ]
+        )
+    )
+    assert over["mpo_outer_lr"] == 0.0001 and over["rnk_eps"] == 0.05
+    assert over["mpo_lm_bound"] == [-18.0, 18.0]
+    assert run_dict(load(["env=humanoid", "alg=trpo"]))["max_steps"] == 1000
+
+
 def test_jax_run_keys():
     conf = run_dict(load(["env=pendulum", "alg=trpo", "seeds=[1,2,3]"]))
     assert conf["seeds"] == [1, 2, 3] and conf["jax_platform"] == "cpu" and conf["epochs_per_call"] == 1

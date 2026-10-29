@@ -238,6 +238,86 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
             compiled[(batch_size, num)] = jax.jit(fn, donate_argnums=0)
         return compiled[(batch_size, num)](state)
 
+    def learn_host(state: ModelState, traj: Trajectory) -> tuple[ModelState, dict[str, Any]]:
+        """E-step, M-step and Q fit of one seed after a host rollout.
+
+        The steps match ``epoch`` once the rollout is in hand, including the key split, so the learner's random stream
+        is the one a jitted epoch would have used. The rollout subkey is consumed by the host.
+        """
+        key, _k_rollout, k_annotate, k_m, k_ret, k_q = jax.random.split(state.get("key"), 6)
+        pre = {
+            "policy": state.get("policy"),
+            "q_network": state.get("q_network"),
+            "obs_rms": state.get("obs_rms"),
+        }
+        new_tc = filter.transform_all(state, TrajectoryCollection(None, traj))
+        tc = state.get("tc").merge(new_tc, tc_size)
+        # the second key is unused, but the split is kept: it fixes the resample key stream the benchmarks were run with
+        k_res, _ = jax.random.split(k_annotate)
+        tc = annotate_chunked(
+            lambda lane, k, rows: res.transform(state, lane, k, rows), tc, k_res, res_chunk, res.FIELDS
+        )
+        state = rnk.hook(state, tc)
+        tc = rnk.transform_all(state, tc)
+        state, m_step = alg.perform_mult_steps(state, k_m, policy_opt_size, tc, policy_batch_size)
+        tc = ret.transform_all(state, tc, k_ret)
+        state, v_step = state.get("q_network").perform_mult_sgd(state, k_q, q_opt_steps, tc, q_batch_size, ["tq", "q"])
+        state = state.set("tc", tc).sync().set("key", key)
+        memory_size = jnp.sum(tc.trajectories().mask)
+        return state, {
+            "m_step": m_step,
+            "v_step": v_step,
+            "pre": pre,
+            "eta": state.get("eta"),
+            "memory_size": memory_size,
+        }
+
+    # compiled only when a host environment is trained; the JAX epoch above is unchanged
+    host_learn = jax.jit(jax.vmap(learn_host), donate_argnums=0) if env.uses_host else None
+
+    def run_host_chunk(state: ModelState, batch_size: int, num: int) -> tuple[ModelState, dict[str, Any]]:
+        """``num`` epochs whose rollouts step Gymnasium on the host and whose updates stay one vmapped program."""
+        if host_learn is None:
+            raise RuntimeError("host epochs are only compiled for a host environment")
+
+        def stack(trees: list[Any]) -> Any:
+            return jax.tree.map(lambda *xs: jnp.stack(xs), *trees)
+
+        epochs: list[dict[str, Any]] = []
+        for _ in range(num):
+            trajectories: list[Trajectory] = []
+            rollouts: list[dict[str, Any]] = []
+            obs_rms: list[Any] = []
+            state_filters: list[Any] = []
+            reward_filters: list[Any] = []
+            for i in range(len(runs.seeds)):
+                seed_state = SeedRuns.seed_slice(state, i)
+                k_rollout = jax.random.split(seed_state.get("key"), 6)[1]
+                seed_state, tc, rollout = env.execute_policy_host(
+                    seed_state,
+                    k_rollout,
+                    seed_state.get("policy"),
+                    max_steps,
+                    batch_size,
+                    exploration=True,
+                    num_envs=num_envs,
+                )
+                trajectories.append(tc.trajectories())
+                rollouts.append(rollout)
+                obs_rms.append(seed_state.get("obs_rms"))
+                state_filters.append(seed_state.get("state_filter"))
+                reward_filters.append(seed_state.get("reward_filter"))
+            state = (
+                state.set("obs_rms", stack(obs_rms))
+                .set("state_filter", stack(state_filters))
+                .set("reward_filter", stack(reward_filters))
+            )
+            state, learned = host_learn(state, stack(trajectories))
+            learned["rollout"] = stack(rollouts)
+            epochs.append(learned)
+        # seed axis already leads; the epoch axis matches jax.lax.scan inside the vmapped JAX chunk
+        return state, jax.tree.map(lambda *xs: jnp.stack(xs, axis=1), *epochs)
+
     # names for rewards
     stoch_reward = "sreward"
 
@@ -278,7 +358,10 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
                     # a chunk of full epochs must not overshoot the budget, the shortened last epoch runs on its own
                     num = max(1, min(num, (max_env_steps - done_steps) // epoch_steps))
 
-            state, metrics = run_chunk(state, num_new_steps, num)
+            if env.uses_host:
+                state, metrics = run_host_chunk(state, num_new_steps, num)
+            else:
+                state, metrics = run_chunk(state, num_new_steps, num)
             metrics = jax.device_get(metrics)
             LAST_MEMORY_SIZES.extend(int(m) for m in np.asarray(metrics["memory_size"]).reshape(-1))
 
@@ -349,7 +432,10 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
                 runs.store_best(i, float(seed_mc["log"].get([stoch_reward], e)[0][e - 1, 0]), e - 1)
             cli.empty().print("last model saved")
     finally:
-        runs.close()
+        try:
+            runs.close()
+        finally:
+            env.close()
     for plot in rew_plots:
         plot.close()
     return np.stack([seed_mc["log"].get([stoch_reward], e)[0] for seed_mc in runs.mcs])

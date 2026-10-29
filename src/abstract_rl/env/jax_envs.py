@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
+from abstract_rl.env.host_gym import HostGymEnv
 from abstract_rl.misc.typing import DTYPE
 
 
@@ -40,16 +41,16 @@ class JaxEnv(Protocol):
     ) -> tuple[Any, Float[Array, " Ds"], Float[Array, ""], Bool[Array, ""], Bool[Array, ""]]: ...
 
 
-_REGISTRY: dict[str, Callable[[], JaxEnv]] = {}
+_REGISTRY: dict[str, Callable[[], JaxEnv | HostGymEnv]] = {}
 
 
-def register_env(env_id: str, factory: Callable[[], JaxEnv]) -> None:
+def register_env(env_id: str, factory: Callable[[], JaxEnv | HostGymEnv]) -> None:
     """Register (or replace) the factory of an environment id."""
     _REGISTRY[env_id] = factory
 
 
-def make_env(env_id: str) -> JaxEnv:
-    """Build the JAX environment of a Gymnasium id."""
+def make_env(env_id: str) -> JaxEnv | HostGymEnv:
+    """Build the environment of a Gymnasium id (a JAX env, or a host Gymnasium env such as Humanoid-v5)."""
     if env_id not in _REGISTRY:
         raise KeyError(f"unknown environment {env_id}, known: {sorted(_REGISTRY)}")
     return _REGISTRY[env_id]()
@@ -334,3 +335,11 @@ register_env("InvertedDoublePendulum-v5", InvertedDoublePendulumV5)
 # episode's return differs only by the final substep's displacement over dt.
 register_env("HalfCheetah-v5", lambda: BraxEnv("halfcheetah"))
 register_env("AcrobotSwingup-v0", lambda: PlaygroundEnv("AcrobotSwingup"))
+
+
+def _humanoid_v5() -> HostGymEnv:
+    """Gymnasium ``Humanoid-v5`` stepped on the host. An MJX or Brax humanoid is not this environment."""
+    return HostGymEnv("Humanoid-v5")
+
+
+register_env("Humanoid-v5", _humanoid_v5)

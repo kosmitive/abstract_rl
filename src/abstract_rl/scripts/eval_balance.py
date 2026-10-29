@@ -93,7 +93,14 @@ def run_episode(
     """Run one episode with the policy mean (sampled actions if ``stochastic``). Returns the episodic return and the
     angle at each step. The episode is seeded with ``seed`` and the observation statistics of ``state`` stay frozen."""
     max_steps = env_wrapper.conf.get_root("max_steps")
-    traj = jax.device_get(_episode(env_wrapper, policy, state, jax.random.key(seed), max_steps, stochastic))
+    # the jitted episode steps a JAX environment; a host Gymnasium env is stepped in Python
+    if env_wrapper.uses_host:
+        _, traj = env_wrapper.execute_policy_once(
+            state, jax.random.key(seed), max_steps, policy, opt=not stochastic, update_stats=False, record=True
+        )
+        traj = jax.device_get(traj)
+    else:
+        traj = jax.device_get(_episode(env_wrapper, policy, state, jax.random.key(seed), max_steps, stochastic))
     mask = np.asarray(traj.mask, bool)
     total = float(np.sum(np.asarray(traj.raw_rewards, np.float64)[mask]))
     # the angle of the raw observation, the stored next states are normalised if obs_norm is set
