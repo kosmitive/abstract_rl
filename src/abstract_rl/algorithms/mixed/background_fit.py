@@ -176,8 +176,14 @@ def worker_main(r_fd: int, w_fd: int) -> None:
             params = tree_unflatten([(k, mx.array(v)) for k, v in flat])
             new_params, logs = fit(params, tree_unflatten(arrays), indices)
             conn_out.send(([(k, np.array(v)) for k, v in cast(list[tuple[str, Any]], tree_flatten(new_params))], logs))
+        except BrokenPipeError:
+            # the main process is gone
+            return
         except Exception:
-            conn_out.send(traceback.format_exc())
+            try:
+                conn_out.send(traceback.format_exc())
+            except BrokenPipeError:
+                return
 
 
 if __name__ == "__main__":
