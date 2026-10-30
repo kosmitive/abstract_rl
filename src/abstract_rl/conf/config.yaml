@@ -13,6 +13,10 @@ defaults:
 
 seed: 1
 data_root: data
+# MLX device for the networks and the optimization (the Gymnasium environments always run on the host): cpu, gpu or
+# auto. auto selects the GPU (Metal) for MPO, whose Q fit and annotation of the replay memory are large batched
+# operations, and the CPU for TRPO, whose rollout evaluates the policy once per environment step.
+device: auto
 # hard env-step budget (null: keep the value from the algorithm node, which is unset unless a tune file sets one)
 max_env_steps: null
 env_order:

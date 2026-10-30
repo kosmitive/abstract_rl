@@ -13,8 +13,8 @@ import json
 import os
 import sys
 
+import mlx.core as mx
 import numpy as np
-import torch
 
 from abstract_rl.scripts.eval_balance import load_policy
 from abstract_rl.scripts.hydra_conf import success
@@ -30,9 +30,8 @@ def evaluate(run_dir: str, episodes: int = 20, seed: int = 10_000, model: str = 
         obs, _ = env.reset(seed=seed + i)
         total, steps, done = 0.0, 0, False
         while not done and (max_steps is None or steps < max_steps):
-            with torch.no_grad():
-                s = torch.as_tensor(env_wrapper._preprocess(obs), dtype=torch.float32).view(1, -1)
-                a = policy.mode(states=s).reshape(-1).numpy().astype(np.float64)
+            s = mx.array(np.asarray(env_wrapper._preprocess(obs), dtype=np.float32).reshape(1, -1))
+            a = np.array(policy.mode(states=s)).reshape(-1).astype(np.float64)
             obs, r, terminated, truncated, _ = env.step(a)
             total += float(r)
             steps += 1

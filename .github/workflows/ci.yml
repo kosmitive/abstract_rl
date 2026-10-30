@@ -70,7 +70,6 @@ jobs:
           wheel="$(ls "$GITHUB_WORKSPACE"/dist/*.whl)"
           cd "$RUNNER_TEMP"
           uv venv --python 3.13 venv
-          uv pip install --python venv/bin/python "$wheel" \
-            --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+          uv pip install --python venv/bin/python "$wheel"
           venv/bin/python -c "import abstract_rl.scripts.run"
           venv/bin/python -m abstract_rl.scripts.run --cfg job env=halfcheetah alg=trpo alg.trpo_tr_eps=0.03

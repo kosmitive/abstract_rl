@@ -23,11 +23,54 @@
 from collections.abc import Iterator
 from typing import Any
 
+import mlx.core as mx
 import numpy as np
+from mlx.utils import tree_map
 
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
 from abstract_rl.misc.cli_printer import CliPrinter
+
+
+def draw_indices(num_data_points: int, batch_size: int) -> np.ndarray:
+    """Draw the sorted transition indices of one batch from numpy's global RNG, at most every transition once."""
+    batch_size = min(batch_size, num_data_points)
+    return np.sort(np.random.randint(0, num_data_points, size=batch_size))  # noqa: NPY002
+
+
+class FlatReplay:
+    """
+    The transitions of a trajectory collection concatenated once into float32 MLX arrays. Drawing a batch is then one
+    gather on the device instead of a walk over the trajectories and a copy from numpy. For the same state of numpy's
+    RNG, sample returns the same arrays as TrajectoryCollection.sample(...).to_tree(...).
+    """
+
+    def __init__(self, tc: "TrajectoryCollection", fields: list[str]) -> None:
+        self.tree = tc.to_batch([]).to_tree([])
+        self.tree["annotations"] = {f: tc.annotation(f) for f in fields}
+        self.num_data_points = int(self.tree["rewards"].shape[0])
+        mx.eval(self.tree)
+
+    def draw(self, batch_size: int) -> np.ndarray:
+        return draw_indices(self.num_data_points, batch_size)
+
+    def draw_batches(self, num_batches: int, batch_size: int) -> np.ndarray:
+        """
+        The indices [num_batches, batch_size] of num_batches calls of draw, also the same state of numpy's RNG after
+        it: randint draws its values one after another, so one call for all batches gives the same values.
+        """
+        batch_size = min(batch_size, self.num_data_points)
+        indices = np.random.randint(0, self.num_data_points, size=(num_batches, batch_size))  # noqa: NPY002
+        # the same order, sorting int32 is about three times faster
+        return np.sort(indices.astype(np.int32), axis=1) if self.num_data_points <= 2**31 else np.sort(indices, axis=1)
+
+    def gather(self, indices: Any) -> dict[str, Any]:
+        """The rows at the indices of every array of the tree."""
+        indices = mx.array(indices, dtype=mx.int32) if isinstance(indices, np.ndarray) else indices
+        return tree_map(lambda v: mx.take(v, indices, axis=0), self.tree)
+
+    def sample(self, batch_size: int) -> dict[str, Any]:
+        return self.gather(self.draw(batch_size))
 
 
 class TrajectoryCollection:
@@ -42,6 +85,8 @@ class TrajectoryCollection:
         self._sd = self._env.observation_dim
         self._ad = self._env.action_dim
         self.cli = CliPrinter().instance
+        # per annotation: the per-trajectory values and their concatenation on the device
+        self._flat: dict[str, tuple[tuple[Any, ...], mx.array]] = {}
 
     def __len__(self) -> int:
         return len(self.__trajectories)
@@ -106,6 +151,32 @@ class TrajectoryCollection:
     def trajectories(self) -> list[Trajectory]:
         return self.__trajectories
 
+    def annotation(self, field: str) -> mx.array:
+        """
+        An annotation of all trajectories concatenated, as float32 MLX array. If a batched operator stored it with
+        store_annotation and no trajectory changed it since, this is the array the operator computed, no copy.
+        """
+        # the cache keeps the per-trajectory arrays it was built from, so their identities cannot be reused
+        rows = tuple(t[field] for t in self.__trajectories)
+        cached = self._flat.get(field)
+        same = cached is not None and len(cached[0]) == len(rows)
+        if cached is not None and same and all(a is b for a, b in zip(cached[0], rows, strict=True)):
+            return cached[1]
+        from abstract_rl.misc.mixed import to_mx
+
+        flat = mx.concatenate([to_mx(t[field]) for t in self.__trajectories])
+        self._flat[field] = (rows, flat)
+        return flat
+
+    def store_annotation(self, field: str, flat: mx.array) -> None:
+        """Store the rows of an annotation of all trajectories: per trajectory a view of flat, and flat itself."""
+        offset = 0
+        for t in self.__trajectories:
+            t[field] = flat[offset : offset + len(t)]
+            offset += len(t)
+        assert offset == flat.shape[0]
+        self._flat[field] = (tuple(t[field] for t in self.__trajectories), flat)
+
     def to_batch(self, copy_fields: list[str] | None = None) -> Batch:
         """Convert the trajectory collection to a batch.
 
@@ -155,11 +226,14 @@ class TrajectoryCollection:
         assert len(batch) > 0
         return batch
 
+    def flatten(self, copy_fields: list[str] | None = None) -> FlatReplay:
+        """A flat copy of the collection on the device, for drawing many batches, see FlatReplay."""
+        return FlatReplay(self, copy_fields if copy_fields is not None else [])
+
     def sample(self, batch_size: int, copy_fields: list[str] | None = None) -> Batch:
 
         fields = copy_fields if copy_fields is not None else []
-        batch_size = min(batch_size, self.__num_data_points)
-        tindices = np.sort(np.random.randint(0, self.__num_data_points, size=batch_size))  # noqa: NPY002
+        tindices = draw_indices(self.__num_data_points, batch_size)
 
         # define basic lists
         states: Any = []

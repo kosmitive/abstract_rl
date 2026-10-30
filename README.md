@@ -4,18 +4,10 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Modular PyTorch implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
+Modular [MLX](https://github.com/ml-explore/mlx) implementations of **TRPO** and **MPO** for continuous control, built from small composable pieces
 (environment wrapper, trajectory operators, policies, value functions). Python 3.13, [uv](https://docs.astral.sh/uv/),
-ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions and is benchmarked against
-Stable-Baselines3.
-
-| MPO on Pendulum-v1 (swing-up from hanging down) | MPO on MountainCarContinuous-v0 | MPO on InvertedPendulum-v5 |
-|---|---|---|
-| ![MPO Pendulum](docs/mpo_pendulum_best.gif) | ![MPO MountainCar](docs/mpo_mountaincar_best.gif) | ![MPO InvertedPendulum](docs/mpo_inverted_pendulum_best.gif) |
-| **MPO on InvertedDoublePendulum-v5** | **MPO on HalfCheetah-v5** | |
-| ![MPO InvertedDoublePendulum](docs/mpo_inverted_double_pendulum_best.gif) | ![MPO HalfCheetah](docs/mpo_halfcheetah_best.gif) | |
-
-The GIFs show one greedy episode of the best MPO policy per environment (highest greedy return over all runs).
+ruff, mypy; runs on Gymnasium environments with one- and multi-dimensional actions. This branch is an experimental
+MLX port of `main`, see [MLX port (experiment)](#mlx-port-experiment).
 
 - **TRPO**: Trust Region Policy Optimization ([Schulman et al., 2015](https://arxiv.org/abs/1502.05477)) with
   [GAE](https://arxiv.org/abs/1506.02438), conjugate gradient natural gradient step and a KL line search.
@@ -27,72 +19,151 @@ The GIFs show one greedy episode of the best MPO policy per environment (highest
 
 ```bash
 git clone https://github.com/kosmitive/abstract_rl.git && cd abstract_rl
-uv sync                                   # add --extra mujoco and/or baselines for the benchmark extras
+uv sync                                   # add --extra mujoco for the MuJoCo environments (HalfCheetah-v5, ...)
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo seed=1
 ```
 
-PyTorch comes from the CPU wheel index (enough for these small networks); remove the `[tool.uv.sources]` entry in
-`pyproject.toml` for the default CUDA build.
+MLX uses Metal on Apple silicon and its CPU backend on Linux (`mlx[cpu]`).
 
 ## Results
 
-Configurations are Hydra YAML files in [`src/abstract_rl/conf/`](src/abstract_rl/conf) (`run env=<env> alg=<alg> seed=N`),
-**5 seeds (1-5) per cell**, and every algorithm gets the same environment-step budget per environment (`steps` in `conf/env/<env>.yaml`).
-*Greedy return* is the mean of 20 seeded evaluation episodes with the policy mean (final policy), averaged over seeds
-± std over seeds. *Solved* counts seeds whose greedy return reaches the threshold (Gymnasium reward threshold;
-Pendulum-v1 has none, -150 corresponds to swing-up and balance). *Steps to threshold* is the first step at which the
-smoothed training return reaches it (median over the seeds that do).
+Results of this branch on a MacBook M3 Max. Configurations are Hydra YAML files in
+[`src/abstract_rl/conf/`](src/abstract_rl/conf) (`run env=<env> alg=<alg> seed=N`), **5 seeds (1-5) per cell**, with
+the environment-step budget of the environment (`steps` in `conf/env/<env>.yaml`). *Greedy return* is the mean of 20
+seeded evaluation episodes with the policy mean (final policy), averaged over seeds ± std over seeds. *Solved* counts
+seeds whose greedy return reaches the threshold (Gymnasium reward threshold; Pendulum-v1 has none, -150 corresponds to
+swing-up and balance).
 
-| Environment | Algorithm | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
+| Environment | Algorithm | MLX device | Seeds | Steps | Greedy return (mean ± std) | Solved | Steps to threshold |
+|---|---|---|---|---|---|---|---|
+| Pendulum-v1 (≥ -150) | TRPO | CPU | 5 | 800,000 | -124.5 ± 1.2 | 5/5 | 188,000 |
+| Pendulum-v1 (≥ -150) | MPO | GPU | 5 | 800,000 | -122.7 ± 2.0 | 5/5 | 36,000 |
+| MountainCarContinuous-v0 (≥ 90) | TRPO | CPU | 5 | 400,923 | 94.9 ± 0.3 | 5/5 | 84,735 |
+| MountainCarContinuous-v0 (≥ 90) | MPO | GPU | 5 | 400,027 | 93.6 ± 0.0 | 5/5 | 34,000 |
+| InvertedPendulum-v5 (≥ 950) | TRPO | CPU | 5 | 150,930 | 1000.0 ± 0.0 | 5/5 | 27,000 |
+| InvertedPendulum-v5 (≥ 950) | MPO | GPU | 5 | 150,401 | 1000.0 ± 0.0 | 5/5 | 20,000 |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO | CPU | 5 | 605,548 | 7904.9 ± 3196.3 | 4/5 | 482,962 |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO | GPU | 5 | 600,488 | 8367.9 ± 1975.5 | 3/5 | 63,074 |
+| HalfCheetah-v5 (≥ 4800) | TRPO | CPU | 5 | 1,200,000 | 4113.4 ± 1579.3 | 2/5 | 837,000 (2/5 seeds) |
+| HalfCheetah-v5 (≥ 4800) | MPO | GPU | 5 | 1,200,000 | 8065.0 ± 913.3 | 5/5 | 192,000 |
+
+*Steps* is the median over the seeds of the environment steps of the run. *Steps to threshold* is the median over the
+seeds of the first step at which the smoothed training return reaches the threshold (`scripts.compare`), over the seeds
+that reach it. All 50 runs were trained on 2026-10-25 with the current training code (34f8be9); the 15 Pendulum-v1 and
+HalfCheetah-v5 MPO runs reproduced every seed's greedy return of the earlier runs exactly.
+
+![Training return over environment steps, mean ± std over 5 seeds; the dotted line is the threshold](docs/benchmark.png)
+
+Per seed (seeds 1–5), greedy return:
+
+- Pendulum-v1: TRPO -123.4, -124.2, -126.5, -124.4, -124.1; MPO -120.9, -120.9, -122.3, -124.9, -124.8.
+- MountainCarContinuous-v0: TRPO 95.1, 95.0, 94.7, 94.6, 95.2; MPO 93.6, 93.6, 93.6, 93.5, 93.6.
+- InvertedPendulum-v5: TRPO and MPO 1000.0 for every seed.
+- InvertedDoublePendulum-v5: TRPO 9335.9, 9333.3, 2187.1, 9334.7, 9333.4; MPO 8952.6, 9357.1, 4847.3, 9346.2, 9336.4.
+  The training return of MPO reaches the threshold after about 63k steps but then oscillates around it, so the final
+  policy of seeds 1 and 3 misses it.
+- HalfCheetah-v5: TRPO 3840.0, 3707.4, 5509.0, 5695.9, 1814.5; MPO 7786.3, 6977.4, 9049.4, 8974.9, 7537.1.
+
+The throughput is in [Performance](#performance) and [MLX port (experiment)](#mlx-port-experiment).
+
+Tuned settings (`conf/tune/`):
+
+- Pendulum-v1: TRPO discount 0.95, MPO E-step epsilon `rnk_eps` 0.05.
+- MountainCarContinuous-v0: MPO uses a fixed (not learned) exploration std of 2.0. A learned std shrinks to ≈ 0
+  before the sparse goal is found.
+- InvertedPendulum-v5: MPO uses a 300k instead of 50k replay memory (`tc_size`).
+- InvertedDoublePendulum-v5: MPO uses a KL trust region (`mpo_trust_regions`) of 0.005 instead of 0.01; TRPO
+  75 × 8000 steps with a KL trust region of 0.005, without the value L2 penalty.
+- HalfCheetah-v5: MPO 1,200 epochs with `policy_sigma` 0.5 and a KL trust region of 0.02; TRPO 300 × 4000 steps with
+  a KL trust region of 0.02 and `obs_norm`, without the value L2 penalty.
+- The Pendulum and MountainCar runs stop at the exact step budget (`max_env_steps`). Elsewhere MPO stops after a
+  fixed number of epochs and finishes the running episode.
+- Seeds are fixed, but the results are not bit-reproducible across machines or MLX devices.
+
+## Performance
+
+Training times of the runs in [Results](#results) on a MacBook Pro with an Apple M3 Max (48 GB), macOS 26.7.1, MLX
+0.32.4, Python 3.13.12, MuJoCo 3.17.0 and Gymnasium 1.4.0, measured on 2026-10-26 at c8387fa on an otherwise idle
+machine. Wall-clock time includes the start-up; an epoch is 1,000 environment steps for MPO and `policy_batch_size`
+steps for TRPO (4,000; 2,000 on InvertedPendulum-v5, 8,000 on InvertedDoublePendulum-v5).
+
+| Environment | Algorithm | MLX device | Steps | Wall-clock, 1 seed at a time | ms/epoch | Steps/s | Wall-clock per seed, 4 seeds at a time | ms/epoch | Steps/s per seed | Wall-clock, 4 seeds |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Pendulum-v1 | TRPO | CPU | 800,000 | 1.0 min (62 s) | 309 | 12,960 | 1.1 min (65–66 s) | 326 | 12,277 | 104 s |
+| Pendulum-v1 | MPO | GPU | 800,000 | 3.3 min (197 s) | 247 | 4,053 | 7.0 min (409–430 s) | 525 | 1,905 | 460 s |
+| MountainCarContinuous-v0 | TRPO | CPU | 400,923 | 0.6 min (34 s) | 344 | 12,121 | 0.6 min (38–40 s) | 383 | 10,757 | 77 s |
+| MountainCarContinuous-v0 | MPO | GPU | 400,027 | 1.7 min (104 s) | 282 | 3,837 | 3.4 min (201–211 s) | 549 | 1,947 | 256 s |
+| InvertedPendulum-v5 | TRPO | CPU | 150,930 | 0.3 min (19 s) | 256 | 7,885 | 0.3 min (18–20 s) | 257 | 7,888 | 56 s |
+| InvertedPendulum-v5 | MPO | GPU | 150,401 | 1.0 min (63 s) | 418 | 2,471 | 1.8 min (107–113 s) | 727 | 1,404 | 152 s |
+| InvertedDoublePendulum-v5 | TRPO | CPU | 605,548 | 2.1 min (127 s) | 1,699 | 4,760 | 2.1 min (113–135 s) | 1,655 | 4,912 | 139 s |
+| InvertedDoublePendulum-v5 | MPO | GPU | 600,488 | 2.8 min (166 s) | 277 | 3,826 | 5.8 min (341–357 s) | 580 | 1,823 | 360 s |
+| HalfCheetah-v5 | TRPO | CPU | 1,200,000 | 2.1 min (128 s) | 428 | 9,339 | 2.3 min (137–138 s) | 457 | 8,755 | 141 s |
+| HalfCheetah-v5 | MPO | GPU | 1,200,000 | 5.0 min (302 s) | 251 | 3,977 | 13.3 min (794–800 s) | 665 | 1,504 | 800 s |
+
+*1 seed at a time* is seed 1 alone; *4 seeds at a time* is seeds 2–5 run in parallel (the four MPO runs share the GPU,
+so each one is slower, but together they reach about 6,000 steps/s on HalfCheetah; the TRPO runs use the CPU and barely
+slow down). *ms/epoch* is the wall-clock time divided by the number of epochs, the mean over the seeds when 4 run at a
+time. *Wall-clock, 4 seeds* is the time from the first start to the last end of the four runs; each seed runs the cells
+one after the other, so the four runs of a cell start up to 50 s apart and overlap with the neighbouring cells.
+c8387fa adds the NumPy host actor (see [MLX port (experiment)](#mlx-port-experiment)) to the 1-D action environments
+(all but HalfCheetah-v5); it cuts a Pendulum-v1 TRPO epoch from 428 ms to 309 ms and an MPO epoch from 258 ms to
+247 ms, and the training returns of all 50 timed runs are bit-identical to the runs in [Results](#results).
+
+## Return over training time
+
+The training return of [Results](#results) over the wall-clock training time in seconds instead of the environment
+steps, MPO and TRPO on the same axis. Mean ± std over seeds 1–5 at the same environment step; the time axis is the
+clock of seed 1 run alone (the *1 seed at a time* column of [Performance](#performance), start-up included), the
+time at which each epoch was logged. Both algorithms train for the same environment-step budget, so the TRPO curves
+end earlier: per 1,000 environment steps MPO takes 1,000 Q-function and 100 policy gradient steps (`val_opt_steps`,
+`policy_opt_steps`), TRPO 200 value gradient steps and one policy update per batch of 2,000 to 8,000 steps, so a TRPO
+run takes 1.3× (InvertedDoublePendulum-v5) to 3.3× (InvertedPendulum-v5) less time.
+
+![Training return over wall-clock training time, mean ± std over 5 seeds; the dotted line is the threshold](docs/return_over_time.png)
+
+| Environment | Algorithm | Time to threshold | Full run |
+|---|---|---|---|
+| Pendulum-v1 | TRPO | 15 s | 62 s |
+| Pendulum-v1 | MPO | 8 s | 197 s |
+| MountainCarContinuous-v0 | TRPO | 7 s | 34 s |
+| MountainCarContinuous-v0 | MPO | 5 s | 104 s |
+| InvertedPendulum-v5 | TRPO | 7 s | 19 s |
+| InvertedPendulum-v5 | MPO | 9 s | 63 s |
+| InvertedDoublePendulum-v5 | TRPO | 116 s | 127 s |
+| InvertedDoublePendulum-v5 | MPO | 29 s | 166 s |
+| HalfCheetah-v5 | TRPO | 90 s (2/5 seeds) | 128 s |
+| HalfCheetah-v5 | MPO | 47 s | 302 s |
+
+*Time to threshold* is the time of seed 1 at the median *steps to threshold* of [Results](#results).
+
+## Comparison with PyTorch (`main`)
+
+The only non-MLX numbers in this README: the PyTorch implementation on `main` (eb41282, the runs of its README) against
+this branch ([Results](#results)), 5 seeds (1–5) per cell, the same configurations and environment-step budgets.
+Greedy return of the final policy over 20 episodes, mean ± std over the seeds (ddof 1 for both, so the PyTorch std is
+larger than the population std in the README of `main`); *Solved* as in [Results](#results).
+
+| Environment | Algorithm | PyTorch greedy return | PyTorch solved | MLX greedy return | MLX solved | Epoch time, PyTorch / MLX |
 |---|---|---|---|---|---|---|
-| Pendulum-v1 (≥ -150) | TRPO (abstract_rl) | 5 | 800,000 | -127.7 ± 2.7 | 5/5 | 192,000 (5/5) |
-| Pendulum-v1 (≥ -150) | MPO (abstract_rl) | 5 | 800,000 | -123.3 ± 0.4 | 5/5 | 36,000 (5/5) |
-| Pendulum-v1 (≥ -150) | TRPO (SB3) | 5 | 800,000 | -124.0 ± 1.6 | 5/5 | 204,000 (5/5) |
-| Pendulum-v1 (≥ -150) | TD3 (SB3) | 5 | 800,000 | -120.9 ± 1.0 | 5/5 | 36,000 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | TRPO (abstract_rl) | 5 | 401,254 | 94.1 ± 0.7 | 5/5 | 44,286 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | MPO (abstract_rl) | 5 | 400,038 | 93.6 ± 0.0 | 5/5 | 56,000 (5/5) |
-| MountainCarContinuous-v0 (≥ 90) | TRPO (SB3) | 5 | 400,072 | 74.7 ± 37.5 | 4/5 | 52,013 (4/5) |
-| MountainCarContinuous-v0 (≥ 90) | TD3 (SB3) | 5 | 399,966 | 54.9 ± 77.4 | 4/5 | 28,993 (4/5) |
-| InvertedPendulum-v5 (≥ 950) | TRPO (abstract_rl) | 5 | 151,370 | 1000.0 ± 0.0 | 5/5 | 28,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | MPO (abstract_rl) | 5 | 150,357 | 1000.0 ± 0.0 | 5/5 | 20,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | TRPO (SB3) | 5 | 150,523 | 1000.0 ± 0.0 | 5/5 | 29,000 (5/5) |
-| InvertedPendulum-v5 (≥ 950) | TD3 (SB3) | 5 | 149,310 | 1000.0 ± 0.0 | 5/5 | 25,000 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (abstract_rl) | 5 | 605,543 | 9332.8 ± 3.8 | 5/5 | 431,112 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | MPO (abstract_rl) | 5 | 600,620 | 9332.9 ± 7.4 | 5/5 | 66,110 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | TRPO (SB3) | 5 | 599,517 | 8270.3 ± 602.2 | 0/5 | 107,946 (5/5) |
-| InvertedDoublePendulum-v5 (≥ 9100) | TD3 (SB3) | 5 | 599,243 | 9347.9 ± 10.3 | 5/5 | 26,996 (5/5) |
-| HalfCheetah-v5 (≥ 4800) | TRPO (abstract_rl) | 5 | 1,200,000 | 4471.7 ± 1645.7 | 3/5 | 732,000 (2/5) |
-| HalfCheetah-v5 (≥ 4800) | MPO (abstract_rl) | 5 | 1,200,000 | 7940.5 ± 1398.2 | 5/5 | 210,000 (5/5) |
-| HalfCheetah-v5 (≥ 4800) | TRPO (SB3) | 5 | 1,200,000 | 2547.9 ± 1314.1 | 0/5 | never |
-| HalfCheetah-v5 (≥ 4800) | TD3 (SB3) | 5 | 1,200,000 | 11009.6 ± 522.5 | 5/5 | 96,000 (5/5) |
+| Pendulum-v1 (≥ -150) | TRPO | -127.7 ± 3.0 | 5/5 | -124.5 ± 1.2 | 5/5 | – |
+| Pendulum-v1 (≥ -150) | MPO | -123.3 ± 0.5 | 5/5 | -122.7 ± 2.0 | 5/5 | – |
+| MountainCarContinuous-v0 (≥ 90) | TRPO | 94.1 ± 0.8 | 5/5 | 94.9 ± 0.3 | 5/5 | – |
+| MountainCarContinuous-v0 (≥ 90) | MPO | 93.6 ± 0.0 | 5/5 | 93.6 ± 0.0 | 5/5 | – |
+| InvertedPendulum-v5 (≥ 950) | TRPO | 1000.0 ± 0.0 | 5/5 | 1000.0 ± 0.0 | 5/5 | – |
+| InvertedPendulum-v5 (≥ 950) | MPO | 1000.0 ± 0.0 | 5/5 | 1000.0 ± 0.0 | 5/5 | – |
+| InvertedDoublePendulum-v5 (≥ 9100) | TRPO | 9332.8 ± 4.2 | 5/5 | 7904.9 ± 3196.3 | 4/5 | – |
+| InvertedDoublePendulum-v5 (≥ 9100) | MPO | 9332.9 ± 8.3 | 5/5 | 8367.9 ± 1975.5 | 3/5 | – |
+| HalfCheetah-v5 (≥ 4800) | TRPO | 4471.7 ± 1839.9 | 3/5 | 4113.4 ± 1579.3 | 2/5 | – |
+| HalfCheetah-v5 (≥ 4800) | MPO | 7940.5 ± 1563.2 | 5/5 | 8065.0 ± 913.3 | 5/5 | 6.19 s / 0.23 s (27×) |
 
-Learning curves of the four algorithms on environment steps (training return, mean ± std over the 5 seeds; the
-runs of the table):
-
-![benchmark](docs/benchmark.png)
-
-- **Tuned for Pendulum-v1 and MountainCarContinuous-v0** (one setting each): TRPO Pendulum discount 0.95, MPO
-  Pendulum E-step epsilon `rnk_eps` 0.05, MPO MountainCar fixed (not learned) exploration std 2.0. A learned std
-  shrinks to ≈ 0 before the sparse goal is found, so MountainCar uses a fixed standard deviation. These runs stop at the exact
-  step budget (`max_env_steps`).
-- **Pendulum balance check** (`scripts/eval_balance.py`, |θ| < 0.1 rad in the last 100 of 200 steps, 20 start
-  states): TRPO and MPO balance in 5/5 seeds and 20/20 episodes each (max |θ| 0.012-0.057 rad TRPO, 0.032-0.098 rad MPO).
-- **SB3 baselines**: TRPO uses the library defaults, except on MountainCarContinuous-v0, which uses the
-  [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) hyper-parameters (`--zoo`, gSDE exploration) at
-  the same 400k budget; with the defaults it scores 0 there. On Pendulum-v1 the zoo settings were worse than the
-  defaults (-136), so the defaults are shown. TD3 always uses the zoo hyper-parameters (`ZOO` in
-  `scripts/run_baselines.py`); on MountainCarContinuous-v0 one of five seeds (seed 3) never finds the goal (-99.9).
-- **MPO tuned for InvertedPendulum and InvertedDoublePendulum** (one setting each, see `conf/tune/`): a 300k
-  instead of 50k replay memory (`tc_size`) on InvertedPendulum (4/5 → 5/5 seeds) and a KL trust region
-  (`mpo_trust_regions`) of 0.005 instead of 0.01 on InvertedDoublePendulum (3/5 → 5/5); both remove the late-training
-  collapse of single seeds. HalfCheetah MPO is not re-tuned. MPO stops after a fixed number of epochs and finishes the
-  running episode, so on the two pendulums it ran up to 5% (InvertedPendulum) and 7% (InvertedDoublePendulum) past the
-  budget; the learning curves are cut at the budget, the greedy return is the one of the final policy.
-- **TRPO tuned for InvertedDoublePendulum and HalfCheetah** (see `conf/tune/`): InvertedDoublePendulum 75 × 8000
-  steps with a KL trust region of 0.005, HalfCheetah 300 × 4000 steps with a KL trust region of 0.02 and `obs_norm`,
-  both without the value L2 penalty (InvertedDoublePendulum 2/5 → 5/5, HalfCheetah 0/5 → 3/5 seeds).
-- Runs were made on Linux and a MacBook (Python 3.13) with one CPU thread; seeds are fixed but
-  results are not bit-reproducible across machines.
+- The PyTorch runs were made on Linux and a MacBook with one CPU thread and several runs in parallel, so their
+  wall-clock times are not comparable and are not shown. The MLX runs are the ones of [Performance](#performance)
+  (M3 Max).
+- The one comparable timing is the HalfCheetah-v5 MPO epoch: the median of epochs 50–59 (full replay memory) of a
+  62-epoch run with the same benchmark script on the same M3 Max, measured on 2026-10-24, PyTorch on the CPU
+  (eb41282, 161 steps/s) and MLX on the GPU (c37bd7b, 4,301 steps/s).
+- MLX draws other random numbers than PyTorch, so the same seed gives another run (see
+  [Deviations from `main`](#deviations-from-main)).
 
 ## Usage
 
@@ -102,13 +173,12 @@ uv run python -m abstract_rl.scripts.run env=mountaincar alg=mpo data_root=resul
 uv run python -m abstract_rl.scripts.run env=pendulum alg=trpo --cfg job              # print the config
 uv run python -m abstract_rl.scripts.eval_returns data/HalfCheetah-v5/mpo/<run> --save       # greedy evaluation
 uv run python -m abstract_rl.scripts.eval_balance data/Pendulum-v1/trpo/<run>              # Pendulum balance check
-uv run python -m abstract_rl.scripts.run_baselines HalfCheetah-v5 td3 --seed 1 --data-root results
 uv run python -m abstract_rl.scripts.compare results --out docs/                         # table and plots
 uv run python -m abstract_rl.run.run_policy data/Pendulum-v1/trpo/<run> --render         # replay a policy
 ```
 
 Configuration ([Hydra](https://hydra.cc)) ships inside the package in `src/abstract_rl/conf/`: `config.yaml` (`seed`,
-`data_root`, `max_env_steps`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
+`data_root`, `max_env_steps`, `device`), `alg/{trpo,mpo}.yaml` (Pendulum-v1 defaults), `env/<env>.yaml` (Gymnasium `id`,
 `success` threshold, `steps` budget), `tune_all/<env>.yaml` (overrides for both algorithms) and
 `tune/<env>_<alg>.yaml` (per-algorithm overrides). Environments: `pendulum`,
 `mountaincar`, `inverted_pendulum`, `inverted_double_pendulum`, `halfcheetah`. `alg.<key>=...` overrides beat the
@@ -148,6 +218,253 @@ A training loop is a sequence of operator applications on trajectory collections
 
 Target networks are registered as `Syncable`s in the `ModelConfiguration` and synced with `mc.sync()`.
 
+## MLX port (experiment)
+
+This branch implements the existing modules with [MLX](https://github.com/ml-explore/mlx) (`mlx>=0.32.4`). There is no backend abstraction: the layout, the operators and the training loops are the ones of `main`
+(eb41282). The Gymnasium environments run on the host. The networks and the optimization run on the MLX device set by
+`device` in `conf/config.yaml`:
+
+- `cpu` or `gpu` (Metal) select the device directly.
+- `auto` is the default. It selects the GPU for MPO, if Metal is available, and the CPU for TRPO (see the
+  throughput below).
+- With MPO on the GPU, the rollout still evaluates the policy on the CPU stream (`env_rollout_on_cpu: true` in
+  `conf/alg/mpo.yaml`). One small policy evaluation per environment step is faster on the CPU, and the parameters
+  are shared through the unified memory, so nothing is copied.
+
+### Deviations from `main`
+
+- **Compiled steps.** The TRPO step (surrogate, Fisher-vector products via `jvp` of `grad`, conjugate gradient, line
+  search) is one `mx.compile`d function. The conjugate gradient runs a fixed number of iterations and freezes the
+  iterate once it has converged, instead of exiting early. The line search evaluates all step sizes and selects the
+  first accepted one with `where`. The Adam steps of the V and Q functions, the MPO M-step and the temperature dual
+  are compiled as well, with the parameters and the Adam moments as implicit state.
+- **Precision.** Everything is float32, except the MPO temperature dual. The dual runs in float64 on the CPU, as
+  before, and in float32 on the GPU, because Metal has no float64.
+- **Random numbers.** MLX has its own generator, so a seed draws other actions than on `main`. Runs are seeded,
+  but they are not identical to the ones of `main`.
+- **Diagonal covariance only.** `cov_type: full` raises an error, because `mx.linalg.cholesky` has no gradient
+  (vjp).
+- **Minibatches.** The M-step and the V and Q fits gather their minibatches on the device from one flat float32
+  copy of the replay memory per fit (`FlatReplay`). The indices are drawn with the same numpy calls as in
+  `TrajectoryCollection.sample`, so the batches are identical. The V and Q fits and the M-step run ten Adam steps
+  per compiled call; the log line of every tenth step is printed after the fit.
+- **Batched annotation.** The resampling, the Q annotation and Retrace run over all trajectories at once, in calls of
+  2,048 states (compiled) on the GPU and 512 states (not compiled, which is faster on the MLX CPU) on the CPU. The
+  noise is still drawn per trajectory, and the Retrace bootstrap stops at trajectory seams. The annotations, the
+  temperature dual and the ranking stay on the device. This changes the results by float rounding only.
+- **Buffer cache.** `default_settings` caps the MLX buffer cache at 2 GiB (`misc/mixed.py`). Without a cap it grows
+  to the memory limit.
+- **ELU.** `mlx.nn.elu` has a NaN gradient for pre-activations above about 88. The port uses its own ELU
+  (`misc/mixed.py`). Without it, the MPO critic diverges after about 25 epochs on Pendulum.
+- **Storage.** Models are stored as safetensors.
+- **Q fit in a worker process.** On the GPU, the MPO Q fit runs in a second process (`val_background_fit: auto`,
+  `algorithms/mixed/background_fit.py`) while the main process runs the rollout of the next epoch. The replay and the
+  batch indices are passed in shared memory. The Q function is only read again after the rollout, so the results are
+  bit-identical.
+- **Host actor.** The rollout samples the actions of the Gaussian policy with NumPy (`env_host_policy: auto` in
+  `conf/alg/mpo.yaml`), from the same random bits as MLX. The results are bit-identical.
+  It covers the univariate and the diagonal policy with up to 7 action dimensions, for MPO and TRPO (c8387fa adds the
+  univariate policy; a layer with one output calls `cblas_sgemm` like MLX).
+- **Metal kernels.** On the GPU, the temperature dual runs as two Metal kernels per Adam step, and the Q fit and the
+  M-step use a fused Adam kernel (`misc/metal_kernels.py`). The fused Adam is bit-identical to `mlx.optimizers.Adam`;
+  the dual differs by float noise (relative 8e-7 in the temperature).
+- **Not used:** `vmap` over seeds. Seeds run as separate processes.
+
+### Tests and Metal checks
+
+- The parity tests compare the port with a fixture generated from `main` (eb41282, `tests/golden/`) on the same
+  weights and batches. It covers the policy log-likelihood, mode and KL, the conjugate gradient, the TRPO step, the V and Q
+  Adam steps, TD, GAE, Retrace, the temperature dual and the M-steps.
+- `tests/test_mlx_capabilities.py` checks the MLX features the port relies on.
+- `tests/test_metal.py` compares Metal with the CPU and is skipped without Metal:
+
+| Metal vs CPU (M3 Max) | max abs diff | other |
+|---|---|---|
+| scatter-add gradient (duplicate indices) | 2.4e-7 | max \|g\| 3.8 |
+| compiled TRPO step, parameters | 8.4e-6 | norm rel 5.5e-6, step norm rel 2.7e-4 |
+| Q annotation 50k × 20 | 3.6e-7 | CPU 1.33 s, GPU 0.033 s |
+
+### Throughput (MacBook M3 Max, Pendulum-v1, environment steps per second)
+
+Notes on the setup:
+
+- All runs use nice 10 and are run one configuration at a time. Other jobs were running on the machine, so the
+  numbers vary by about 10–30% between repetitions.
+- TRPO is measured on epochs 6–11 (4,000 steps per epoch). MPO uses 1,000 steps per epoch. Its cost grows with the
+  replay memory, so MPO is reported at three memory sizes:
+  - epochs 1–4: up to 5k transitions
+  - epochs 15–24: about 20k transitions
+  - epochs 50–59: the full 50k memory, which is how most of a run looks
+- "5 seeds" is 5 processes, summed.
+- The MLX numbers for MPO epochs 50–59 include the speedups described below the tables (re-timed on
+  2026-10-24; the GPU cell with speedups 1–10). The other MPO columns were measured before them.
+
+| MLX device | TRPO, 1 seed | TRPO, 5 seeds | MPO epochs 1–4, 1 seed | MPO epochs 1–4, 5 seeds | MPO epochs 15–24 | MPO epochs 50–59 |
+|---|---|---|---|---|---|---|
+| CPU | **6,357** | **26,054** | 1,068 | 3,730 | 444 | 385 |
+| GPU | 2,478 | 10,952 | **1,086** | **3,940** | **523** | **3,891** |
+
+Seconds per epoch by phase, MPO at epochs 50–59 (full memory):
+
+| MLX | rollout | resample + annotation | E-step | M-step | Retrace | Q fit | epoch |
+|---|---|---|---|---|---|---|---|
+| CPU, before the speedups | 0.09 | 0.83 | 0.75 | 0.24 | 0.55 | 1.97 | 4.45 |
+| GPU, before the speedups | 0.35 | 0.14 | 0.10 | 0.24 | 0.13 | 2.00 | 3.00 |
+| **CPU** | 0.08 | 0.79 | 0.62 | 0.05 | 0.46 | 0.57 | 2.60 |
+| GPU, speedups 1–4 | 0.08 | 0.04 | 0.07 | 0.04 | 0.03 | 0.19 | 0.47 |
+| **GPU**, speedups 1–10 | 0.08 | 0.04 | 0.002 | 0.04 | 0.03 | 0.015 | 0.26 |
+
+- **TRPO.** The rollout evaluates the policy once per environment step. On Metal every such call costs about
+  0.4 ms of dispatch and synchronization, which makes the rollout 3× slower than on the CPU (1.5 s vs 0.48 s per
+  epoch). The compiled TRPO step itself is faster on the GPU (0.012 s vs 0.034 s), but it is a small part of an
+  epoch.
+- **MPO.** With the full memory, resampling, annotation, E-step and Retrace are 4–8× faster on the GPU than on the
+  MLX CPU. Before the speedups below, the Q fit (1,000 small Adam steps per epoch) cost about the same on both
+  devices, and the rollout was slower on the GPU for the same reason as in TRPO. The first GPU epoch includes
+  compilation and the Metal warm-up.
+- Peak memory, with the 2 GiB cache cap: the MLX CPU runs reach about 2.7 GB RSS and MLX on the GPU about 0.7 GB.
+  The batched annotation peaks at 0.5 GB of live MLX buffers on the CPU and 1.6 GB on the
+  GPU.
+- This is why `auto` uses the GPU for MPO and the CPU for TRPO.
+
+**MLX speedups for MPO.** The per-step costs of the M-step and the Q fit were the host work around each small
+step: walking the trajectories for a minibatch, the copy from numpy and one dispatch per Adam step. The rollout on
+the GPU paid a Metal round trip per environment step. Four changes address this:
+
+1. The minibatches are gathered on the device from one flat copy of the replay memory, and the value fits run ten
+   Adam steps per compiled call. The results are bit-identical: the rewards of all 60 epochs are the same as before
+   on both devices.
+2. With the networks on the GPU, the rollout evaluates the policy on the CPU stream. This changes the results by
+   float noise only (about 5e-7 on a 75-step rollout, `tests/test_metal.py`), which compounds over training.
+3. The resampling, the Q annotation and Retrace run over all trajectories in a few large calls instead of one call
+   per trajectory. The annotations, the temperature dual and the ranking stay on the device (float noise; the ranking
+   differs from the numpy one by at most 4.8e-7).
+4. The temperature dual and the M-step run 20 and 10 Adam steps per compiled call, and the rollout reads the log
+   likelihoods once per episode. These are bit-identical.
+
+Re-timed on 2026-10-24: MPO, seed 1, 60 epochs, the median epoch of epochs 50–59 (full memory), 3 repeats each, one
+run at a time with nice 10. The load average was 5–14, from desktop apps. The repeats differ by less than 4%.
+
+| MLX device | before (ebd5a3b) | 1. flat replay, ten Adam steps per call | 1. + 2. rollout on the CPU stream |
+|---|---|---|---|
+| GPU | 2.89 s, 346 steps/s | 0.92 s, 1,084 steps/s (3.1×) | 0.69 s, 1,442 steps/s (4.2×) |
+| CPU | 4.35 s, 230 steps/s | 2.90 s, 345 steps/s (1.5×) | – (the rollout is on the CPU already) |
+
+Steps 3 and 4 were timed the same way, at a load average of 4–6, against 84b558e (steps 1 and 2) as the baseline.
+The repeats differ by less than 1.5%. The baseline took 0.64 s on the GPU in this session (0.69 s above, at a
+higher load).
+
+| MLX device | 1. + 2. (84b558e) | 1.–4. | gain |
+|---|---|---|---|
+| GPU | 0.638 s, 1,568 steps/s | **0.468 s, 2,135 steps/s** | 1.36× |
+| CPU | 2.785 s, 359 steps/s | **2.595 s, 385 steps/s** | 1.07× |
+
+With steps 1–4, the Q fit (1,000 small Adam steps, 39% of the epoch) was the largest phase on the GPU, ahead of the
+rollout (17%) and the temperature dual (14%). On the CPU, the annotation and Retrace (48%) dominate. Batching them is
+not faster there, because the MLX CPU spends that time in the network arithmetic, not in dispatch.
+
+Steps 5–10 are for MPO on the GPU. The Q fit was bound by the host: MLX encodes about 2 µs per graph node, so the
+1,000 Adam steps cost the same with batches of 16 or 256. The changes take the Q fit off the critical path and cut
+the nodes per step. All of them are bit-identical, except step 5 (float noise):
+
+5. The temperature dual runs as two Metal kernels per Adam step (per-row partial sums, then the reduction and the
+   Adam update), instead of a compiled graph: 63 ms → 4 ms per epoch on HalfCheetah-v5.
+6. The Q fit runs in a worker process during the rollout of the next epoch, and the worker encodes larger Metal
+   command buffers (`MLX_MAX_OPS_PER_BUFFER=2000`).
+7. The rollout samples the actions with NumPy instead of one MLX call per environment step.
+8. A fused Adam kernel updates up to three parameters per Metal dispatch, with the bias correction computed in the
+   kernel, for the Q fit and the M-step.
+9. The batch indices of a fit are drawn with one `randint` call (the same values and random state as before).
+10. The batches of all Adam steps of a compiled call are gathered with one `take`.
+
+Pendulum-v1, timed as above at a load average of 4–5, 3 repeats interleaved with the baseline (a556171, steps 1–4):
+**0.462 s → 0.257 s per epoch, 2,166 → 3,891 steps/s (1.80×)**. The main process waits 0.015 s for the Q fit
+after the rollout. HalfCheetah-v5 is below.
+
+### HalfCheetah-v5 (MPO)
+
+Timed with the configuration of the repository (1,000 steps per epoch, 62 epochs), the median epoch of epochs 50–59
+(full 50k memory), one run at a time with nice 10, at a load average of 4–6. The GPU number with the speedups is the
+median of 3 repeats (0.470–0.490 s); the other cells are single runs.
+
+| MLX device | before the speedups (ebd5a3b) | with the speedups | gain |
+|---|---|---|---|
+| GPU | 1.419 s, 705 steps/s | **0.477 s, 2,095 steps/s** | 2.97× |
+| CPU | 3.092 s, 323 steps/s | **2.898 s, 345 steps/s** | 1.07× |
+
+The gain on the GPU is smaller than on Pendulum because HalfCheetah episodes have 1,000 steps. The memory holds 50
+trajectories instead of 250, so the per-trajectory host work that the speedups remove was smaller to begin with. With
+the speedups, the GPU epoch splits into the Q fit (0.17 s), the rollout (0.10 s), the temperature dual (0.07 s), the
+annotation and the M-step (0.04 s each) and Retrace (0.03 s).
+
+With speedups 5–10 (c37bd7b), timed on 2026-10-24 against a556171 (speedups 1–4), 3 repeats interleaved, at a load
+average of 3–5. The epoch median of epochs 50–59 is shown for two harnesses: the benchmark harness synchronizes the
+device around every phase; the second one synchronizes only at the start of each epoch.
+
+| GPU | speedups 1–4 (a556171) | speedups 1–10 (c37bd7b) | gain |
+|---|---|---|---|
+| synchronized phases | 0.487 s, 2,054 steps/s | **0.233 s, 4,301 steps/s** | 2.09× |
+| epoch start only | 0.476 s, 2,099 steps/s | **0.223 s, 4,494 steps/s** | 2.14× |
+
+The repeats were 0.475–0.501 s and 0.228–0.234 s (synchronized), and 0.472–0.478 s and 0.220–0.225 s. Per change, each
+against the previous commit in the same session (epoch median in ms, synchronized phases unless noted):
+
+| Step | Commit | Change | Before | After |
+|---|---|---|---|---|
+| 5 | 2578cda | temperature dual as Metal kernels | 447 | 380 (phase benchmark) |
+| 6 | 80833d7 | Q fit in a worker process | 412.0 | 301.5 |
+| 6 | 4ccd27d | larger command buffers in the worker | 321.8 | 306.0 |
+| 7 | 2670633 | actions sampled with NumPy | 306.0 | 278.6 |
+| 8 | fd0e6f2 | fused Adam for the Q fit | 278.1 | 262.2 |
+| 8 | 185c848 | fused Adam for the M-step | 262.2 | 254.6 |
+| 9 | f0732b9 | one `randint` per fit | 257.2 | 257.0 (Q fit start 10.6 → 5.6) |
+| 8 | 5c4c8cb | bias correction in the Adam kernel | 263.8 | 241.3 |
+| 10 | c37bd7b | one gather per compiled call | 236.5 | 220.3 (epoch start only) |
+
+With speedups 1–10, the synchronized epoch splits into the rollout (0.060 s), the annotation (0.047 s), the M-step
+(0.036 s), Retrace (0.025 s), the plot (0.017 s), the wait for the Q fit (0.015 s) and the start of the Q fit
+(0.005 s). The Q fit takes about 0.125 s in the worker, during the rollout and the plot.
+
+### Learning (Pendulum-v1, 800k steps, 5 seeds, greedy return of the final policy over 20 episodes)
+
+| Algorithm | MLX device | Greedy return (mean ± std over seeds) | Solved |
+|---|---|---|---|
+| TRPO | CPU | -124.5 ± 1.2 | 5/5 |
+| MPO | GPU (`auto`), with speedups 1–10 (c37bd7b) | -122.7 ± 2.0 | 5/5 |
+| MPO | GPU, with speedups 1–4 | -122.9 ± 2.8 | 5/5 |
+| MPO | GPU, with speedups 1–2 (84b558e) | -122.7 ± 1.5 | 5/5 |
+| MPO | GPU, before the speedups (ebd5a3b) | -122.3 ± 1.6 | 5/5 |
+
+Per seed (seeds 1–5): TRPO -123.4, -124.2, -126.5, -124.4, -124.1. MPO -120.9, -120.9, -122.3, -124.9, -124.8, with
+speedups 1–4 -120.4, -120.6, -125.8, -125.9, -121.7, with speedups 1–2 -120.6, -122.4, -124.4, -122.4, -123.8, and before the speedups -120.9, -120.6, -122.3, -124.5, -123.1.
+The wall time for 800k steps is 1.0 min for TRPO (CPU) and 3.3 min for MPO (GPU), one seed at a time; with four
+seeds at a time it is 1.1 min and 7.0 min (see [Performance](#performance)). It was 8 min with speedups 1–4 (two seeds at a time), 11 min with speedups 1–2 and
+44 min before the speedups.
+
+### Learning (HalfCheetah-v5, MPO, 1.2M steps, 5 seeds, greedy return of the final policy over 20 episodes)
+
+The configuration of the repository (1,200 epochs of 1,000 steps), on the GPU (`auto`) with speedups 1–10 (c37bd7b):
+**8065.0 ± 913.3, 5/5 solved** (threshold 4800). Per seed (seeds 1–5): 7786.3, 6977.4, 9049.4, 8974.9, 7537.1. The
+smoothed training return first reaches 4800 after 192,000 steps (median over the seeds; 120,000–318,000). The wall
+time is 5.0 min for one seed at a time and 13.3 min per seed with four seeds at a time (see [Performance](#performance)).
+
+With speedups 1–4 (86a0cea): 8012.9 ± 862.4, 5/5 solved; per seed 7694.1, 6725.0, 8070.0, 8860.6, 8714.9; 4800 after
+204,000 steps (132,000–354,000); 14 min per seed with three seeds at a time and 11.5 min with two at a time.
+
+### Verdict
+
+- **The MLX port is a drop-in for the implementation on `main`.**
+  - It keeps the architecture.
+  - It matches `main` numerically on the same weights and batches (parity tests).
+  - It learns: Pendulum-v1, MountainCarContinuous-v0 and InvertedPendulum-v5 5/5 for both algorithms,
+    InvertedDoublePendulum-v5 4/5 (TRPO) and 3/5 (MPO), HalfCheetah-v5 5/5 for MPO and 2/5 for TRPO.
+  - MPO with the full memory runs at 3,891 steps/s on the GPU (Pendulum-v1, 4,301 on HalfCheetah-v5), and TRPO at
+    6,357 steps/s on the CPU.
+- **The GPU only helps MPO.** That is where large batched operations over the replay memory dominate. TRPO stays
+  bound by the per-step policy evaluation of the Gymnasium rollout and is best on the CPU.
+- **Remaining limits:** no full covariance (Cholesky without a gradient), one extra workaround (ELU), and
+  Apple-only GPU support.
+
 ## Development
 
 ```bash
@@ -158,11 +475,12 @@ uv run pytest                                          # unit and short training
 
 ## Changes compared to the 2019 version
 
-The original code (2019, Python 3.6, PyTorch 1.0, gym 0.12) targeted robot control experiments. The port keeps the
+The original code (2019, Python 3.6, gym 0.12) targeted robot control experiments. The port keeps the
 module layout and operator design. In short:
 
 - uv + `pyproject.toml` (Python ≥ 3.13, src layout, `abstract_rl.*` imports), ruff, mypy, pytest; `gym` → `gymnasium`
-  (`terminated`/`truncated`); modern PyTorch APIs.
+  (`terminated`/`truncated`). On this branch the networks and the optimization use MLX, see
+  [MLX port (experiment)](#mlx-port-experiment).
 - Removed (still in the history of `main`): the experimental SAC, the dueling Q network, the circular tail
   memory, the robot specific scripts, unused helpers.
 - Added: `DiagonalGaussianPolicy` for multi-dimensional actions, tanh action squashing, Hydra run configs,
@@ -192,7 +510,7 @@ If you use this code, please cite the repository (see [`CITATION.cff`](CITATION.
 ```bibtex
 @software{semmler_abstract_rl,
   author = {Semmler, Markus},
-  title  = {Abstract RL: modular PyTorch TRPO and MPO},
+  title  = {Abstract RL: modular MLX TRPO and MPO},
   url    = {https://github.com/kosmitive/abstract_rl},
   year   = {2026}
 }

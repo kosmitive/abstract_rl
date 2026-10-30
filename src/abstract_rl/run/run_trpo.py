@@ -1,8 +1,8 @@
 from os.path import join
 from typing import Any
 
+import mlx.core as mx
 import numpy as np
-import torch
 
 from abstract_rl.algorithms.continuous.policy_gradient.trust_region_policy_optimization import TRPOAlgorithm
 
@@ -31,11 +31,12 @@ def run_trpo(conf: Any) -> np.ndarray:
     conf.setdefault("alg", "trpo")
     mc = ModelConfiguration(conf)
     conf = mc["conf"]
-    default_settings(conf.get_root("torch_threads") if "torch_threads" in conf else 1)
+    # auto: TRPO evaluates the policy once per environment step, a small batch that is faster on the CPU
+    default_settings(conf.get_root("device") if "device" in conf else "cpu", prefer_gpu=False)
     cli = CliPrinter().instance
 
     seed = conf["seed"]
-    torch.manual_seed(seed)
+    mx.random.seed(seed)
     np.random.seed(seed)  # noqa: NPY002
     num_epochs = conf["num_epochs"]
     max_steps = conf["max_steps"]

@@ -1,20 +1,113 @@
-import torch
+from collections.abc import Callable
+from typing import Any, cast
 
+import mlx.core as mx
+import mlx.nn as nn
+import mlx.optimizers as optim
+import numpy as np
+from mlx.utils import tree_flatten, tree_map, tree_unflatten
+
+from abstract_rl.algorithms.mixed.background_fit import BackgroundFit
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
 from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
 from abstract_rl.misc.cli_printer import CliPrinter
+from abstract_rl.misc.metal_kernels import FusedAdam
+
+# Adam steps per compiled call of perform_mult_sgd, also the interval of its log lines
+STEPS_PER_CALL = 10
+
+
+def compile_adam_fns(model: nn.Module, opt: optim.Optimizer, objective: Callable) -> dict[str, Callable]:
+    """
+    The compiled Adam functions of a model, the parameters and the moments of Adam are their implicit inputs and
+    outputs. ``step`` does one step on a batch, ``obj`` evaluates the objective and ``steps`` does one step per row of
+    indices, each on the rows of the replay at the indices.
+    :param model: The model to fit.
+    :param opt: Its optimizer.
+    :param objective: The objective of a batch, given as a tree of arrays.
+    """
+    loss_and_grad = nn.value_and_grad(model, objective)
+
+    def step(tree: dict[str, Any]) -> mx.array:
+        obj, grads = loss_and_grad(tree)
+        opt.update(model, grads)
+        return obj
+
+    state = [model.state, opt.state]
+
+    def steps(tree: dict[str, Any], indices: mx.array) -> tuple[mx.array, mx.array]:
+        # one adam step per row of indices, the objective before and after the first one for the log line. The rows
+        # of all steps are gathered at once, each step slices its batch from them
+        num, size = indices.shape
+        rows = tree_map(lambda v: mx.take(v, indices.reshape(-1), axis=0), tree)
+        for j in range(num):
+            batch = tree_map(lambda v, j=j: v[j * size : (j + 1) * size], rows)
+            step_obj = step(batch)
+            if j == 0:
+                pre_obj, post_obj = step_obj, objective(batch)
+        return pre_obj, post_obj
+
+    return {
+        "step": mx.compile(step, inputs=state, outputs=state),
+        "obj": mx.compile(objective, inputs=state),
+        "steps": mx.compile(steps, inputs=state, outputs=state),
+    }
+
+
+def run_adam_steps(
+    steps: Callable, model: nn.Module, opt: optim.Optimizer, tree: dict[str, Any], indices: mx.array
+) -> list[tuple[int, mx.array, mx.array]]:
+    """
+    Queue one Adam step per row of indices, STEPS_PER_CALL of them per call of the compiled ``steps``.
+    :return: The step and the objective before and after it, of every first step of a call.
+    """
+    logs = []
+    for s in range(0, indices.shape[0], STEPS_PER_CALL):
+        pre_obj, post_obj = steps(tree, indices[s : s + STEPS_PER_CALL])
+        mx.async_eval(pre_obj, post_obj, model.parameters(), opt.state)
+        logs.append((s, pre_obj, post_obj))
+    return logs
+
+
+def flat_items(tree: Any) -> list[tuple[str, Any]]:
+    """The leaves of a tree as (key, leaf), see mlx.utils.tree_flatten."""
+    return cast(list[tuple[str, Any]], tree_flatten(tree))
+
+
+def flat_numpy(tree: Any) -> list[tuple[str, np.ndarray]]:
+    """The leaves of a tree of MLX arrays as (key, NumPy array), e.g. the state of an optimizer."""
+    return [(k, np.array(v)) for k, v in flat_items(tree)]
+
+
+def assign_in_place(dst: Any, src: Any) -> None:
+    """Write the leaves of src into the nested dicts and lists of dst, so references to dst (e.g. the inputs of a
+    compiled function) see the new values."""
+    items = src.items() if isinstance(src, dict) else enumerate(src)
+    for k, v in items:
+        if isinstance(v, dict | list):
+            assign_in_place(dst[k], v)
+        else:
+            dst[k] = v
+
+
+def set_optimizer_state(opt: optim.Optimizer, flat: list[tuple[str, np.ndarray]]) -> None:
+    """Set the state of an optimizer in place from flat_numpy(opt.state)."""
+    assert sorted(k for k, _ in flat) == sorted(k for k, _ in flat_items(opt.state)), "optimizer state mismatch"
+    assign_in_place(opt.state, tree_unflatten([(k, mx.array(v)) for k, v in flat]))
 
 
 class VanillaGradient:
     """Simple vanilla gradient. Simply inherit from this class to add support.
 
-    Value networks are fit with Adam on minibatches.
+    Value networks are fit with Adam on minibatches. One Adam step (forward, backward and update) is one compiled MLX
+    function, the parameters and the moments of Adam are its implicit inputs and outputs. perform_mult_sgd runs
+    STEPS_PER_CALL steps, each gathering its batch from a flat replay on the device, in one compiled function.
     """
 
-    def __init__(self, model: torch.nn.Module, lr: float = 1e-3) -> None:
+    def __init__(self, model: nn.Module, lr: float = 1e-3) -> None:
         """
         Add vanilla gradient optimization.
-        :param model: The pytorch model to use.
+        :param model: The mlx model to use.
         :param lr: The Adam learning rate.
         """
         self._model = model
@@ -22,7 +115,55 @@ class VanillaGradient:
 
         self.fmtstr = "%10i | %14.10f | %14.10f"
         self.titlestr = "%10s | %14s | %14s"
-        self.opt = torch.optim.Adam(self._model.parameters(), lr=lr)
+        # torch.optim.Adam corrects the bias of the moments, mlx only does that if asked to. FusedAdam is optim.Adam
+        # in fewer GPU dispatches
+        self.opt = FusedAdam(learning_rate=lr, bias_correction=True)
+        self.opt.init(self._model.trainable_parameters())
+        # a plain attribute, not an entry of the module tree of the inheriting network
+        self._compiled: dict[str, Callable]
+        object.__setattr__(self, "_compiled", {})
+        # the worker of fit_in_background and the log values of the last fit, not yet printed
+        self._worker: BackgroundFit | None = None
+        self._logs: list[tuple[int, Any, Any]] = []
+
+    def _adam_fns(self) -> tuple[Callable, Callable]:
+        if not self._compiled:
+            self._compiled.update(compile_adam_fns(self._model, self.opt, lambda t: self.tr_obj(Batch.from_tree(t))))
+        return self._compiled["step"], self._compiled["obj"]
+
+    def background_spec(self) -> tuple[str, dict[str, Any]]:
+        """The builder (``module:function``) and its arguments of a fit worker, see BackgroundFit."""
+        raise NotImplementedError
+
+    def fit_in_background(self) -> None:
+        """
+        Run every later perform_mult_sgd in a worker process. start_mult_sgd returns once the fit is submitted and
+        finish_mult_sgd waits for it and sets the new parameters. The parameters are only valid after
+        finish_mult_sgd. The moments of Adam live in the worker, so opt is not used anymore.
+        """
+        if self._worker is None:
+            self._worker = BackgroundFit(*self.background_spec())
+
+    def close(self) -> None:
+        """Stop the fit worker, if any. Pending results are collected first."""
+        if self._worker is not None:
+            self.finish_mult_sgd()
+            self._worker.close()
+            self._worker = None
+
+    def optimizer_state(self) -> list[tuple[str, np.ndarray]]:
+        """The state of Adam (in the fit worker, if any), a pending fit is collected first."""
+        self.finish_mult_sgd()
+        if self._worker is not None:
+            return self._worker.optimizer_state()
+        return flat_numpy(self.opt.state)
+
+    def set_optimizer_state(self, flat: list[tuple[str, np.ndarray]]) -> None:
+        """Set the state of Adam (in the fit worker, if any) from optimizer_state."""
+        if self._worker is not None:
+            self._worker.set_optimizer_state(flat)
+        else:
+            set_optimizer_state(self.opt, flat)
 
     def perform_mult_sgd(self, num_steps: int, tc: TrajectoryCollection, batch_size: int, fields: list[str]) -> None:
         """
@@ -33,27 +174,86 @@ class VanillaGradient:
         :param batch_size: The batch size to use for each batch.
         :param fields: The additional fields, which need to be sampled.
         """
+        self.start_mult_sgd(num_steps, tc, batch_size, fields)
+        self.finish_mult_sgd()
+
+    def start_mult_sgd(self, num_steps: int, tc: TrajectoryCollection, batch_size: int, fields: list[str]) -> None:
+        """
+        Draws the batches and queues the steps of perform_mult_sgd, see there. finish_mult_sgd prints the log lines.
+        """
 
         self.cli.print(self.titlestr % ("k", "pre_objective", "post_objective")).line()
+        if num_steps == 0:
+            return
 
-        for s in range(num_steps):
-            batch = tc.sample(batch_size, fields)
-            self.perform_adam_step(s, batch)
+        # the indices of all batches, drawn in the order and with the calls of one tc.sample per step
+        replay = tc.flatten(fields)
+        indices = mx.array(replay.draw_batches(num_steps, batch_size), dtype=mx.int32)
+        if self._worker is not None:
+            self.finish_mult_sgd()
+            self._worker.submit(self._model.parameters(), replay.tree, indices)
+            return
+        self._adam_fns()
+        self._logs = run_adam_steps(self._compiled["steps"], self._model, self.opt, replay.tree, indices)
 
-    def perform_adam_step(self, curst: int, batch: Batch) -> None:
+    def finish_mult_sgd(self) -> None:
+        """Waits for the steps of start_mult_sgd, sets the parameters of a background fit and prints the log lines."""
+        if self._worker is not None and self._worker.pending:
+            params, self._logs = self._worker.result()
+            self._model.update(params)
+
+        # the log lines of perform_adam_step, printed once all steps are queued
+        logs, self._logs = self._logs, []
+        for s, pre_obj, post_obj in logs:
+            self.cli.print(self.fmtstr % (s, float(pre_obj), float(post_obj)))
+
+    def perform_adam_step(self, curst: int, batch: Batch, fields: list[str] | None = None) -> None:
         """Performs a single adam step on the passed batch.
 
         :param curst: The current step.
         :param batch: The batch to use.
+        :param fields: The annotations of the batch the objective needs, all of them if None.
         """
-        self.opt.zero_grad()
-        obj = self.tr_obj(batch)
-        obj.backward()
-        self.opt.step()
+        step, obj_fn = self._adam_fns()
+        tree = batch.to_tree(fields)
+        obj = step(tree)
         if curst % 10 == 0:
-            new_obj = self.tr_obj(batch)
+            new_obj = obj_fn(tree)
             self.cli.print(self.fmtstr % (curst, obj.item(), new_obj.item()))
+        else:
+            # the next batch is drawn while this step runs
+            mx.async_eval(obj, self._model.parameters(), self.opt.state)
 
-    def tr_obj(self, batch: Batch) -> torch.Tensor:
+    def tr_obj(self, batch: Batch) -> mx.array:
         """The training objective."""
         raise NotImplementedError
+
+
+class BackgroundAdamFit:
+    """
+    The fit of a worker process (see BackgroundFit) for a model fit like VanillaGradient.perform_mult_sgd. The moments
+    of Adam live in this object.
+    """
+
+    def __init__(self, model: nn.Module, lr: float, objective: Callable) -> None:
+        self.model = model
+        self.opt = FusedAdam(learning_rate=lr, bias_correction=True)
+        self.opt.init(model.trainable_parameters())
+        self.fns = compile_adam_fns(model, self.opt, objective)
+
+    def __call__(self, params: dict[str, Any], tree: dict[str, Any], indices: mx.array) -> tuple[Any, list]:
+        self.model.update(params)
+        logs = run_adam_steps(self.fns["steps"], self.model, self.opt, tree, indices)
+        mx.eval(logs, self.model.parameters(), self.opt.state)
+        return self.model.parameters(), [(s, pre.item(), post.item()) for s, pre, post in logs]
+
+    def optimizer_state(self) -> list[tuple[str, np.ndarray]]:
+        return flat_numpy(self.opt.state)
+
+    def set_optimizer_state(self, flat: list[tuple[str, np.ndarray]]) -> None:
+        set_optimizer_state(self.opt, flat)
+
+
+def background_adam_fit(model: nn.Module, lr: float, objective: Callable) -> BackgroundAdamFit:
+    """The fit of a worker process (see BackgroundFit) for a model fit like VanillaGradient.perform_mult_sgd."""
+    return BackgroundAdamFit(model, lr, objective)

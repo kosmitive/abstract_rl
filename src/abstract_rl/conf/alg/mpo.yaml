@@ -6,13 +6,17 @@ env_discount: 0.99
 env_normalize: true
 env_num_threads: 1
 env_render: false
+# evaluate the policy of the rollout on the CPU stream, also with device=gpu (only a speed setting)
+env_rollout_on_cpu: true
+# sample the rollout actions with NumPy where that gives the same actions and random keys as MLX: auto or false
+env_host_policy: auto
 policy_structure: [64, 64]
 policy_act_fn: [tanh, tanh, none]
 policy_layer_norm: false
 policy_init: xavier_gaussian
 policy_sync_steps: 1
 policy_sigma: 1.0
-# single (default), fixed, state, or full: state-dependent Cholesky L(s)
+# single (default), fixed or state (full, a state-dependent Cholesky L(s), is not available with MLX)
 policy_cov_type: single
 policy_squash: true
 filter_states: false
@@ -46,6 +50,8 @@ val_init: xavier_gaussian
 val_sync_steps: 1
 val_ret_lambda: 1.0
 val_l2_reg: 0.0
+# fit the q function in a worker process during the next rollout, same result: auto (on the GPU), true or false
+val_background_fit: auto
 policy_opt_steps: 100
 policy_batch_size: 256
 # m-step
@@ -55,3 +61,11 @@ mpo_trust_regions: [0.01]
 mpo_coordinate_ascent_objective: false
 mpo_coordinate_ascent_constraint: false
 mpo_l2_reg: 0.0
+# bound on the m-step Lagrange multipliers: null keeps exp(lm), [low, high] uses softplus(lm) + 1e-8 with lm clipped to
+# [low, high] after each step, e.g. [-18.0, 18.0]
+mpo_lm_bound: null
+# checkpoints for resuming a stopped run: write one every checkpoint_every epochs (null: never) to <run>/checkpoint, it
+# replaces the last one. resume: false starts a new run, true resumes the newest run below data_root with a checkpoint
+# (a new run if there is none), a run directory resumes that run. A resumed run continues bit identically
+checkpoint_every: null
+resume: false

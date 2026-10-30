@@ -1,11 +1,12 @@
 from typing import Any
 
+import mlx.core as mx
 import numpy as np
-import torch
 
 from abstract_rl.algorithms.mixed.non_parametric_trust_region_optimization import find_optimal_temperature
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
+from abstract_rl.misc.mixed import to_mx
 from abstract_rl.policy.non_parametric.non_parametric_policy import NonParametricPolicy
 
 
@@ -27,6 +28,7 @@ class NonParametricVariationalPolicyBuilder:
         self.tar_network = mc.get("q_network", True)
         self.tar_policy = mc.get("policy", True)
         self.eta: Any = [self.non_parametric_variational_init_eta]
+        self.eta_mx = mx.array([self.non_parametric_variational_init_eta], dtype=mx.float32)
         self.log = self.mc["log"]
         self.log.create_field("eta", 1)
 
@@ -36,14 +38,22 @@ class NonParametricVariationalPolicyBuilder:
         """
         tc = self.mc.get("tc")
 
-        # append all q values and likelihoods
-        q_tensor = np.concatenate(tuple([q["add_q"] for q in tc.trajectories()]))
+        # the sampled q values of all states, as the annotation stored them on the device
         eta = find_optimal_temperature(
-            torch.Tensor(q_tensor), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
+            tc.annotation("add_q"), self.non_parametric_variational_eps, self.eta[0], self.non_parametric_variational_lr
         )
 
-        self.eta = eta.detach().numpy()
+        self.eta_mx = eta
+        self.eta = np.array(eta)
         self.log.log({"eta": self.eta})
+
+    def log_weights(self, add_q: mx.array) -> mx.array:
+        """
+        The log weights of the non parametric policy, normalized per state on the device:
+        log q(a|s) = Q(s,a) / eta - log sum_a' exp(Q(s,a') / eta).
+        """
+        samples = to_mx(add_q) / self.eta_mx
+        return samples - mx.logsumexp(samples, axis=1, keepdims=True)
 
     def build(self, trajectory: Trajectory) -> NonParametricPolicy:
         """

@@ -1,3 +1,5 @@
+from typing import Any
+
 from numpy import ndarray
 
 
@@ -32,6 +34,41 @@ class Batch:
         self._next_states = next_states
         self._dones = ds
         self._log_likelihoods = log_likelihood
+
+    # --- conversion into a tree of MLX arrays, used as the input of compiled functions
+
+    def to_tree(self, fields: list[str] | None = None) -> dict[str, Any]:
+        """
+        Convert the batch (with the selected annotations) into a dictionary of float32 MLX arrays. This is the one
+        copy from numpy per batch.
+        :param fields: The annotations to convert, all of them if None.
+        :return: A tree of arrays, see from_tree.
+        """
+        from abstract_rl.misc.mixed import to_mx
+
+        keys = list(self._annotations) if fields is None else fields
+        return {
+            "states": to_mx(self._states),
+            "actions": to_mx(self._actions),
+            "log_likelihoods": to_mx(self._log_likelihoods),
+            "rewards": to_mx(self._rewards),
+            "next_states": to_mx(self._next_states),
+            "dones": to_mx(self._dones),
+            "annotations": {k: to_mx(self._annotations[k]) for k in keys},
+        }
+
+    @staticmethod
+    def from_tree(tree: dict[str, Any]) -> "Batch":
+        """Build a batch, whose fields are MLX arrays, from a tree created by to_tree."""
+        return Batch(
+            tree["states"],
+            tree["actions"],
+            tree["log_likelihoods"],
+            tree["rewards"],
+            tree["next_states"],
+            tree["dones"],
+            dict(tree["annotations"]),
+        )
 
     # --- some syntactic sugar
 

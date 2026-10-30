@@ -1,8 +1,7 @@
-import numpy as np
-
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.data_structures.temporal_difference_data.trajectory import Trajectory
-from abstract_rl.operator.trajectory_operator import TrajectoryOperator
+from abstract_rl.data_structures.temporal_difference_data.trajectory_collection import TrajectoryCollection
+from abstract_rl.operator.trajectory_operator import TrajectoryOperator, store_rows
 from abstract_rl.policy.non_parametric.non_parametric_variational_policy_builder import (
     NonParametricVariationalPolicyBuilder,
 )
@@ -35,13 +34,15 @@ class VariationalRankingOperator(TrajectoryOperator):
         Transform a trajectory with the current instance of the evaluation operator.
         :param trajectory: trajectory to transform.
         """
+        trajectory["grad_ranking"] = self.b.log_weights(trajectory["add_q"])
 
-        # call the super class
-        q = self.b.build(trajectory)
-        # normalize per state, e.g. log q(a|s) = Q(s,a) / eta - log sum_a' exp(Q(s,a') / eta)
-        max_q_samples = np.max(q.samples, axis=1, keepdims=True)
-        q_norm = np.log(np.sum(np.exp(q.samples - max_q_samples), axis=1, keepdims=True)) + max_q_samples
-        q.samples = q.samples - q_norm
-
-        # add a annotation to the trajectory
-        trajectory["grad_ranking"] = q.samples
+    def transform_all(self, trajectories: TrajectoryCollection | list[Trajectory]) -> None:
+        """
+        Annotates all trajectories with the normalized log weights (grad_ranking) of their sampled actions, computed on
+        the device over the concatenated q values.
+        """
+        if isinstance(trajectories, TrajectoryCollection):
+            store_rows(trajectories, {"grad_ranking": self.b.log_weights(trajectories.annotation("add_q"))})
+        else:
+            for t in trajectories:
+                self.transform(t)

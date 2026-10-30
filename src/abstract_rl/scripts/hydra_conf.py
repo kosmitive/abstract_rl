@@ -33,6 +33,7 @@ def run_dict(cfg: DictConfig) -> dict[str, Any]:
     conf["env_name"] = cfg.env.id
     conf["seed"] = cfg.seed
     conf["data_root"] = cfg.data_root
+    conf["device"] = cfg.device
     return conf
 
 

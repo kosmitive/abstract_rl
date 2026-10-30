@@ -6,7 +6,6 @@ from shutil import copy, copytree
 from typing import Any
 
 import numpy as np
-import torch
 
 from abstract_rl.data_structures.abstract_conf.hierarchical_conf import SharedConf
 from abstract_rl.data_structures.abstract_conf.syncable import Syncable
@@ -19,9 +18,11 @@ class ModelConfiguration:
     integrated a syncing mechanism due to the need of target and original data structures for more stable evaluations.
     """
 
-    def __init__(self, conf: dict[str, Any], root: str | None = None) -> None:
+    def __init__(self, conf: dict[str, Any], root: str | None = None, run_root: str | None = None) -> None:
         """
         Create a new model configuration with no syncables no data and no environment.
+        :param run_root: An existing run directory to use, e.g. to resume from its checkpoint. By default a new one
+            with a time stamp is created below ``<root>/<env_name>/<alg>``.
         """
 
         # settings for the script
@@ -39,15 +40,18 @@ class ModelConfiguration:
             self.env_dir = join(self.env_dir, self.alg_name)
             # parallel runs may create the same directories at the same time, so never check before creating
             makedirs(self.env_dir, exist_ok=True)
-            while True:
-                timestr = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-                self.run_root = join(self.env_dir, timestr)
-                try:
-                    makedirs(self.run_root)
-                    break
-                except FileExistsError:
-                    # another run started within the same microsecond, take a new time stamp
-                    continue
+            if run_root is not None:
+                self.run_root = run_root
+            else:
+                while True:
+                    timestr = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                    self.run_root = join(self.env_dir, timestr)
+                    try:
+                        makedirs(self.run_root)
+                        break
+                    except FileExistsError:
+                        # another run started within the same microsecond, take a new time stamp
+                        continue
 
             self.overall_step = 0
             self.best_return = -np.inf
@@ -92,7 +96,7 @@ class ModelConfiguration:
 
         for k in self.syncables:
             model = self.syncables[k][1]
-            model.load_state_dict(torch.load(join(self.run_root, "model/last", f"{k}.data")))
+            model.load_weights(join(self.run_root, "model/last", f"{k}.safetensors"))
 
         return self.overall_step
 
@@ -110,10 +114,10 @@ class ModelConfiguration:
 
         for k in self.syncables:
             model = self.syncables[k][1]
-            torch_path = join(self.model_root, name)
-            if not exists(torch_path):
-                mkdir(torch_path)
-            torch.save(model.state_dict(), join(torch_path, f"{k}.data"))
+            model_path = join(self.model_root, name)
+            if not exists(model_path):
+                mkdir(model_path)
+            model.save_weights(join(model_path, f"{k}.safetensors"))
 
     def store_best(self, ret: float, epoch: int) -> None:
         """Copy the stored ``last`` models (and observation statistics) to ``best`` if ``ret`` is a new best return."""

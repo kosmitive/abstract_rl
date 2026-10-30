@@ -4,7 +4,6 @@ import argparse
 from os.path import join
 
 import numpy as np
-import torch
 
 from abstract_rl.data_structures.abstract_conf.model_configuration import ModelConfiguration
 from abstract_rl.env.rollout_env_wrapper import RolloutEnvWrapper
@@ -14,7 +13,7 @@ from abstract_rl.policy.continuous.select_policy import select_policy
 def run_policy(dir: str, episodes: int = 5, render: bool = False, stochastic: bool = False) -> list[float]:
     """
     Loads the last stored policy of a run and executes it.
-    :param dir: The run directory, containing run.conf and model/last/policy.data.
+    :param dir: The run directory, containing run.conf and model/last/policy.safetensors.
     :param episodes: The number of episodes to execute.
     :param render: Render the environment.
     :param stochastic: Sample actions instead of using the mode of the policy.
@@ -34,7 +33,7 @@ def run_policy(dir: str, episodes: int = 5, render: bool = False, stochastic: bo
     # policy neural_modules
     with conf.ns("policy"):
         policy = select_policy(mc)
-        policy.load_state_dict(torch.load(join(dir, "model/last", "policy.data")))
+        policy.load_weights(join(dir, "model/last", "policy.safetensors"))
 
     returns = []
     with conf.ns("policy"):
