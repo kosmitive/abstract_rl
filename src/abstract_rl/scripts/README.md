@@ -15,6 +15,11 @@ performance plot and per-epoch CLI logs). `model/last` holds the final policy, `
 the highest mean training return (epoch and return in `model/best.json`); pass `--model best` to the evaluation scripts
 to use it.
 
+MPO runs can be resumed. `alg.checkpoint_every=50` writes the full training state (networks, optimizers, replay memory,
+random states) to `<run>/checkpoint` every 50 epochs, replacing the previous one. Starting the same command again with
+`alg.resume=true` continues the newest run below `data_root` that has a checkpoint, bit identically to a run that was
+never stopped. A run directory can also be given, `alg.resume=data/<env>/mpo/<run>`.
+
 Evaluation:
 
 ```

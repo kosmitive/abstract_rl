@@ -21,6 +21,7 @@ from abstract_rl.operator.resample_actions_operator import ResampleOperator
 from abstract_rl.operator.retrace_operator import RetraceOperator
 from abstract_rl.plots.reward_plot import RewardValueFunctionPlot
 from abstract_rl.policy.continuous.select_policy import select_policy
+from abstract_rl.run.checkpoint import load_checkpoint, resume_run_root, save_checkpoint
 from abstract_rl.value_functions.fc_q_networks import FullyQNeuralNet
 
 
@@ -33,7 +34,10 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
 
     # create a model configuration
     conf.setdefault("alg", "mpo")
-    mc = ModelConfiguration(conf)
+    # resume: false (a new run), true or auto (the newest run below data_root with a checkpoint, else a new run) or
+    # the directory of a run with a checkpoint
+    resume_root = resume_run_root(conf)
+    mc = ModelConfiguration(conf, run_root=resume_root)
     conf = mc["conf"]
     # auto: MPO fits the Q function on large batches of the replay memory, that is faster on the GPU
     default_settings(conf.get_root("device") if "device" in conf else "cpu", prefer_gpu=True)
@@ -119,8 +123,13 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
     # number of environment steps collected in each epoch (for plotting learning curves over samples)
     logger.create_field("steps", 1)
 
-    # if reloaded load old values
+    # every checkpoint_every epochs the run writes a checkpoint (null: never), see abstract_rl.run.checkpoint
+    checkpoint_every = conf.get("checkpoint_every", None)
     e = 0
+    if resume_root is not None:
+        e = load_checkpoint(mc)
+        cli.new_epoch(mc.run_root, e)
+        cli.empty().print(f"resumed {mc.run_root} after epoch {e}")
 
     def finish_v_step() -> None:
         with cli.header("v-step", 1):
@@ -191,6 +200,11 @@ def run_mpo_non_parametric(conf: Any) -> np.ndarray:
             q_network.start_mult_sgd(q_opt_steps, tc, q_batch_size, ["tq", "q"])
 
         e += 1
+
+        if checkpoint_every and e % checkpoint_every == 0 and e < num_epochs:
+            with cli.header("checkpoint", 1):
+                seconds = save_checkpoint(mc, e)
+                cli.empty().print(f"checkpoint after epoch {e} saved in {seconds:.2f} s")
 
     if e > 0:
         finish_v_step()

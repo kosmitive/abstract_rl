@@ -64,3 +64,8 @@ mpo_l2_reg: 0.0
 # bound on the m-step Lagrange multipliers: null keeps exp(lm), [low, high] uses softplus(lm) + 1e-8 with lm clipped to
 # [low, high] after each step, e.g. [-18.0, 18.0]
 mpo_lm_bound: null
+# checkpoints for resuming a stopped run: write one every checkpoint_every epochs (null: never) to <run>/checkpoint, it
+# replaces the last one. resume: false starts a new run, true resumes the newest run below data_root with a checkpoint
+# (a new run if there is none), a run directory resumes that run. A resumed run continues bit identically
+checkpoint_every: null
+resume: false
