@@ -5,7 +5,8 @@ Encoding the many small GPU kernels of a value fit keeps one CPU core busy, and 
 help, both need the GIL. The worker is a separate Python process that holds the network and its Adam moments. For
 every fit the main process copies the replay and the drawn batch indices into shared memory and sends the current
 parameters, the worker runs the same compiled Adam steps as the main process would and sends the parameters and the
-log values back. The result is bit identical to fitting in the main process.
+log values back. The result is bit identical to fitting in the main process. optimizer_state and
+set_optimizer_state read and write the moments of Adam in the worker, e.g. for a checkpoint.
 """
 
 import importlib
@@ -86,7 +87,7 @@ class BackgroundFit:
         for (_, a), (_, shape, dtype, offset) in zip(arrays, layout, strict=True):
             np.ndarray(shape, dtype, self._shm.buf, offset)[...] = a
         flat = [(k, np.array(v)) for k, v in cast(list[tuple[str, Any]], tree_flatten(params))]
-        self._conn_out.send((self._shm.name, layout, flat))
+        self._conn_out.send(("fit", self._shm.name, layout, flat))
         self._pending = True
 
     def result(self) -> tuple[dict[str, Any], list[tuple[int, float, float]]]:
@@ -108,6 +109,25 @@ class BackgroundFit:
     @property
     def pending(self) -> bool:
         return self._pending
+
+    def _request(self, msg: tuple[Any, ...]) -> Any:
+        assert not self._pending, "the last fit was not collected"
+        self._conn_out.send(msg)
+        try:
+            reply = self._conn_in.recv()
+        except EOFError:
+            raise RuntimeError(f"the fit worker exited with {self._proc.wait()}") from None
+        if isinstance(reply, str):
+            raise RuntimeError(f"the fit worker failed:\n{reply}")
+        return reply
+
+    def optimizer_state(self) -> list[tuple[str, np.ndarray]]:
+        """The flattened state of the optimizer in the worker (the moments of Adam), as NumPy arrays."""
+        return cast(list[tuple[str, np.ndarray]], self._request(("get_state",)))
+
+    def set_optimizer_state(self, flat: list[tuple[str, np.ndarray]]) -> None:
+        """Set the state of the optimizer in the worker, flattened as returned by optimizer_state."""
+        self._request(("set_state", flat))
 
     def _close_shm(self) -> None:
         if self._shm is not None:
@@ -136,10 +156,18 @@ def worker_main(r_fd: int, w_fd: int) -> None:
     fit = getattr(importlib.import_module(module), fn)(spec)
     while True:
         try:
-            name, layout, flat = conn_in.recv()
+            msg = conn_in.recv()
         except EOFError:
             return
         try:
+            if msg[0] == "get_state":
+                conn_out.send(fit.optimizer_state())
+                continue
+            if msg[0] == "set_state":
+                fit.set_optimizer_state(msg[1])
+                conn_out.send(())
+                continue
+            _, name, layout, flat = msg
             shm = SharedMemory(name=name, track=False)
             arrays = [(k, mx.array(np.ndarray(shape, dtype, shm.buf, offset))) for k, shape, dtype, offset in layout]
             mx.eval([a for _, a in arrays])

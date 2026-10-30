@@ -1,10 +1,11 @@
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-from mlx.utils import tree_map
+import numpy as np
+from mlx.utils import tree_flatten, tree_map, tree_unflatten
 
 from abstract_rl.algorithms.mixed.background_fit import BackgroundFit
 from abstract_rl.data_structures.temporal_difference_data.batch import Batch
@@ -68,6 +69,33 @@ def run_adam_steps(
     return logs
 
 
+def flat_items(tree: Any) -> list[tuple[str, Any]]:
+    """The leaves of a tree as (key, leaf), see mlx.utils.tree_flatten."""
+    return cast(list[tuple[str, Any]], tree_flatten(tree))
+
+
+def flat_numpy(tree: Any) -> list[tuple[str, np.ndarray]]:
+    """The leaves of a tree of MLX arrays as (key, NumPy array), e.g. the state of an optimizer."""
+    return [(k, np.array(v)) for k, v in flat_items(tree)]
+
+
+def assign_in_place(dst: Any, src: Any) -> None:
+    """Write the leaves of src into the nested dicts and lists of dst, so references to dst (e.g. the inputs of a
+    compiled function) see the new values."""
+    items = src.items() if isinstance(src, dict) else enumerate(src)
+    for k, v in items:
+        if isinstance(v, dict | list):
+            assign_in_place(dst[k], v)
+        else:
+            dst[k] = v
+
+
+def set_optimizer_state(opt: optim.Optimizer, flat: list[tuple[str, np.ndarray]]) -> None:
+    """Set the state of an optimizer in place from flat_numpy(opt.state)."""
+    assert sorted(k for k, _ in flat) == sorted(k for k, _ in flat_items(opt.state)), "optimizer state mismatch"
+    assign_in_place(opt.state, tree_unflatten([(k, mx.array(v)) for k, v in flat]))
+
+
 class VanillaGradient:
     """Simple vanilla gradient. Simply inherit from this class to add support.
 
@@ -122,6 +150,20 @@ class VanillaGradient:
             self.finish_mult_sgd()
             self._worker.close()
             self._worker = None
+
+    def optimizer_state(self) -> list[tuple[str, np.ndarray]]:
+        """The state of Adam (in the fit worker, if any), a pending fit is collected first."""
+        self.finish_mult_sgd()
+        if self._worker is not None:
+            return self._worker.optimizer_state()
+        return flat_numpy(self.opt.state)
+
+    def set_optimizer_state(self, flat: list[tuple[str, np.ndarray]]) -> None:
+        """Set the state of Adam (in the fit worker, if any) from optimizer_state."""
+        if self._worker is not None:
+            self._worker.set_optimizer_state(flat)
+        else:
+            set_optimizer_state(self.opt, flat)
 
     def perform_mult_sgd(self, num_steps: int, tc: TrajectoryCollection, batch_size: int, fields: list[str]) -> None:
         """
@@ -187,19 +229,31 @@ class VanillaGradient:
         raise NotImplementedError
 
 
-def background_adam_fit(model: nn.Module, lr: float, objective: Callable) -> Callable:
+class BackgroundAdamFit:
     """
     The fit of a worker process (see BackgroundFit) for a model fit like VanillaGradient.perform_mult_sgd. The moments
-    of Adam live in the returned function.
+    of Adam live in this object.
     """
-    opt = FusedAdam(learning_rate=lr, bias_correction=True)
-    opt.init(model.trainable_parameters())
-    fns = compile_adam_fns(model, opt, objective)
 
-    def fit(params: dict[str, Any], tree: dict[str, Any], indices: mx.array) -> tuple[Any, list]:
-        model.update(params)
-        logs = run_adam_steps(fns["steps"], model, opt, tree, indices)
-        mx.eval(logs, model.parameters(), opt.state)
-        return model.parameters(), [(s, pre.item(), post.item()) for s, pre, post in logs]
+    def __init__(self, model: nn.Module, lr: float, objective: Callable) -> None:
+        self.model = model
+        self.opt = FusedAdam(learning_rate=lr, bias_correction=True)
+        self.opt.init(model.trainable_parameters())
+        self.fns = compile_adam_fns(model, self.opt, objective)
 
-    return fit
+    def __call__(self, params: dict[str, Any], tree: dict[str, Any], indices: mx.array) -> tuple[Any, list]:
+        self.model.update(params)
+        logs = run_adam_steps(self.fns["steps"], self.model, self.opt, tree, indices)
+        mx.eval(logs, self.model.parameters(), self.opt.state)
+        return self.model.parameters(), [(s, pre.item(), post.item()) for s, pre, post in logs]
+
+    def optimizer_state(self) -> list[tuple[str, np.ndarray]]:
+        return flat_numpy(self.opt.state)
+
+    def set_optimizer_state(self, flat: list[tuple[str, np.ndarray]]) -> None:
+        set_optimizer_state(self.opt, flat)
+
+
+def background_adam_fit(model: nn.Module, lr: float, objective: Callable) -> BackgroundAdamFit:
+    """The fit of a worker process (see BackgroundFit) for a model fit like VanillaGradient.perform_mult_sgd."""
+    return BackgroundAdamFit(model, lr, objective)
